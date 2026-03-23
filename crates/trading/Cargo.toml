@@ -1,0 +1,11 @@
+[package]
+name = "data-trading"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+data-core = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

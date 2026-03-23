@@ -1,0 +1,11 @@
+[package]
+name = "data-valuation"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+data-core = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

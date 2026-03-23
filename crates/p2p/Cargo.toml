@@ -1,0 +1,19 @@
+[package]
+name = "data-p2p"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+data-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+libp2p = { workspace = true }
+rocksdb = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+bytes = { workspace = true }
+notify = { workspace = true }
+chrono = { workspace = true }

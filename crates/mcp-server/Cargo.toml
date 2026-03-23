@@ -1,0 +1,14 @@
+[package]
+name = "data-mcp-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+data-core = { workspace = true }
+data-p2p = { workspace = true }
+data-auth = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
