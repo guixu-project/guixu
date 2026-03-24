@@ -24,6 +24,10 @@ pub struct RoiReport {
 impl PaidDataEvaluator {
     /// Assess whether a paid dataset is worth purchasing,
     /// using both quality metrics and on-chain community feedback.
+    ///
+    /// The estimated value uses an MMD (Maximum Mean Discrepancy) inspired
+    /// distributional distance between the paid dataset and the best free
+    /// alternative, replacing the former `quality_delta * scarcity * confidence`.
     pub async fn evaluate(
         &self,
         metadata: &DatasetMetadata,
@@ -67,13 +71,21 @@ impl PaidDataEvaluator {
             None
         };
 
-        // Quality premium over best free alternative, boosted by community signal
-        let quality_delta = best_free_quality
-            .map(|fq| (quality.total - fq).max(0.0))
-            .unwrap_or(quality.total);
+        // --- MMD-based estimated value ---
+        // Approximate distributional distance between paid dataset and best free
+        // alternative using a metadata-level MMD proxy.  We treat each quality
+        // dimension as a feature and compute the squared distance in that space,
+        // weighted by a Gaussian RBF kernel bandwidth σ² = 2·dim.
+        let estimated_value = if let Some((free_meta, free_q)) = best_free {
+            let mmd_sq = Self::metadata_mmd_squared(metadata, quality, free_meta, free_q);
+            // Higher MMD → paid dataset is more different (and presumably better)
+            // Scale to dollar-like value, modulated by community trust
+            mmd_sq.sqrt() * 0.01 * scarcity_premium * (0.5 + community_confidence * 0.5)
+        } else {
+            // No free alternative — value is purely quality-driven
+            quality.total * 0.01 * scarcity_premium * (0.5 + community_confidence * 0.5)
+        };
 
-        let estimated_value =
-            quality_delta * 0.01 * scarcity_premium * (0.5 + community_confidence * 0.5);
         let roi_ratio = if asking_price > 0.0 {
             estimated_value / asking_price
         } else {
@@ -113,5 +125,55 @@ impl PaidDataEvaluator {
             previous_buyer_success_rate,
             recommendation,
         })
+    }
+
+    /// Metadata-level MMD² approximation.
+    ///
+    /// Computes squared Maximum Mean Discrepancy between two datasets using
+    /// their quality score vectors as feature representations and a Gaussian
+    /// RBF kernel.  This is a lightweight proxy for the full distributional
+    /// MMD that would require raw data access.
+    fn metadata_mmd_squared(
+        a_meta: &DatasetMetadata,
+        a_q: &QualityScore,
+        b_meta: &DatasetMetadata,
+        b_q: &QualityScore,
+    ) -> f64 {
+        // Quality-space distance
+        let q_diffs = [
+            a_q.completeness - b_q.completeness,
+            a_q.consistency - b_q.consistency,
+            a_q.freshness - b_q.freshness,
+            a_q.schema_quality - b_q.schema_quality,
+            a_q.provenance - b_q.provenance,
+            a_q.community - b_q.community,
+        ];
+        let q_dist_sq: f64 = q_diffs.iter().map(|d| d * d).sum();
+
+        // Schema-space distance: Jaccard distance on column names
+        let cols_a: std::collections::HashSet<String> = a_meta
+            .schema
+            .columns
+            .iter()
+            .map(|c| c.name.to_lowercase())
+            .collect();
+        let cols_b: std::collections::HashSet<String> = b_meta
+            .schema
+            .columns
+            .iter()
+            .map(|c| c.name.to_lowercase())
+            .collect();
+        let intersection = cols_a.intersection(&cols_b).count() as f64;
+        let union = cols_a.union(&cols_b).count() as f64;
+        let jaccard_dist = if union > 0.0 { 1.0 - intersection / union } else { 1.0 };
+
+        // RBF kernel: k(x,y) = exp(-||x-y||² / 2σ²), σ² = 2·dim
+        let sigma_sq = 2.0 * q_diffs.len() as f64;
+        let rbf_quality = (-q_dist_sq / (2.0 * sigma_sq)).exp();
+
+        // MMD² ≈ 2(1 - kernel_mean)  (two-sample test with one sample each)
+        // Blend quality-space and schema-space distances
+        let kernel_mean = rbf_quality * 0.7 + (1.0 - jaccard_dist) * 0.3;
+        (2.0 * (1.0 - kernel_mean)).max(0.0)
     }
 }
