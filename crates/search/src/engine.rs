@@ -1,5 +1,7 @@
 use anyhow::Result;
-use data_core::types::{DataSource, SearchResult};
+use data_core::feedback::CommunitySignal;
+use data_core::metadata::DatasetMetadata;
+use data_core::types::SearchResult;
 
 use crate::adapters::ExternalAdapter;
 use crate::intent::IntentParser;
@@ -13,10 +15,15 @@ pub struct SearchFilters {
     pub max_price: Option<f64>,
     pub license: Option<String>,
     pub min_quality: Option<f64>,
+    pub source: Option<String>,
 }
 
-/// The unified search engine. Merges results from DHT, local vector index,
-/// and external adapters (Kaggle, HuggingFace, etc.).
+/// Callback to fetch community signal for a dataset CID.
+/// Allows the search engine to rank by TCV without owning the feedback store.
+pub type SignalFetcher = Box<dyn Fn(&str) -> CommunitySignal + Send + Sync>;
+
+/// The unified search engine. Merges results from local store, DHT,
+/// and external adapters (Kaggle, HuggingFace, IPFS, PostgreSQL, DuckDB).
 pub struct SearchEngine {
     vector_index: VectorIndex,
     intent_parser: IntentParser,
@@ -33,54 +40,91 @@ impl SearchEngine {
     }
 
     /// Main search entry point — called by MCP tool `dataset_search`.
+    /// `local_metadata` comes from the RocksDB store (P2P-discovered datasets).
+    /// `signal_fetcher` retrieves on-chain community feedback for TCV ranking.
     pub async fn search(
         &self,
         query: &str,
         filters: &SearchFilters,
+        local_metadata: &[DatasetMetadata],
+        signal_fetcher: &SignalFetcher,
         limit: usize,
-    ) -> Result<Vec<SearchResult>> {
-        // 1. Parse intent
+    ) -> Result<Vec<RankedResult>> {
         let intent = self.intent_parser.parse(query).await?;
 
-        // 2. Parallel search across all sources
-        let (p2p_results, external_results) = tokio::join!(
-            self.search_p2p(&intent, filters, limit),
+        // Parallel: local P2P store + all external adapters
+        let (local_results, external_results) = tokio::join!(
+            self.search_local(&intent, filters, local_metadata),
             self.search_external(&intent, filters, limit),
         );
 
-        // 3. Merge, deduplicate by CID, rank
-        let mut all = p2p_results.unwrap_or_default();
+        let mut all: Vec<SearchResult> = local_results.unwrap_or_default();
         all.extend(external_results.unwrap_or_default());
-        all.sort_by(|a, b| {
-            let sa = self.rank_score(a);
-            let sb = self.rank_score(b);
-            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        all.truncate(limit);
 
-        Ok(all)
+        // Apply filters
+        if let Some(min_rows) = filters.min_rows {
+            all.retain(|r| r.schema.row_count >= min_rows);
+        }
+        if let Some(max_price) = filters.max_price {
+            all.retain(|r| r.price.amount <= max_price);
+        }
+        if let Some(ref src) = filters.source {
+            all.retain(|r| format!("{:?}", r.source).to_lowercase().contains(&src.to_lowercase()));
+        }
+
+        // Deduplicate by CID
+        let mut seen = std::collections::HashSet::new();
+        all.retain(|r| seen.insert(r.cid.0.clone()));
+
+        // Rank with community signal (TCV-lite for search ranking)
+        let mut ranked: Vec<RankedResult> = all
+            .into_iter()
+            .map(|r| {
+                let signal = signal_fetcher(&r.cid.0);
+                let score = rank_with_signal(&r, &signal, &intent);
+                RankedResult { result: r, rank_score: score, signal }
+            })
+            .collect();
+
+        ranked.sort_by(|a, b| b.rank_score.partial_cmp(&a.rank_score).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.truncate(limit);
+
+        Ok(ranked)
     }
 
-    /// Search P2P network: DHT tag lookup + local vector index.
-    async fn search_p2p(
+    /// Search local P2P metadata store.
+    async fn search_local(
         &self,
         intent: &ParsedIntent,
-        filters: &SearchFilters,
-        limit: usize,
+        _filters: &SearchFilters,
+        metadata: &[DatasetMetadata],
     ) -> Result<Vec<SearchResult>> {
-        // TODO(milestone-2):
-        // 1. DHT tag lookup for each keyword in intent
-        // 2. Vector search in local Qdrant for semantic matches
-        // 3. Fetch full metadata for matched CIDs
-        // 4. Apply filters
-        Ok(vec![])
+        let query_lower = intent.raw_query.to_lowercase();
+        let keywords = &intent.keywords;
+
+        let results: Vec<SearchResult> = metadata
+            .iter()
+            .filter(|m| {
+                let title = m.title.to_lowercase();
+                let desc = m.description.as_deref().unwrap_or("").to_lowercase();
+                let tags_str = m.tags.join(" ").to_lowercase();
+                let all_text = format!("{title} {desc} {tags_str}");
+
+                // Match if query substring or any keyword matches
+                all_text.contains(&query_lower)
+                    || keywords.iter().any(|kw| all_text.contains(kw))
+            })
+            .map(|m| metadata_to_search_result(m))
+            .collect();
+
+        Ok(results)
     }
 
     /// Search external platforms via adapters.
     async fn search_external(
         &self,
         intent: &ParsedIntent,
-        filters: &SearchFilters,
+        _filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let mut results = vec![];
@@ -91,14 +135,14 @@ impl SearchEngine {
         }
         Ok(results)
     }
+}
 
-    /// Multi-factor ranking score.
-    fn rank_score(&self, result: &SearchResult) -> f64 {
-        let quality = result.quality.as_ref().map(|q| q.total).unwrap_or(50.0);
-        let freshness = 100.0; // TODO: compute from created_at
-        let price_penalty = if result.price.is_free() { 0.0 } else { -10.0 };
-        0.4 * quality + 0.3 * freshness + 0.2 * 50.0 /* relevance placeholder */ + price_penalty
-    }
+/// A search result annotated with ranking score and community signal.
+#[derive(Debug, Clone)]
+pub struct RankedResult {
+    pub result: SearchResult,
+    pub rank_score: f64,
+    pub signal: CommunitySignal,
 }
 
 /// Structured intent parsed from natural language query.
@@ -110,4 +154,60 @@ pub struct ParsedIntent {
     pub temporal: Option<String>,
     pub format: Option<String>,
     pub keywords: Vec<String>,
+}
+
+/// Rank a search result incorporating community signal.
+/// This is a lightweight version of TCV used for search ranking.
+fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &ParsedIntent) -> f64 {
+    let quality = result.quality.as_ref().map(|q| q.total).unwrap_or(50.0);
+
+    // Keyword relevance: how many query keywords appear in title/description
+    let title_desc = format!(
+        "{} {}",
+        result.title.to_lowercase(),
+        result.description.as_deref().unwrap_or("").to_lowercase()
+    );
+    let keyword_hits = intent
+        .keywords
+        .iter()
+        .filter(|kw| title_desc.contains(kw.as_str()))
+        .count();
+    let relevance = if intent.keywords.is_empty() {
+        50.0
+    } else {
+        (keyword_hits as f64 / intent.keywords.len() as f64) * 100.0
+    };
+
+    // Community signal: positive reviews boost, negative reviews penalize
+    let community = if signal.total_reviews > 0 {
+        let base = signal.avg_relevance * 50.0 + 50.0; // map [-1,1] → [0,100]
+        let confidence = 1.0 - (1.0 / (1.0 + signal.total_reviews as f64 * 0.2));
+        50.0 * (1.0 - confidence) + base * confidence
+    } else {
+        50.0 // neutral when no reviews
+    };
+
+    let risk = signal.risk_penalty();
+    let price_penalty = if result.price.is_free() { 0.0 } else { 5.0 };
+
+    // Weighted combination
+    0.30 * relevance + 0.25 * quality + 0.25 * community + 0.15 * 70.0 /* freshness placeholder */ - 0.05 * risk - price_penalty
+}
+
+/// Convert DatasetMetadata to SearchResult.
+fn metadata_to_search_result(m: &DatasetMetadata) -> SearchResult {
+    use data_core::types::DataSource;
+
+    SearchResult {
+        cid: m.cid.clone(),
+        title: m.title.clone(),
+        description: m.description.clone(),
+        schema: m.schema.clone(),
+        quality: None, // computed separately by TCV engine
+        price: m.price.clone(),
+        license: m.license.clone(),
+        provider: m.provider.clone(),
+        source: DataSource::P2p,
+        created_at: m.created_at,
+    }
 }

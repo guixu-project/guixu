@@ -113,6 +113,10 @@ pub enum DataSource {
     Kaggle,
     HuggingFace,
     DataGov,
+    Ipfs,
+    BitTorrent,
+    PostgreSql,
+    DuckDb,
 }
 
 /// Payment protocol used for a transaction.

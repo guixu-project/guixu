@@ -10,10 +10,11 @@ use data_core::identity::NodeIdentity;
 use data_core::types::AccessMode;
 use data_mcp_server::server::AppState;
 use data_p2p::dht::DhtIndex;
+use data_p2p::feedback_store::FeedbackStore;
 use data_p2p::storage::MetadataStore;
 
 #[derive(Parser)]
-#[command(name = "data-node", about = "P2P Dataset Search Protocol Node")]
+#[command(name = "data-node", about = "Guixu: On-Chain Data Valuation for AI Agents")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -59,12 +60,10 @@ fn cmd_init(data_dir: Option<String>) -> Result<()> {
     let config_dir = NodeConfig::config_dir();
     std::fs::create_dir_all(&config_dir)?;
 
-    // Generate identity
     let identity = NodeIdentity::generate();
     std::fs::write(NodeConfig::identity_path(), identity.seed())?;
     info!(did = %identity.did.0, "generated node identity");
 
-    // Write config
     let mut config = NodeConfig::default();
     if let Some(dir) = data_dir {
         config.data_dir = shellexpand(dir);
@@ -85,6 +84,7 @@ async fn cmd_start() -> Result<()> {
     info!(did = %identity.did.0, "starting full node");
 
     let store = MetadataStore::open(&NodeConfig::db_path())?;
+    let feedback_store = FeedbackStore::open(&NodeConfig::config_dir().join("feedback_db"))?;
 
     // Start P2P network
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(256);
@@ -94,7 +94,7 @@ async fn cmd_start() -> Result<()> {
     // Start file watcher
     let mut watch_rx = data_p2p::watchdir::watch(&config.data_dir)?;
 
-    // Handle network events (gossip → local store)
+    // Handle network events
     let store_bg = store.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
@@ -156,6 +156,7 @@ async fn cmd_mcp(mode: String) -> Result<()> {
     info!(?node_mode, did = %identity.did.0, "starting MCP server");
 
     let store = MetadataStore::open(&NodeConfig::db_path())?;
+    let feedback_store = FeedbackStore::open(&NodeConfig::config_dir().join("feedback_db"))?;
 
     // Start P2P network
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(256);
@@ -174,11 +175,12 @@ async fn cmd_mcp(mode: String) -> Result<()> {
         }
     });
 
-    let state = Arc::new(AppState {
-        identity: NodeIdentity::from_seed(identity.seed()),
+    let state = Arc::new(AppState::new(
+        NodeIdentity::from_seed(identity.seed()),
         dht,
         store,
-    });
+        feedback_store,
+    ));
 
     data_mcp_server::server::run_stdio(state).await
 }

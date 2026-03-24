@@ -4,3 +4,4 @@ pub mod gossip;
 pub mod storage;
 pub mod watchdir;
 pub mod publish;
+pub mod feedback_store;

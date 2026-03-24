@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="360" viewBox="0 0 520 360">
+  <defs>
+    <style>
+      text { font-family: Helvetica, Arial, sans-serif; }
+      .title { font-size: 10px; font-weight: bold; }
+      .label { font-size: 8px; fill: #333; }
+      .sublabel { font-size: 7px; fill: #555; }
+      .mono { font-family: 'Courier New', monospace; font-size: 6.5px; fill: #E0E0E0; }
+      .mono-green { font-family: 'Courier New', monospace; font-size: 6.5px; fill: #4CAF50; }
+      .mono-yellow { font-family: 'Courier New', monospace; font-size: 6.5px; fill: #FFC107; }
+      .mono-cyan { font-family: 'Courier New', monospace; font-size: 6.5px; fill: #00BCD4; }
+      .mono-white { font-family: 'Courier New', monospace; font-size: 6.5px; fill: #fff; }
+    </style>
+  </defs>
+
+  <!-- Panel A: Provider Terminal -->
+  <rect x="5" y="5" width="250" height="170" fill="#1E1E1E" rx="5" ry="5" stroke="#555" stroke-width="0.8"/>
+  <!-- Title bar -->
+  <rect x="5" y="5" width="250" height="16" fill="#333" rx="5" ry="5"/>
+  <rect x="5" y="15" width="250" height="6" fill="#333"/>
+  <circle cx="16" cy="13" r="4" fill="#FF5F56"/>
+  <circle cx="28" cy="13" r="4" fill="#FFBD2E"/>
+  <circle cx="40" cy="13" r="4" fill="#27C93F"/>
+  <text x="130" y="16" text-anchor="middle" font-size="7" fill="#aaa" font-family="Helvetica">Provider Node — Terminal</text>
+
+  <text x="12" y="34" class="mono-green">$ cp china_gdp_2020_2025.csv ~/shared-datasets/</text>
+  <text x="12" y="46" class="mono-yellow">[INFO] New file detected: china_gdp_2020_2025.csv</text>
+  <text x="12" y="56" class="mono">[INFO] Converting to Parquet... 50,000 rows, 8 cols</text>
+  <text x="12" y="66" class="mono">[INFO] Merkle tree: 47 pieces (256KB each)</text>
+  <text x="12" y="76" class="mono">[INFO] CID: bafybeig6xk...  InfoHash: v2:a3f8c1...</text>
+  <text x="12" y="86" class="mono">[INFO] VC signed with did:key:z6MkPub...</text>
+  <text x="12" y="96" class="mono-green">[INFO] ✓ Registered to DHT (key=bafybeig6xk...)</text>
+  <text x="12" y="106" class="mono-green">[INFO] ✓ Broadcast to 47 peers via GossipSub</text>
+  <text x="12" y="116" class="mono-cyan">[INFO] Seeding... 0 peers connected</text>
+  <text x="12" y="132" class="mono-yellow">[INFO] Incoming BT connection from did:key:z6MkAge...</text>
+  <text x="12" y="142" class="mono">[INFO] Uploading pieces: [████████░░] 80% (9.6MB)</text>
+  <text x="12" y="152" class="mono-green">[INFO] ✓ Transfer complete. Payment: $0.50 USDC</text>
+  <text x="12" y="162" class="mono-green">[INFO] ✓ EAS receipt: 0x7f3a...  (Base L2)</text>
+
+  <!-- Label A -->
+  <rect x="8" y="22" width="10" height="10" fill="#E65100" rx="2"/>
+  <text x="13" y="30" text-anchor="middle" font-size="7" fill="#fff" font-weight="bold" font-family="Helvetica">A</text>
+
+  <!-- Panel B: Agent Chat Interface -->
+  <rect x="265" y="5" width="250" height="170" fill="#FAFAFA" rx="5" ry="5" stroke="#ccc" stroke-width="0.8"/>
+  <rect x="265" y="5" width="250" height="16" fill="#1565C0" rx="5" ry="5"/>
+  <rect x="265" y="15" width="250" height="6" fill="#1565C0"/>
+  <text x="390" y="16" text-anchor="middle" font-size="7" fill="#fff" font-family="Helvetica">Agent Chat — MCP Client</text>
+
+  <!-- User message -->
+  <rect x="330" y="28" width="175" height="16" fill="#E3F2FD" rx="8" ry="8"/>
+  <text x="417" y="39" text-anchor="middle" font-size="6.5" fill="#1565C0" font-family="Helvetica">Find China provincial GDP data 2020-2025</text>
+
+  <!-- Agent response -->
+  <rect x="272" y="50" width="200" height="62" fill="#fff" rx="6" ry="6" stroke="#E0E0E0"/>
+  <text x="278" y="61" font-size="6.5" fill="#333" font-family="Helvetica" font-weight="bold">Found 3 datasets:</text>
+  <text x="278" y="72" font-size="6" fill="#333" font-family="Helvetica">1. 🟢 China GDP 2020-25 (P2P) Q:92 $0.50</text>
+  <text x="278" y="82" font-size="6" fill="#333" font-family="Helvetica">2. 🔵 CN Economic Indicators (Kaggle) Q:78 Free</text>
+  <text x="278" y="92" font-size="6" fill="#333" font-family="Helvetica">3. 🔵 Asia GDP Dataset (HF) Q:71 Free</text>
+  <text x="278" y="104" font-size="6" fill="#888" font-family="Helvetica">ROI: #1 offers 15% better coverage. Buy? [Y/n]</text>
+
+  <!-- Agent action -->
+  <rect x="370" y="116" width="135" height="12" fill="#E8F5E9" rx="6" ry="6"/>
+  <text x="437" y="125" text-anchor="middle" font-size="6" fill="#2E7D32" font-family="Helvetica">✓ Previewed 10 rows ($0.001 x402)</text>
+
+  <rect x="370" y="132" width="135" height="12" fill="#E8F5E9" rx="6" ry="6"/>
+  <text x="437" y="141" text-anchor="middle" font-size="6" fill="#2E7D32" font-family="Helvetica">✓ Purchased $0.50 (ERC-8183 escrow)</text>
+
+  <rect x="370" y="148" width="135" height="12" fill="#E8F5E9" rx="6" ry="6"/>
+  <text x="437" y="157" text-anchor="middle" font-size="6" fill="#2E7D32" font-family="Helvetica">✓ Downloaded + Merkle verified ✓</text>
+
+  <!-- Label B -->
+  <rect x="268" y="22" width="10" height="10" fill="#1565C0" rx="2"/>
+  <text x="273" y="30" text-anchor="middle" font-size="7" fill="#fff" font-weight="bold" font-family="Helvetica">B</text>
+
+  <!-- Panel C: Audience Interaction Panel -->
+  <rect x="5" y="185" width="250" height="170" fill="#FFF8E1" rx="5" ry="5" stroke="#F9A825" stroke-width="0.8"/>
+  <rect x="5" y="185" width="250" height="16" fill="#F9A825" rx="5" ry="5"/>
+  <rect x="5" y="195" width="250" height="6" fill="#F9A825"/>
+  <text x="130" y="196" text-anchor="middle" font-size="7" fill="#fff" font-weight="bold" font-family="Helvetica">Audience Hands-On Panel</text>
+
+  <!-- QR code placeholder -->
+  <rect x="15" y="208" width="40" height="40" fill="#fff" stroke="#ccc" rx="2"/>
+  <text x="35" y="225" text-anchor="middle" font-size="16" fill="#333">⊞</text>
+  <text x="35" y="255" text-anchor="middle" font-size="6" fill="#555" font-family="Helvetica">Scan to join</text>
+
+  <!-- Interaction options -->
+  <text x="65" y="218" font-size="7" fill="#333" font-weight="bold" font-family="Helvetica">Try it yourself:</text>
+  <rect x="65" y="224" width="180" height="14" fill="#fff" rx="4" ry="4" stroke="#E0E0E0"/>
+  <text x="72" y="234" font-size="6.5" fill="#333" font-family="Helvetica">🔍 Type a dataset query in any language...</text>
+
+  <text x="65" y="254" font-size="6.5" fill="#555" font-family="Helvetica">① Search any topic → see ranked results</text>
+  <text x="65" y="266" font-size="6.5" fill="#555" font-family="Helvetica">② Preview rows with 1-click micropayment</text>
+  <text x="65" y="278" font-size="6.5" fill="#555" font-family="Helvetica">③ Publish your own dataset (drag &amp; drop)</text>
+  <text x="65" y="290" font-size="6.5" fill="#555" font-family="Helvetica">④ Tamper a dataset → watch verification fail</text>
+
+  <!-- Live stats -->
+  <rect x="15" y="300" width="230" height="46" fill="#fff" rx="4" ry="4" stroke="#E0E0E0"/>
+  <text x="130" y="313" text-anchor="middle" font-size="7" fill="#333" font-weight="bold" font-family="Helvetica">Live Network Stats</text>
+  <text x="50" y="326" text-anchor="middle" font-size="14" fill="#2E7D32" font-family="Helvetica" font-weight="bold">12</text>
+  <text x="50" y="338" text-anchor="middle" font-size="6" fill="#555" font-family="Helvetica">Peers</text>
+  <text x="110" y="326" text-anchor="middle" font-size="14" fill="#1565C0" font-family="Helvetica" font-weight="bold">47</text>
+  <text x="110" y="338" text-anchor="middle" font-size="6" fill="#555" font-family="Helvetica">Datasets</text>
+  <text x="170" y="326" text-anchor="middle" font-size="14" fill="#E65100" font-family="Helvetica" font-weight="bold">8</text>
+  <text x="170" y="338" text-anchor="middle" font-size="6" fill="#555" font-family="Helvetica">Trades</text>
+  <text x="220" y="326" text-anchor="middle" font-size="14" fill="#6A1B9A" font-family="Helvetica" font-weight="bold">$2.4</text>
+  <text x="220" y="338" text-anchor="middle" font-size="6" fill="#555" font-family="Helvetica">Volume</text>
+
+  <!-- Label C -->
+  <rect x="8" y="202" width="10" height="10" fill="#F57F17" rx="2"/>
+  <text x="13" y="210" text-anchor="middle" font-size="7" fill="#fff" font-weight="bold" font-family="Helvetica">C</text>
+
+  <!-- Panel D: Blockchain Explorer -->
+  <rect x="265" y="185" width="250" height="170" fill="#F3E5F5" rx="5" ry="5" stroke="#6A1B9A" stroke-width="0.8"/>
+  <rect x="265" y="185" width="250" height="16" fill="#6A1B9A" rx="5" ry="5"/>
+  <rect x="265" y="195" width="250" height="6" fill="#6A1B9A"/>
+  <text x="390" y="196" text-anchor="middle" font-size="7" fill="#fff" font-weight="bold" font-family="Helvetica">Blockchain Explorer (Base L2 Testnet)</text>
+
+  <!-- Transaction list -->
+  <text x="272" y="216" font-size="7" fill="#333" font-weight="bold" font-family="Helvetica">Recent Transactions</text>
+
+  <rect x="272" y="222" width="236" height="28" fill="#fff" rx="3" ry="3" stroke="#E0E0E0"/>
+  <text x="278" y="233" font-size="6" fill="#2E7D32" font-weight="bold" font-family="Helvetica">ERC-8183 Escrow Created</text>
+  <text x="278" y="244" font-size="5.5" fill="#888" font-family="Courier New">0x7f3a..b2c1  Buyer→Escrow  $0.50 USDC  ⏱ 2s ago</text>
+
+  <rect x="272" y="254" width="236" height="28" fill="#fff" rx="3" ry="3" stroke="#E0E0E0"/>
+  <text x="278" y="265" font-size="6" fill="#1565C0" font-weight="bold" font-family="Helvetica">Escrow Released → Seller</text>
+  <text x="278" y="276" font-size="5.5" fill="#888" font-family="Courier New">0xa1e9..f4d7  Escrow→Seller  $0.50 USDC  ⏱ 1s ago</text>
+
+  <rect x="272" y="286" width="236" height="28" fill="#fff" rx="3" ry="3" stroke="#E0E0E0"/>
+  <text x="278" y="297" font-size="6" fill="#6A1B9A" font-weight="bold" font-family="Helvetica">EAS Attestation (Trade Receipt)</text>
+  <text x="278" y="308" font-size="5.5" fill="#888" font-family="Courier New">uid:0x3c..  buyer=z6MkAge  cid=bafybeig6  Q:92</text>
+
+  <!-- Merkle verification -->
+  <rect x="272" y="320" width="236" height="28" fill="#E8F5E9" rx="3" ry="3" stroke="#4CAF50"/>
+  <text x="278" y="331" font-size="6" fill="#2E7D32" font-weight="bold" font-family="Helvetica">✓ Merkle Root Verified</text>
+  <text x="278" y="342" font-size="5.5" fill="#555" font-family="Courier New">Expected: 0xabc1..  Got: 0xabc1..  MATCH ✓</text>
+
+  <!-- Label D -->
+  <rect x="268" y="202" width="10" height="10" fill="#6A1B9A" rx="2"/>
+  <text x="273" y="210" text-anchor="middle" font-size="7" fill="#fff" font-weight="bold" font-family="Helvetica">D</text>
+</svg>

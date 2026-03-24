@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="380" viewBox="0 0 520 380">
+  <defs>
+    <style>
+      text { font-family: Helvetica, Arial, sans-serif; }
+      .title { font-size: 11px; font-weight: bold; fill: #222; }
+      .label { font-size: 9px; fill: #333; }
+      .sublabel { font-size: 7.5px; fill: #555; }
+      .box { stroke-width: 1.2; rx: 4; ry: 4; }
+    </style>
+  </defs>
+
+  <!-- Agent Interface Layer -->
+  <rect x="20" y="15" width="480" height="42" fill="#E3F2FD" stroke="#1565C0" class="box"/>
+  <text x="260" y="33" text-anchor="middle" class="title" fill="#1565C0">Agent Interface Layer</text>
+  <text x="260" y="47" text-anchor="middle" class="sublabel">MCP Server (JSON-RPC over stdio / SSE) — 7 Tools Exposed to AI Agents</text>
+
+  <!-- Arrow down -->
+  <line x1="260" y1="57" x2="260" y2="72" stroke="#666" stroke-width="1" marker-end="url(#arrowhead)"/>
+
+  <!-- Four Engine Boxes -->
+  <!-- Search Engine -->
+  <rect x="20" y="75" width="115" height="80" fill="#E8F5E9" stroke="#2E7D32" class="box"/>
+  <text x="77" y="92" text-anchor="middle" class="title" fill="#2E7D32">Data Search</text>
+  <text x="77" y="105" text-anchor="middle" class="sublabel">Semantic Retrieval</text>
+  <text x="77" y="116" text-anchor="middle" class="sublabel">DHT Index</text>
+  <text x="77" y="127" text-anchor="middle" class="sublabel">Qdrant + SLM</text>
+  <text x="77" y="138" text-anchor="middle" class="sublabel">Multi-Source Agg.</text>
+
+  <!-- Valuation Engine -->
+  <rect x="145" y="75" width="115" height="80" fill="#FFF3E0" stroke="#E65100" class="box"/>
+  <text x="202" y="92" text-anchor="middle" class="title" fill="#E65100">Data Valuation</text>
+  <text x="202" y="105" text-anchor="middle" class="sublabel">Quality Scoring</text>
+  <text x="202" y="116" text-anchor="middle" class="sublabel">Dynamic Pricing</text>
+  <text x="202" y="127" text-anchor="middle" class="sublabel">Fast-DataShapley</text>
+  <text x="202" y="138" text-anchor="middle" class="sublabel">Task Fitness</text>
+
+  <!-- Trading Engine -->
+  <rect x="270" y="75" width="115" height="80" fill="#FCE4EC" stroke="#C62828" class="box"/>
+  <text x="327" y="92" text-anchor="middle" class="title" fill="#C62828">Data Trading</text>
+  <text x="327" y="105" text-anchor="middle" class="sublabel">x402 Micropayment</text>
+  <text x="327" y="116" text-anchor="middle" class="sublabel">ERC-8183 Escrow</text>
+  <text x="327" y="127" text-anchor="middle" class="sublabel">License (ODRL)</text>
+  <text x="327" y="138" text-anchor="middle" class="sublabel">Multi-Protocol Pay</text>
+
+  <!-- Auth Engine -->
+  <rect x="395" y="75" width="105" height="80" fill="#F3E5F5" stroke="#6A1B9A" class="box"/>
+  <text x="447" y="92" text-anchor="middle" class="title" fill="#6A1B9A">Data Auth</text>
+  <text x="447" y="105" text-anchor="middle" class="sublabel">DID + VC</text>
+  <text x="447" y="116" text-anchor="middle" class="sublabel">Merkle Integrity</text>
+  <text x="447" y="127" text-anchor="middle" class="sublabel">ZKP (Noir)</text>
+  <text x="447" y="138" text-anchor="middle" class="sublabel">EAS Attestation</text>
+
+  <!-- Arrow down to P2P layer -->
+  <line x1="260" y1="155" x2="260" y2="175" stroke="#666" stroke-width="1" marker-end="url(#arrowhead)"/>
+
+  <!-- P2P Data Sharing Layer -->
+  <rect x="20" y="178" width="480" height="90" fill="#ECEFF1" stroke="#37474F" class="box"/>
+  <text x="260" y="196" text-anchor="middle" class="title" fill="#37474F">P2P Data Sharing Layer</text>
+
+  <!-- Metadata Plane -->
+  <rect x="35" y="203" width="220" height="55" fill="#fff" stroke="#78909C" class="box"/>
+  <text x="145" y="218" text-anchor="middle" class="label" font-weight="bold">Metadata Plane (libp2p)</text>
+  <text x="145" y="232" text-anchor="middle" class="sublabel">Kademlia DHT · GossipSub · mDNS</text>
+  <text x="145" y="244" text-anchor="middle" class="sublabel">Noise Encryption · CID v1</text>
+
+  <!-- Data Plane -->
+  <rect x="265" y="203" width="220" height="55" fill="#fff" stroke="#78909C" class="box"/>
+  <text x="375" y="218" text-anchor="middle" class="label" font-weight="bold">Data Plane (BitTorrent v2)</text>
+  <text x="375" y="232" text-anchor="middle" class="sublabel">Piece-based Chunking · Merkle Tree</text>
+  <text x="375" y="244" text-anchor="middle" class="sublabel">Open Swarm / Seller-Only Seeding</text>
+
+  <!-- Storage Layer -->
+  <rect x="20" y="285" width="480" height="38" fill="#FFF8E1" stroke="#F9A825" class="box"/>
+  <text x="260" y="308" text-anchor="middle" class="label" fill="#F57F17">Content-Addressed Storage: RocksDB (metadata) · Qdrant (vectors) · Filesystem (data chunks)</text>
+
+  <!-- Network Layer -->
+  <rect x="20" y="338" width="480" height="30" fill="#E0F7FA" stroke="#00838F" class="box"/>
+  <text x="260" y="357" text-anchor="middle" class="label" fill="#006064">Peer Network: Bootstrap Nodes · DNS Discovery · mDNS (LAN) · AutoNAT + Relay v2</text>
+
+  <!-- Arrowhead marker -->
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#666"/>
+    </marker>
+  </defs>
+</svg>

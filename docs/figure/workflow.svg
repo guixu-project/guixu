@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="460" viewBox="0 0 500 460">
+  <defs>
+    <style>
+      text { font-family: Helvetica, Arial, sans-serif; }
+      .step { font-size: 9px; font-weight: bold; fill: #fff; }
+      .boxtitle { font-size: 9.5px; font-weight: bold; }
+      .desc { font-size: 7px; fill: #555; }
+      .pathlabel { font-size: 8.5px; font-weight: bold; }
+      .timelabel { font-size: 7.5px; font-weight: bold; }
+    </style>
+    <marker id="a" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0,6 2.5,0 5" fill="#78909C"/>
+    </marker>
+    <marker id="ag" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0,6 2.5,0 5" fill="#2E7D32"/>
+    </marker>
+    <marker id="ar" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto">
+      <polygon points="0 0,6 2.5,0 5" fill="#C62828"/>
+    </marker>
+  </defs>
+
+  <!-- ====== ROW 0: Agent ====== -->
+  <rect x="190" y="10" width="120" height="36" fill="#E3F2FD" stroke="#1565C0" rx="18" ry="18" stroke-width="1.2"/>
+  <text x="250" y="25" text-anchor="middle" class="boxtitle" fill="#1565C0">AI Agent</text>
+  <text x="250" y="36" text-anchor="middle" class="desc">(MCP Client)</text>
+
+  <!-- Arrow Agent → Search -->
+  <line x1="250" y1="46" x2="250" y2="64" stroke="#78909C" stroke-width="1.2" marker-end="url(#a)"/>
+
+  <!-- ====== ROW 1: Search (shared) ====== -->
+  <circle cx="178" cy="82" r="11" fill="#2E7D32"/>
+  <text x="178" y="86" text-anchor="middle" class="step">1</text>
+  <rect x="196" y="68" width="210" height="28" fill="#E8F5E9" stroke="#2E7D32" rx="4" ry="4" stroke-width="1"/>
+  <text x="240" y="82" text-anchor="middle" class="boxtitle" fill="#2E7D32">Search</text>
+  <text x="240" y="91" text-anchor="middle" class="desc">NL Query → DHT + Vector + Kaggle/HF</text>
+  <text x="415" y="86" text-anchor="start" class="desc" fill="#999">共享</text>
+
+  <!-- Arrow Search → Evaluate -->
+  <line x1="250" y1="96" x2="250" y2="114" stroke="#78909C" stroke-width="1.2" marker-end="url(#a)"/>
+
+  <!-- ====== ROW 2: Evaluate (shared) ====== -->
+  <circle cx="178" cy="132" r="11" fill="#E65100"/>
+  <text x="178" y="136" text-anchor="middle" class="step">2</text>
+  <rect x="196" y="118" width="210" height="28" fill="#FFF3E0" stroke="#E65100" rx="4" ry="4" stroke-width="1"/>
+  <text x="240" y="132" text-anchor="middle" class="boxtitle" fill="#E65100">Evaluate</text>
+  <text x="240" y="141" text-anchor="middle" class="desc">Quality Score · Task Fitness · Alternatives</text>
+  <text x="415" y="136" text-anchor="start" class="desc" fill="#999">共享</text>
+
+  <!-- Arrow Evaluate → Diamond -->
+  <line x1="250" y1="146" x2="250" y2="164" stroke="#78909C" stroke-width="1.2" marker-end="url(#a)"/>
+
+  <!-- ====== ROW 3: Decision Diamond ====== -->
+  <polygon points="250,166 278,182 250,198 222,182" fill="#ECEFF1" stroke="#78909C" stroke-width="1.2"/>
+  <text x="250" y="185" text-anchor="middle" font-size="7.5" font-weight="bold" fill="#37474F" font-family="Helvetica">Free?</text>
+
+  <!-- ====== FORK: Left = Free, Right = Paid ====== -->
+
+  <!-- Left arrow from diamond -->
+  <line x1="222" y1="182" x2="130" y2="182" stroke="#2E7D32" stroke-width="1.5"/>
+  <line x1="130" y1="182" x2="130" y2="218" stroke="#2E7D32" stroke-width="1.5" marker-end="url(#ag)"/>
+  <text x="170" y="177" text-anchor="middle" class="pathlabel" fill="#2E7D32">Yes</text>
+
+  <!-- Right arrow from diamond -->
+  <line x1="278" y1="182" x2="370" y2="182" stroke="#C62828" stroke-width="1.5"/>
+  <line x1="370" y1="182" x2="370" y2="218" stroke="#C62828" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="330" y="177" text-anchor="middle" class="pathlabel" fill="#C62828">No</text>
+
+  <!-- ====== FREE PATH (left column, x=30..230) ====== -->
+
+  <!-- Free background -->
+  <rect x="22" y="208" width="216" height="210" fill="#F1F8E9" rx="6" ry="6" stroke="#AED581" stroke-width="0.6" opacity="0.6"/>
+  <text x="130" y="224" text-anchor="middle" class="pathlabel" fill="#2E7D32">Free Data Path</text>
+
+  <!-- Step 3F: Authenticate -->
+  <circle cx="52" cy="252" r="11" fill="#6A1B9A"/>
+  <text x="52" y="256" text-anchor="middle" class="step">3</text>
+  <rect x="70" y="240" width="156" height="24" fill="#F3E5F5" stroke="#6A1B9A" rx="4" ry="4" stroke-width="1"/>
+  <text x="148" y="256" text-anchor="middle" class="boxtitle" fill="#6A1B9A">Authenticate</text>
+  <text x="148" y="260" text-anchor="middle" class="desc"></text>
+  <!-- sub desc below box -->
+  <text x="130" y="274" text-anchor="middle" class="desc">Verify VC (DID) · EAS check</text>
+
+  <!-- Arrow 3F → 4F -->
+  <line x1="130" y1="278" x2="130" y2="294" stroke="#2E7D32" stroke-width="1.2" marker-end="url(#ag)"/>
+
+  <!-- Step 4F: Download -->
+  <circle cx="52" cy="312" r="11" fill="#00695C"/>
+  <text x="52" y="316" text-anchor="middle" class="step">4</text>
+  <rect x="70" y="300" width="156" height="24" fill="#E0F2F1" stroke="#00695C" rx="4" ry="4" stroke-width="1"/>
+  <text x="148" y="316" text-anchor="middle" class="boxtitle" fill="#00695C">Download (Open Swarm)</text>
+  <text x="130" y="334" text-anchor="middle" class="desc">BT v2 · anyone seeds · Merkle ✓</text>
+
+  <!-- Arrow 4F → 5F -->
+  <line x1="130" y1="338" x2="130" y2="354" stroke="#2E7D32" stroke-width="1.2" marker-end="url(#ag)"/>
+
+  <!-- Step 5F: Feedback -->
+  <circle cx="52" cy="372" r="11" fill="#1565C0"/>
+  <text x="52" y="376" text-anchor="middle" class="step">5</text>
+  <rect x="70" y="360" width="156" height="24" fill="#E3F2FD" stroke="#1565C0" rx="4" ry="4" stroke-width="1"/>
+  <text x="148" y="376" text-anchor="middle" class="boxtitle" fill="#1565C0">Use &amp; Feedback</text>
+  <text x="130" y="394" text-anchor="middle" class="desc">Report relevance → reputation ↑</text>
+
+  <!-- Free summary -->
+  <rect x="52" y="400" width="156" height="14" fill="#C8E6C9" rx="7" ry="7"/>
+  <text x="130" y="410" text-anchor="middle" class="timelabel" fill="#1B5E20">⚡ ~5 s · $0</text>
+
+  <!-- ====== PAID PATH (right column, x=262..462) ====== -->
+
+  <!-- Paid background -->
+  <rect x="262" y="208" width="216" height="210" fill="#FBE9E7" rx="6" ry="6" stroke="#EF9A9A" stroke-width="0.6" opacity="0.6"/>
+  <text x="370" y="224" text-anchor="middle" class="pathlabel" fill="#C62828">Paid Data Path</text>
+
+  <!-- Step 3P: Preview -->
+  <circle cx="292" cy="252" r="11" fill="#C62828"/>
+  <text x="292" y="256" text-anchor="middle" class="step">3</text>
+  <rect x="310" y="240" width="156" height="24" fill="#FCE4EC" stroke="#C62828" rx="4" ry="4" stroke-width="1"/>
+  <text x="388" y="256" text-anchor="middle" class="boxtitle" fill="#C62828">Preview &amp; Sample</text>
+  <text x="370" y="274" text-anchor="middle" class="desc">x402 $0.001 · ZKP verify attrs</text>
+
+  <!-- Arrow 3P → 4P -->
+  <line x1="370" y1="278" x2="370" y2="294" stroke="#C62828" stroke-width="1.2" marker-end="url(#ar)"/>
+
+  <!-- Step 4P: Purchase -->
+  <circle cx="292" cy="312" r="11" fill="#B71C1C"/>
+  <text x="292" y="316" text-anchor="middle" class="step">4</text>
+  <rect x="310" y="300" width="156" height="24" fill="#FFEBEE" stroke="#B71C1C" rx="4" ry="4" stroke-width="1"/>
+  <text x="388" y="316" text-anchor="middle" class="boxtitle" fill="#B71C1C">Purchase (Escrow)</text>
+  <text x="370" y="334" text-anchor="middle" class="desc">ERC-8183 lock · Seller-Only + watermark</text>
+
+  <!-- Arrow 4P → 5P -->
+  <line x1="370" y1="338" x2="370" y2="354" stroke="#C62828" stroke-width="1.2" marker-end="url(#ar)"/>
+
+  <!-- Step 5P: Verify & Settle -->
+  <circle cx="292" cy="372" r="11" fill="#6A1B9A"/>
+  <text x="292" y="376" text-anchor="middle" class="step">5</text>
+  <rect x="310" y="360" width="156" height="24" fill="#F3E5F5" stroke="#6A1B9A" rx="4" ry="4" stroke-width="1"/>
+  <text x="388" y="376" text-anchor="middle" class="boxtitle" fill="#6A1B9A">Verify &amp; Settle</text>
+  <text x="370" y="394" text-anchor="middle" class="desc">Merkle ✓ → release escrow → EAS receipt</text>
+
+  <!-- Paid summary -->
+  <rect x="292" y="400" width="156" height="14" fill="#FFCDD2" rx="7" ry="7"/>
+  <text x="370" y="410" text-anchor="middle" class="timelabel" fill="#B71C1C">⏱ ~30 s · $0.50+</text>
+
+  <!-- ====== CONVERGE ====== -->
+  <line x1="130" y1="418" x2="130" y2="440" stroke="#2E7D32" stroke-width="1.2"/>
+  <line x1="130" y1="440" x2="218" y2="440" stroke="#2E7D32" stroke-width="1.2" marker-end="url(#ag)"/>
+
+  <line x1="370" y1="418" x2="370" y2="440" stroke="#C62828" stroke-width="1.2"/>
+  <line x1="370" y1="440" x2="282" y2="440" stroke="#C62828" stroke-width="1.2" marker-end="url(#ar)"/>
+
+  <rect x="220" y="430" width="60" height="20" fill="#E3F2FD" stroke="#1565C0" rx="10" ry="10" stroke-width="1"/>
+  <text x="250" y="444" text-anchor="middle" font-size="7.5" font-weight="bold" fill="#1565C0" font-family="Helvetica">Done ✓</text>
+</svg>
