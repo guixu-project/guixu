@@ -3,3 +3,6 @@
 # 2. Initialize the node (if it hasn't been init yet)./target/release/data-node init
 
 # 3. Full debug start RUST_LOG=debug./target/release/data-node start
+
+
+cd demo-ui && python3 -m http.server 8090

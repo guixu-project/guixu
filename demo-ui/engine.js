@@ -33,14 +33,18 @@ class GuixuEngine {
     });
   }
 
-  // JSON-RPC call to real MCP server
+  // JSON-RPC call to real MCP server (with timeout)
   async rpc(method, params) {
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
       const res = await fetch(RPC_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
       const json = await res.json();
       if (json.error) throw new Error(json.error.message);
       return json.result;
@@ -124,7 +128,8 @@ class GuixuEngine {
       let tcvComps = d.tcv;
       let tcvScore;
 
-      if (this.live && !tcvComps) {
+      if (this.live && !tcvComps && d.source === 'p2p') {
+        // Only call backend for local P2P datasets (they exist in store)
         const evalData = await this.callTool('dataset_evaluate', {
           cid: d.cid,
           task_description: taskDesc,
@@ -146,7 +151,18 @@ class GuixuEngine {
         }
       }
 
-      if (!tcvComps) tcvComps = d.tcv || { schema_fit: 50, temporal_fit: 50, info_gain: 50, quality: 50, community: 50, risk: 0 };
+      // Client-side TCV for external datasets (BT, Kaggle, HF, etc.)
+      if (!tcvComps) {
+        const sizeScore = Math.min(100, (d.schema.rows || 1) / 100);
+        tcvComps = d.tcv || {
+          schema_fit: d.schema.columns.length > 0 ? 60 : 20,
+          temporal_fit: 50,
+          info_gain: 60,
+          quality: Math.min(80, 30 + sizeScore * 0.5),
+          community: d.community.reviews > 0 ? d.community.positive_rate * 80 : 30,
+          risk: d.community.negative_rate * 100 || 0,
+        };
+      }
       if (tcvScore === undefined) tcvScore = computeTCV(tcvComps);
 
       const verdict = tcvVerdict(tcvScore);

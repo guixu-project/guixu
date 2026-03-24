@@ -54,6 +54,13 @@ async function runPipeline() {
   await delay(500);
   completeStep('step2', `${datasets.length} datasets`);
 
+  if (datasets.length === 0) {
+    engine.log('[!]', 'No datasets found. Try a different query or source.');
+    renderLog();
+    $('btnStart').disabled = false;
+    return;
+  }
+
   // Step 3: Evaluate
   activateStep('step3');
   await delay(400);
