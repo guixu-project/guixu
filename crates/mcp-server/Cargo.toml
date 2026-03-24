@@ -5,10 +5,12 @@ edition.workspace = true
 
 [dependencies]
 data-core = { workspace = true }
+data-storage = { workspace = true }
 data-p2p = { workspace = true }
 data-auth = { workspace = true }
 data-valuation = { workspace = true }
 data-search = { workspace = true }
+data-trading = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

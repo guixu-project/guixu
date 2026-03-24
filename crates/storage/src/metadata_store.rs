@@ -3,7 +3,7 @@ use data_core::metadata::DatasetMetadata;
 use data_core::types::DatasetCid;
 use rocksdb::{DB, Options};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Local persistent storage for metadata and node state (RocksDB).
 /// Thread-safe via internal Mutex (RocksDB itself is thread-safe, but we wrap for Arc sharing).

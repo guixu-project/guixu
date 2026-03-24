@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 data-core = { workspace = true }
+data-storage = { workspace = true }
 data-p2p = { workspace = true }
 data-auth = { workspace = true }
 data-mcp-server = { workspace = true }

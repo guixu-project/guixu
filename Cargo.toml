@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/core",
+    "crates/storage",
     "crates/p2p",
     "crates/search",
     "crates/auth",
@@ -20,6 +21,7 @@ repository = "https://github.com/data-protocols/data-protocols"
 [workspace.dependencies]
 # Internal crates
 data-core = { path = "crates/core" }
+data-storage = { path = "crates/storage" }
 data-p2p = { path = "crates/p2p" }
 data-search = { path = "crates/search" }
 data-auth = { path = "crates/auth" }

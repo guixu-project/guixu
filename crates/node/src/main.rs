@@ -10,8 +10,8 @@ use data_core::identity::NodeIdentity;
 use data_core::types::AccessMode;
 use data_mcp_server::server::AppState;
 use data_p2p::dht::DhtIndex;
-use data_p2p::feedback_store::FeedbackStore;
-use data_p2p::storage::MetadataStore;
+use data_storage::feedback_store::FeedbackStore;
+use data_storage::metadata_store::MetadataStore;
 
 #[derive(Parser)]
 #[command(name = "data-node", about = "Guixu: On-Chain Data Valuation for AI Agents")]
