@@ -1,20 +1,26 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use axum::{extract::State, routing::post, Json, Router};
+use axum::body::Bytes;
+use axum::extract::{Multipart, State};
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse};
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde_json::json;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
 use data_core::identity::NodeIdentity;
+use data_core::types::AccessMode;
 use data_p2p::dht::DhtIndex;
 use data_storage::feedback_store::FeedbackStore;
 use data_storage::metadata_store::MetadataStore;
+use data_trading::escrow::EscrowClient;
+use data_trading::mpp::MppClient;
 use data_trading::router::PaymentRouter;
 use data_trading::x402::X402Client;
-use data_trading::mpp::MppClient;
-use data_trading::escrow::EscrowClient;
 use data_search::adapters::default_adapters;
 use data_search::engine::SearchEngine;
 use data_search::intent::IntentParser;
@@ -23,6 +29,7 @@ use data_valuation::tcv::TcvEngine;
 
 use crate::protocol::{McpRequest, McpResponse};
 use crate::tools::all_tool_definitions;
+use crate::web_ui::INDEX_HTML;
 
 /// Shared state accessible by MCP tool handlers.
 pub struct AppState {
@@ -89,20 +96,183 @@ pub async fn run_stdio(state: Arc<AppState>) -> Result<()> {
     Ok(())
 }
 
-/// HTTP bridge for browser-based demo UI.
-/// POST /rpc with JSON-RPC body, returns JSON-RPC response.
+/// HTTP server: MCP JSON-RPC + REST API + embedded Web UI.
 pub async fn run_http(state: Arc<AppState>, port: u16) -> Result<()> {
     let app = Router::new()
+        // Web UI
+        .route("/", get(serve_ui))
+        // REST API for Web UI
+        .route("/api/datasets", get(api_list_datasets))
+        .route("/api/publish", post(api_publish))
+        // MCP JSON-RPC
         .route("/rpc", post(http_rpc_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
     let addr = format!("0.0.0.0:{port}");
-    info!("MCP HTTP bridge listening on http://localhost:{port}/rpc");
+    info!("Guixu Web UI → http://localhost:{port}");
+    info!("MCP HTTP RPC → http://localhost:{port}/rpc");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+// --- Web UI handler ---
+
+async fn serve_ui() -> Html<&'static str> {
+    Html(INDEX_HTML)
+}
+
+// --- REST API: list datasets ---
+
+async fn api_list_datasets(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.store.list_all() {
+        Ok(datasets) => {
+            let items: Vec<serde_json::Value> = datasets
+                .iter()
+                .map(|m| {
+                    json!({
+                        "cid": m.cid.0,
+                        "title": m.title,
+                        "description": m.description,
+                        "schema": {
+                            "columns": m.schema.columns.iter().map(|c| json!({
+                                "name": c.name,
+                                "dtype": c.dtype,
+                            })).collect::<Vec<_>>(),
+                            "row_count": m.schema.row_count,
+                            "size_bytes": m.schema.size_bytes,
+                        },
+                        "price": { "amount": m.price.amount, "currency": m.price.currency },
+                        "provider": m.provider.0,
+                        "access": m.access,
+                        "tags": m.tags,
+                        "created_at": m.created_at.to_rfc3339(),
+                        "updated_at": m.updated_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            (StatusCode::OK, Json(serde_json::Value::Array(items))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+// --- REST API: publish via multipart upload ---
+
+async fn api_publish(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let mut file_data: Option<(String, Bytes)> = None;
+    let mut access = "open".to_string();
+    let mut price = 0.0_f64;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "file" => {
+                let filename = field.file_name().unwrap_or("upload.csv").to_string();
+                match field.bytes().await {
+                    Ok(bytes) => file_data = Some((filename, bytes)),
+                    Err(e) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"error": format!("Failed to read file: {e}")})),
+                        )
+                            .into_response()
+                    }
+                }
+            }
+            "access" => {
+                if let Ok(text) = field.text().await {
+                    access = text;
+                }
+            }
+            "price" => {
+                if let Ok(text) = field.text().await {
+                    price = text.parse().unwrap_or(0.0);
+                }
+            }
+            _ => {
+                // consume other fields (privacy_level, epsilon — used by future versions)
+                let _ = field.bytes().await;
+            }
+        }
+    }
+
+    let (filename, bytes) = match file_data {
+        Some(d) => d,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "No file provided"})),
+            )
+                .into_response()
+        }
+    };
+
+    // Write to temp file, then publish
+    let tmp_dir = std::env::temp_dir().join("guixu-uploads");
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let tmp_path = tmp_dir.join(&filename);
+
+    if let Err(e) = std::fs::write(&tmp_path, &bytes) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("Failed to write temp file: {e}")})),
+        )
+            .into_response();
+    }
+
+    let access_mode = if access == "paid" {
+        AccessMode::Paid
+    } else {
+        AccessMode::Open
+    };
+
+    match data_p2p::publish::publish_file(
+        &tmp_path,
+        &state.identity,
+        &state.dht,
+        &state.store,
+        access_mode,
+        price,
+    )
+    .await
+    {
+        Ok(metadata) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "cid": metadata.cid.0,
+                    "title": metadata.title,
+                    "rows": metadata.schema.row_count,
+                    "size_bytes": metadata.schema.size_bytes,
+                    "columns": metadata.schema.columns.len(),
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+// --- MCP JSON-RPC ---
 
 async fn http_rpc_handler(
     State(state): State<Arc<AppState>>,

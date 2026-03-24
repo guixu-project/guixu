@@ -81,15 +81,26 @@ fn cmd_init(data_dir: Option<String>) -> Result<()> {
 
 async fn cmd_start() -> Result<()> {
     let (config, identity) = load_config_and_identity()?;
-    info!(did = %identity.did.0, "starting full node");
+    info!(did = %identity.did.0, privacy = ?config.privacy_level, "starting full node");
 
     let store = MetadataStore::open(&NodeConfig::db_path())?;
     let feedback_store = FeedbackStore::open(&NodeConfig::config_dir().join("feedback_db"))?;
 
+    // Build privacy config from node config
+    let privacy_config = data_auth::privacy::PrivacyConfig {
+        level: match config.privacy_level {
+            data_core::config::PrivacyLevel::Off => data_auth::privacy::PrivacyLevel::Off,
+            data_core::config::PrivacyLevel::Standard => data_auth::privacy::PrivacyLevel::Standard,
+            data_core::config::PrivacyLevel::Strict => data_auth::privacy::PrivacyLevel::Strict,
+        },
+        epsilon: config.privacy_epsilon,
+        ..Default::default()
+    };
+
     // Start P2P network
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(256);
     let net_handle = data_p2p::network::start(&config, identity.seed(), event_tx).await?;
-    let dht = DhtIndex::new(net_handle);
+    let dht = DhtIndex::with_privacy(net_handle, privacy_config.clone());
 
     // Start file watcher
     let mut watch_rx = data_p2p::watchdir::watch(&config.data_dir)?;
@@ -112,12 +123,14 @@ async fn cmd_start() -> Result<()> {
         }
     });
 
-    // Handle file watcher events → auto-publish
+    // Handle file watcher events → auto-publish with privacy
     let identity2 = NodeIdentity::from_seed(identity.seed());
     let store_watch = store.clone();
     let cmd_tx = dht.handle().cmd_tx.clone();
     let local_peer_id = dht.handle().local_peer_id;
     let price_default = config.price_default;
+    let ephemeral_dids = config.ephemeral_dids;
+    let publish_privacy = privacy_config.clone();
     tokio::spawn(async move {
         while let Some(event) = watch_rx.recv().await {
             let path = match event {
@@ -129,19 +142,39 @@ async fn cmd_start() -> Result<()> {
                 cmd_tx: cmd_tx.clone(),
                 local_peer_id,
             });
-            match data_p2p::publish::publish_file(
+            match data_p2p::publish::publish_file_with_privacy(
                 &path,
                 &identity2,
                 &publish_dht,
                 &store_watch,
                 AccessMode::Open,
                 price_default,
+                &publish_privacy,
+                ephemeral_dids,
             )
             .await
             {
                 Ok(m) => info!(cid = %m.cid.0, "auto-published"),
                 Err(e) => tracing::warn!(err = %e, "auto-publish failed"),
             }
+        }
+    });
+
+    // Start embedded Web UI + MCP HTTP server
+    let state = Arc::new(AppState::new(
+        NodeIdentity::from_seed(identity.seed()),
+        DhtIndex::new(data_p2p::network::NetworkHandle {
+            cmd_tx: dht.handle().cmd_tx.clone(),
+            local_peer_id: dht.handle().local_peer_id,
+        }),
+        store,
+        feedback_store,
+    ));
+    let http_port = 3927;
+    info!("Web UI → http://localhost:{http_port}");
+    tokio::spawn(async move {
+        if let Err(e) = data_mcp_server::server::run_http(state, http_port).await {
+            tracing::warn!(err = %e, "HTTP server error");
         }
     });
 
@@ -158,10 +191,20 @@ async fn cmd_mcp(mode: String) -> Result<()> {
     let store = MetadataStore::open(&NodeConfig::db_path())?;
     let feedback_store = FeedbackStore::open(&NodeConfig::config_dir().join("feedback_db"))?;
 
+    let privacy_config = data_auth::privacy::PrivacyConfig {
+        level: match config.privacy_level {
+            data_core::config::PrivacyLevel::Off => data_auth::privacy::PrivacyLevel::Off,
+            data_core::config::PrivacyLevel::Standard => data_auth::privacy::PrivacyLevel::Standard,
+            data_core::config::PrivacyLevel::Strict => data_auth::privacy::PrivacyLevel::Strict,
+        },
+        epsilon: config.privacy_epsilon,
+        ..Default::default()
+    };
+
     // Start P2P network
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(256);
     let net_handle = data_p2p::network::start(&config, identity.seed(), event_tx).await?;
-    let dht = DhtIndex::new(net_handle);
+    let dht = DhtIndex::with_privacy(net_handle, privacy_config);
 
     // Handle gossip → local store in background
     let store_bg = store.clone();

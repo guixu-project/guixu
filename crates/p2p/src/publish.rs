@@ -1,8 +1,9 @@
 use anyhow::Result;
+use data_auth::privacy::{sanitize_metadata, PrivacyConfig};
 use data_core::identity::{sha256_hex, NodeIdentity};
 use data_core::metadata::{DatasetMetadata, Provenance};
 use data_core::types::*;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::path::Path;
 use tracing::info;
 
@@ -11,7 +12,7 @@ use crate::storage::MetadataStore;
 
 /// Publish a local file as a dataset to the P2P network.
 /// This is the core auto-publish pipeline:
-///   file → read → hash → metadata → sign → store → DHT PUT → GossipSub broadcast
+///   file → read → hash → metadata → privacy sanitize → sign → store → DHT PUT → GossipSub broadcast
 pub async fn publish_file(
     path: &Path,
     identity: &NodeIdentity,
@@ -19,6 +20,20 @@ pub async fn publish_file(
     store: &MetadataStore,
     access: AccessMode,
     price: f64,
+) -> Result<DatasetMetadata> {
+    publish_file_with_privacy(path, identity, dht, store, access, price, &PrivacyConfig::default(), false).await
+}
+
+/// Publish with explicit privacy configuration.
+pub async fn publish_file_with_privacy(
+    path: &Path,
+    identity: &NodeIdentity,
+    dht: &DhtIndex,
+    store: &MetadataStore,
+    access: AccessMode,
+    price: f64,
+    privacy: &PrivacyConfig,
+    ephemeral_did: bool,
 ) -> Result<DatasetMetadata> {
     let file_name = path
         .file_stem()
@@ -41,7 +56,14 @@ pub async fn publish_file(
     // 4. Infer basic schema from file extension
     let (schema, tags) = infer_schema(path, &data)?;
 
-    // 5. Build metadata
+    // 5. Use ephemeral DID if configured (prevents cross-dataset correlation)
+    let signing_identity = if ephemeral_did {
+        identity.derive_ephemeral(&cid.0)
+    } else {
+        NodeIdentity::from_seed(identity.seed())
+    };
+
+    // 6. Build metadata
     let now = chrono::Utc::now();
     let license = License {
         spdx_id: "CC-BY-4.0".into(),
@@ -49,7 +71,7 @@ pub async fn publish_file(
         derivative_allowed: true,
     };
 
-    let mut metadata = DatasetMetadata {
+    let metadata = DatasetMetadata {
         cid: cid.clone(),
         info_hash,
         title: file_name.clone(),
@@ -60,7 +82,7 @@ pub async fn publish_file(
         access,
         price: if price > 0.0 { Price::usdc(price) } else { Price::free() },
         license,
-        provider: identity.did.clone(),
+        provider: signing_identity.did.clone(),
         signature: String::new(), // filled below
         provenance: Provenance::Original,
         created_at: now,
@@ -68,29 +90,35 @@ pub async fn publish_file(
         verifiable_credential: None,
     };
 
-    // 6. Sign metadata
-    let canonical = metadata.canonical_bytes();
-    metadata.signature = identity.sign(&canonical);
+    // 7. Apply privacy sanitization (DP noise, column hashing, tag filtering)
+    let sanitized = sanitize_metadata(&metadata, privacy)?;
 
-    // 7. Store locally
+    // 8. Sign the sanitized metadata (this is what gets published)
+    let canonical = sanitized.canonical_bytes();
+    let mut published = sanitized;
+    published.signature = signing_identity.sign(&canonical);
+
+    // 9. Store original locally (for owner's reference), publish sanitized
     store.put(&metadata)?;
     store.put_file_path(&cid, path)?;
 
-    // 8. DHT PUT
-    dht.put_metadata(&metadata).await?;
+    // 10. DHT PUT (sanitized)
+    dht.put_metadata(&published).await?;
 
-    // 9. GossipSub broadcast
-    dht.broadcast_metadata(&metadata).await?;
+    // 11. GossipSub broadcast (sanitized)
+    dht.broadcast_metadata(&published).await?;
 
     info!(
         cid = %cid.0,
         title = %file_name,
-        rows = metadata.schema.row_count,
-        size = metadata.schema.size_bytes,
+        rows = published.schema.row_count,
+        size = published.schema.size_bytes,
+        privacy = ?privacy.level,
+        ephemeral_did = ephemeral_did,
         "✅ dataset published"
     );
 
-    Ok(metadata)
+    Ok(published)
 }
 
 /// Infer a basic schema from file content. For M1 we do minimal CSV parsing.

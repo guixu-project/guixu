@@ -76,6 +76,19 @@ impl NodeIdentity {
         buf.extend_from_slice(&vk.to_bytes());
         Did(format!("did:key:z{}", bs58::encode(&buf).into_string()))
     }
+
+    /// Derive an ephemeral identity for a specific dataset CID.
+    ///
+    /// Uses HMAC-like derivation: `child_seed = SHA-256(parent_seed || cid)`.
+    /// This produces a unique, unlinkable DID per dataset while allowing the
+    /// owner to prove ownership by re-deriving from the master seed.
+    pub fn derive_ephemeral(&self, dataset_cid: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(self.signing_key.as_bytes());
+        hasher.update(dataset_cid.as_bytes());
+        let child_seed: [u8; 32] = hasher.finalize().into();
+        Self::from_seed(&child_seed)
+    }
 }
 
 /// Compute SHA-256 hash of bytes, return hex string.

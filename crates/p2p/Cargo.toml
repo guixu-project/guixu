@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 data-core = { workspace = true }
+data-auth = { workspace = true }
 data-storage = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

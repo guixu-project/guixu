@@ -4,7 +4,7 @@ use libp2p::{
     gossipsub, identify, kad,
     mdns::tokio::Behaviour as Mdns,
     noise, tcp, yamux,
-    swarm::SwarmEvent,
+    swarm::{behaviour::toggle::Toggle, SwarmEvent},
     Multiaddr, PeerId, StreamProtocol, Swarm,
 };
 use std::collections::hash_map::DefaultHasher;
@@ -34,7 +34,7 @@ pub enum NetworkCommand {
 struct Behaviour {
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     gossipsub: gossipsub::Behaviour,
-    mdns: Mdns,
+    mdns: Toggle<Mdns>,
     identify: identify::Behaviour,
 }
 
@@ -102,8 +102,13 @@ pub async fn start(
     )
     .map_err(|e| anyhow::anyhow!("gossipsub: {e}"))?;
 
-    // mDNS
-    let mdns = Mdns::new(Default::default(), local_peer_id)?;
+    // mDNS — disabled by default for privacy (prevents local IP broadcast)
+    let mdns = if config.disable_mdns {
+        info!("mDNS disabled (privacy mode)");
+        Toggle::from(None)
+    } else {
+        Toggle::from(Some(Mdns::new(Default::default(), local_peer_id)?))
+    };
 
     // Identify
     let identify = identify::Behaviour::new(identify::Config::new(
