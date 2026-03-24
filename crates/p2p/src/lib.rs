@@ -3,6 +3,7 @@ pub mod dht;
 pub mod gossip;
 pub mod watchdir;
 pub mod publish;
+pub mod torrent;
 
 // Re-export from data-storage for backward compatibility
 pub use data_storage::metadata_store as storage;

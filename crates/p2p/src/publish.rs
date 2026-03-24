@@ -54,6 +54,8 @@ pub async fn publish_file_with_privacy(
     let info_hash = content_hash.clone();
 
     // 4. Infer basic schema from file extension
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let data_type = DataType::from_ext(ext);
     let (schema, tags) = infer_schema(path, &data)?;
 
     // 5. Use ephemeral DID if configured (prevents cross-dataset correlation)
@@ -77,8 +79,10 @@ pub async fn publish_file_with_privacy(
         title: file_name.clone(),
         description: None,
         tags,
+        data_type,
         schema,
         stats: None,
+        video_meta: None,
         access,
         price: if price > 0.0 { Price::usdc(price) } else { Price::free() },
         license,
@@ -176,6 +180,24 @@ fn infer_schema(path: &Path, data: &[u8]) -> Result<(DatasetSchema, Vec<String>)
             Ok((
                 DatasetSchema { columns: vec![], row_count: 0, size_bytes },
                 vec!["parquet".into()],
+            ))
+        }
+        "mp4" | "avi" | "mkv" | "mov" | "webm" => {
+            Ok((
+                DatasetSchema { columns: vec![], row_count: 0, size_bytes },
+                vec!["video".into(), ext.into()],
+            ))
+        }
+        "png" | "jpg" | "jpeg" | "webp" | "tiff" => {
+            Ok((
+                DatasetSchema { columns: vec![], row_count: 0, size_bytes },
+                vec!["image".into(), ext.into()],
+            ))
+        }
+        "mp3" | "wav" | "flac" | "ogg" => {
+            Ok((
+                DatasetSchema { columns: vec![], row_count: 0, size_bytes },
+                vec!["audio".into(), ext.into()],
             ))
         }
         _ => Ok((

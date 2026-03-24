@@ -15,8 +15,10 @@ pub struct DatasetMetadata {
     pub title: String,
     pub description: Option<String>,
     pub tags: Vec<String>,
+    pub data_type: DataType,
     pub schema: DatasetSchema,
     pub stats: Option<DatasetStats>,
+    pub video_meta: Option<VideoMeta>,
 
     // --- Access ---
     pub access: AccessMode,

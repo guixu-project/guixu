@@ -1,6 +1,9 @@
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::DatasetMetadata;
+use data_core::types::DataType;
 use serde::{Deserialize, Serialize};
+
+use crate::video_evaluator::VideoEvaluator;
 
 /// Task-Conditioned Value (TCV) engine.
 ///
@@ -71,6 +74,18 @@ impl TcvEngine {
         let quality_score = self.compute_quality(metadata);
         let community = signal.score_for_task(&task.task_type);
         let risk = signal.risk_penalty();
+
+        // Type-aware bonus: blend domain-specific score into quality dimension
+        let type_bonus = match metadata.data_type {
+            DataType::Video => {
+                let vr = VideoEvaluator::evaluate(metadata);
+                // Video quality replaces half of generic quality
+                vr.total * 0.5
+            }
+            _ => 0.0,
+        };
+        let quality_score = quality_score * (1.0 - if type_bonus > 0.0 { 0.5 } else { 0.0 })
+            + type_bonus;
 
         // TCV in range [-100, +100]
         let raw = ALPHA * schema_fit

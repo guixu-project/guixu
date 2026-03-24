@@ -31,6 +31,31 @@ pub struct License {
     pub derivative_allowed: bool,
 }
 
+/// Data type of a dataset — drives type-aware valuation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DataType {
+    Tabular,
+    Video,
+    Image,
+    Audio,
+    Text,
+}
+
+impl DataType {
+    /// Infer from file extension.
+    pub fn from_ext(ext: &str) -> Self {
+        match ext {
+            "csv" | "tsv" | "parquet" | "arrow" => Self::Tabular,
+            "mp4" | "avi" | "mkv" | "mov" | "webm" => Self::Video,
+            "png" | "jpg" | "jpeg" | "webp" | "tiff" => Self::Image,
+            "mp3" | "wav" | "flac" | "ogg" => Self::Audio,
+            "txt" | "md" | "jsonl" => Self::Text,
+            _ => Self::Tabular, // default fallback
+        }
+    }
+}
+
 /// Column definition in a dataset schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnDef {
@@ -46,6 +71,21 @@ pub struct DatasetSchema {
     pub columns: Vec<ColumnDef>,
     pub row_count: u64,
     pub size_bytes: u64,
+}
+
+/// Video-specific metadata for type-aware valuation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoMeta {
+    pub duration_secs: f64,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub codec: String,
+    pub has_audio: bool,
+    /// Number of distinct scenes (shot boundary detection).
+    pub scene_count: Option<u32>,
+    /// Labels / categories if annotated.
+    pub labels: Vec<String>,
 }
 
 /// Statistical summary embedded in metadata.

@@ -42,6 +42,8 @@ fn make_metadata(title: &str, columns: &[(&str, &str)], price: f64) -> DatasetMe
         created_at: Utc::now(),
         updated_at: Utc::now(),
         verifiable_credential: None,
+        data_type: DataType::Tabular,
+        video_meta: None,
     }
 }
 
