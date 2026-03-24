@@ -305,7 +305,7 @@ async fn dispatch_tool(name: &str, args: serde_json::Value, state: &AppState) ->
         }
 
         // ---------------------------------------------------------------
-        // dataset_purchase: automated payment via x402 / MPP
+        // dataset_purchase: automated payment via x402 / MPP + file delivery
         // ---------------------------------------------------------------
         "dataset_purchase" => {
             let cid_str = args.get("cid").and_then(|v| v.as_str()).unwrap_or("");
@@ -336,6 +336,31 @@ async fn dispatch_tool(name: &str, args: serde_json::Value, state: &AppState) ->
                 ("stripe_mpp", "Session payment via Stripe Machine Payment Protocol")
             };
 
+            // File delivery: local file path if we published it, otherwise torrent download
+            let delivery = match state.store.get_file_path(&cid)? {
+                Some(path) if path.exists() => {
+                    json!({
+                        "method": "local",
+                        "file_path": path.to_string_lossy(),
+                        "size_bytes": std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                    })
+                }
+                _ => {
+                    // Remote dataset: attempt torrent download to data_dir
+                    let download_dir = state.store.get_file_path(
+                        &DatasetCid("__config_data_dir__".into())
+                    )?.unwrap_or_else(|| std::path::PathBuf::from("/tmp/guixu-downloads"));
+                    let dest = download_dir.join(format!("{}.dat", &cid_str[..16.min(cid_str.len())]));
+                    // TODO: real BitTorrent v2 download via torrent.rs
+                    json!({
+                        "method": "torrent_pending",
+                        "info_hash": metadata.info_hash,
+                        "download_path": dest.to_string_lossy(),
+                        "note": "BitTorrent v2 download not yet implemented — use DHT peer to fetch",
+                    })
+                }
+            };
+
             Ok(json!({
                 "status": "purchased",
                 "cid": cid_str,
@@ -344,6 +369,50 @@ async fn dispatch_tool(name: &str, args: serde_json::Value, state: &AppState) ->
                 "protocol_description": description,
                 "tx_id": uuid::Uuid::new_v4().to_string(),
                 "on_chain_receipt": "EAS attestation simulated (Base L2)",
+                "delivery": delivery,
+            })
+            .to_string())
+        }
+
+        // ---------------------------------------------------------------
+        // dataset_reviews: list all on-chain feedback for a dataset
+        // ---------------------------------------------------------------
+        "dataset_reviews" => {
+            let cid_str = args.get("cid").and_then(|v| v.as_str()).unwrap_or("");
+            let cid = DatasetCid(cid_str.to_string());
+
+            let feedbacks = state.feedback_store.get_for_dataset(&cid)?;
+            let signal = state.feedback_store.compute_signal(&cid)?;
+
+            let reviews: Vec<serde_json::Value> = feedbacks
+                .iter()
+                .map(|fb| {
+                    json!({
+                        "feedback_id": fb.id,
+                        "agent": fb.agent_did.0,
+                        "task_type": fb.task_type,
+                        "task_description": fb.task_description,
+                        "relevance_score": fb.relevance_score,
+                        "quality_rating": fb.quality_rating,
+                        "task_success": fb.task_success,
+                        "value_assessment": fb.value_assessment,
+                        "comment": fb.comment,
+                        "timestamp": fb.timestamp.to_rfc3339(),
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "cid": cid_str,
+                "total_reviews": signal.total_reviews,
+                "summary": {
+                    "avg_relevance": signal.avg_relevance,
+                    "avg_quality": signal.avg_quality,
+                    "positive_rate": signal.positive_rate,
+                    "negative_rate": signal.negative_rate,
+                    "task_breakdown": signal.task_signals,
+                },
+                "reviews": reviews,
             })
             .to_string())
         }

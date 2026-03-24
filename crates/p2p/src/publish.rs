@@ -74,6 +74,7 @@ pub async fn publish_file(
 
     // 7. Store locally
     store.put(&metadata)?;
+    store.put_file_path(&cid, path)?;
 
     // 8. DHT PUT
     dht.put_metadata(&metadata).await?;

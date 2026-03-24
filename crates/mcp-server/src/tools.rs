@@ -110,5 +110,16 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["file_path"]
             }),
         },
+        ToolDefinition {
+            name: "dataset_reviews".into(),
+            description: "List all on-chain feedback/reviews for a dataset (like a product review page). Shows individual reviews and aggregated community signal.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cid": { "type": "string", "description": "Dataset CID to look up reviews for" }
+                },
+                "required": ["cid"]
+            }),
+        },
     ]
 }
