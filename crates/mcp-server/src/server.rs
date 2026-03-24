@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use axum::{extract::State, routing::post, Json, Router};
 use serde_json::json;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tower_http::cors::CorsLayer;
 use tracing::info;
 
 use data_core::feedback::{CommunitySignal, DatasetFeedback, ValueAssessment};
@@ -81,6 +83,28 @@ pub async fn run_stdio(state: Arc<AppState>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// HTTP bridge for browser-based demo UI.
+/// POST /rpc with JSON-RPC body, returns JSON-RPC response.
+pub async fn run_http(state: Arc<AppState>, port: u16) -> Result<()> {
+    let app = Router::new()
+        .route("/rpc", post(http_rpc_handler))
+        .layer(CorsLayer::permissive())
+        .with_state(state);
+
+    let addr = format!("0.0.0.0:{port}");
+    info!("MCP HTTP bridge listening on http://localhost:{port}/rpc");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn http_rpc_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<McpRequest>,
+) -> Json<McpResponse> {
+    Json(handle_request(req, &state).await)
 }
 
 async fn handle_request(req: McpRequest, state: &AppState) -> McpResponse {

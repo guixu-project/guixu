@@ -182,7 +182,11 @@ async fn cmd_mcp(mode: String) -> Result<()> {
         feedback_store,
     ));
 
-    data_mcp_server::server::run_stdio(state).await
+    if mode == "http" {
+        data_mcp_server::server::run_http(state, 3927).await
+    } else {
+        data_mcp_server::server::run_stdio(state).await
+    }
 }
 
 fn load_config_and_identity() -> Result<(NodeConfig, NodeIdentity)> {
