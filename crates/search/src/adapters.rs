@@ -102,6 +102,88 @@ impl ExternalAdapter for IpfsAdapter {
 }
 
 // ---------------------------------------------------------------------------
+// BitTorrent — search via bitsearch.to public API
+// ---------------------------------------------------------------------------
+
+pub struct BitTorrentAdapter {
+    client: reqwest::Client,
+    api_base: String,
+}
+
+impl Default for BitTorrentAdapter {
+    fn default() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_base: "https://bitsearch.to/api/v1".into(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for BitTorrentAdapter {
+    fn name(&self) -> &str { "bittorrent" }
+    fn source_type(&self) -> DataSource { DataSource::BitTorrent }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let resp = self
+            .client
+            .get(format!("{}/search", self.api_base))
+            .query(&[
+                ("q", query),
+                ("limit", &limit.min(100).to_string()),
+                ("sort", "seeders"),
+            ])
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        let results = resp
+            .get("results")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(results
+            .into_iter()
+            .filter_map(|item| {
+                let infohash = item.get("infohash")?.as_str()?;
+                let title = item.get("title")?.as_str()?;
+                let size = item.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                let seeders = item.get("seeders").and_then(|v| v.as_u64()).unwrap_or(0);
+                let created = item
+                    .get("createdAt")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+
+                Some(SearchResult {
+                    cid: DatasetCid(infohash.to_string()),
+                    title: title.to_string(),
+                    description: Some(format!("{seeders} seeders")),
+                    schema: DatasetSchema {
+                        columns: vec![],
+                        row_count: 0,
+                        size_bytes: size,
+                    },
+                    quality: None,
+                    price: Price::free(),
+                    license: License {
+                        spdx_id: "unknown".into(),
+                        commercial_use: false,
+                        derivative_allowed: false,
+                    },
+                    provider: Did(format!("bt:{infohash}")),
+                    source: DataSource::BitTorrent,
+                    created_at: created,
+                })
+            })
+            .collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Database adapters (PostgreSQL, DuckDB)
 // ---------------------------------------------------------------------------
 
@@ -159,6 +241,7 @@ pub fn default_adapters() -> Vec<Box<dyn ExternalAdapter>> {
         Box::new(KaggleAdapter::default()),
         Box::new(HuggingFaceAdapter::default()),
         Box::new(IpfsAdapter::default()),
+        Box::new(BitTorrentAdapter::default()),
         Box::new(PostgreSqlAdapter::default()),
         Box::new(DuckDbAdapter::default()),
     ]

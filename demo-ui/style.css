@@ -236,6 +236,7 @@ textarea:focus { outline: none; border-color: var(--accent); }
 .src-p2p { background: #f4f3ff; color: var(--purple); border: 1px solid #e4e0fb; }
 .src-kaggle { background: #f0f9ff; color: var(--cyan); border: 1px solid #b9e6fe; }
 .src-huggingface { background: #fffaeb; color: var(--yellow); border: 1px solid #fedf89; }
+.src-bittorrent { background: #fef3f2; color: var(--orange); border: 1px solid #fecdca; }
 
 /* Eval results */
 .eval-list { display: flex; flex-direction: column; gap: 4px; }
@@ -422,6 +423,7 @@ textarea:focus { outline: none; border-color: var(--accent); }
 .ledger-entry.type-search { border-left: 3px solid var(--accent); }
 .ledger-entry.type-evaluate { border-left: 3px solid var(--cyan); }
 .ledger-entry.type-purchase { border-left: 3px solid var(--green); }
+.ledger-entry.type-download { border-left: 3px solid var(--orange); }
 .ledger-entry.type-feedback { border-left: 3px solid var(--purple); }
 .ledger-entry.type-attestation { border-left: 3px solid var(--yellow); }
 .ledger-type {

@@ -30,6 +30,7 @@ async function runPipeline() {
   const query = $('taskInput').value;
   const taskType = $('taskType').value;
   const budget = parseFloat($('budget').value) || 5.0;
+  const sourceFilter = $('sourceFilter').value;
 
   // Probe server
   await engine.init();
@@ -44,7 +45,7 @@ async function runPipeline() {
 
   // Step 2: Search
   activateStep('step2');
-  const { datasets, sources } = await engine.search(query, taskType);
+  const { datasets, sources } = await engine.search(query, taskType, sourceFilter);
   renderSources(sources);
   await delay(300);
   renderSearchResults(datasets);
@@ -132,9 +133,9 @@ function resetUI() {
 
 // --- Renderers ---
 function renderSources(sources) {
-  const allSources = ['P2P DHT', 'Kaggle', 'HuggingFace', 'IPFS', 'PostgreSQL', 'DuckDB'];
+  const allSources = ['P2P DHT', 'Kaggle', 'HuggingFace', 'BitTorrent', 'IPFS', 'PostgreSQL', 'DuckDB'];
   $('sourceTags').innerHTML = allSources.map(s => {
-    const found = sources.some(src => s.toLowerCase().includes(src));
+    const found = sources.some(src => s.toLowerCase().replace(/\s/g,'').includes(src));
     return `<span class="source-tag ${found ? 'found' : ''}">${s}${found ? ' +' : ''}</span>`;
   }).join('');
 }
@@ -147,9 +148,9 @@ function renderSearchResults(datasets) {
         ${d.title}
       </div>
       <div class="result-meta">
-        <span>${d.schema.columns.length} cols · ${d.schema.rows.toLocaleString()} rows · ${d.schema.size}</span>
+        <span>${d.schema.columns.length > 0 ? d.schema.columns.length + ' cols · ' : ''}${d.schema.rows > 0 ? d.schema.rows.toLocaleString() + ' rows · ' : ''}${d.schema.size}</span>
         <span>${d.price === 0 ? 'Free' : '$' + d.price.toFixed(4)}</span>
-        <span>${d.community.reviews} reviews</span>
+        <span>${d.source === 'bittorrent' ? (d.description || '') : d.community.reviews + ' reviews'}</span>
       </div>
     </div>
   `).join('');
@@ -214,14 +215,15 @@ function renderTcvBreakdown(dataset) {
 }
 
 function renderPurchase(dataset, info) {
+  const isBt = dataset.source === 'bittorrent';
   $('purchaseResult').innerHTML = `
-    <div class="purchase-card">
+    <div class="purchase-card" ${isBt ? 'style="border-color:var(--orange)"' : ''}>
       <div class="purchase-row"><span class="label">Dataset</span><span>${dataset.title}</span></div>
-      <div class="purchase-row"><span class="label">Price</span><span>$${dataset.price.toFixed(4)}</span></div>
-      <div class="purchase-row"><span class="label">Gas</span><span>$${info.gasCost.toFixed(4)}</span></div>
+      <div class="purchase-row"><span class="label">Price</span><span>${isBt ? 'Free (BT)' : '$' + dataset.price.toFixed(4)}</span></div>
+      ${isBt ? '' : `<div class="purchase-row"><span class="label">Gas</span><span>$${info.gasCost.toFixed(4)}</span></div>`}
       <div class="purchase-row"><span class="label">Protocol</span><span class="purchase-protocol">${info.pay.protocol}</span></div>
-      <div class="purchase-row"><span class="label">Delivery</span><span>${info.delivery} · ${dataset.schema.size}</span></div>
-      <div class="purchase-row"><span class="label">TX</span><span style="font-family:monospace;font-size:10px">${shortHash(info.txId)}</span></div>
+      <div class="purchase-row"><span class="label">Delivery</span><span>${info.delivery}${!isBt ? ' · ' + dataset.schema.size : ''}</span></div>
+      <div class="purchase-row"><span class="label">${isBt ? 'InfoHash' : 'TX'}</span><span style="font-family:monospace;font-size:10px">${shortHash(info.txId)}</span></div>
     </div>`;
 }
 
@@ -254,7 +256,7 @@ function renderLedger() {
     </div>`
   ).join('');
 
-  const txCount = engine.ledger.filter(l => l.type === 'purchase').length;
+  const txCount = engine.ledger.filter(l => l.type === 'purchase' || l.type === 'download').length;
   const attestCount = engine.ledger.filter(l => l.type === 'attestation' || l.type === 'feedback').length;
   $('statTx').textContent = txCount;
   $('statCost').textContent = '$' + engine.totalCost.toFixed(4);

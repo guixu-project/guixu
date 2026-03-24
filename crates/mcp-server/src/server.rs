@@ -10,11 +10,12 @@ use axum::{Json, Router};
 use serde_json::json;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tower_http::cors::CorsLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 use data_core::identity::NodeIdentity;
 use data_core::types::AccessMode;
 use data_p2p::dht::DhtIndex;
+use data_p2p::torrent::TorrentEngine;
 use data_storage::feedback_store::FeedbackStore;
 use data_storage::metadata_store::MetadataStore;
 use data_trading::escrow::EscrowClient;
@@ -40,6 +41,7 @@ pub struct AppState {
     pub tcv_engine: TcvEngine,
     pub search_engine: SearchEngine,
     pub payment_router: PaymentRouter,
+    pub torrent_engine: Option<TorrentEngine>,
 }
 
 impl AppState {
@@ -62,6 +64,7 @@ impl AppState {
             tcv_engine: TcvEngine,
             search_engine,
             payment_router: PaymentRouter::new(X402Client, MppClient {}, EscrowClient),
+            torrent_engine: None,
         }
     }
 }
@@ -128,6 +131,7 @@ async fn serve_ui() -> Html<&'static str> {
 async fn api_list_datasets(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    info!("api.list_datasets");
     match state.store.list_all() {
         Ok(datasets) => {
             let items: Vec<serde_json::Value> = datasets
@@ -248,6 +252,7 @@ async fn api_publish(
     .await
     {
         Ok(metadata) => {
+            info!(cid = %metadata.cid.0, title = %metadata.title, "api.publish.ok");
             let _ = std::fs::remove_file(&tmp_path);
             (
                 StatusCode::OK,
@@ -282,6 +287,8 @@ async fn http_rpc_handler(
 }
 
 async fn handle_request(req: McpRequest, state: &AppState) -> McpResponse {
+    info!(method = %req.method, id = %req.id, "mcp.request");
+
     match req.method.as_str() {
         "initialize" => McpResponse::success(
             req.id,
@@ -316,7 +323,10 @@ async fn handle_request(req: McpRequest, state: &AppState) -> McpResponse {
 }
 
 async fn dispatch_tool(name: &str, args: serde_json::Value, state: &AppState) -> Result<String> {
-    match name {
+    let start = std::time::Instant::now();
+    info!(tool = name, args = %args, "mcp.tool.call");
+
+    let result = match name {
         "dataset_search" => crate::handlers::search::handle(args, state).await,
         "dataset_evaluate" => crate::handlers::evaluate::handle(args, state).await,
         "dataset_feedback" => crate::handlers::feedback::handle(args, state).await,
@@ -324,6 +334,15 @@ async fn dispatch_tool(name: &str, args: serde_json::Value, state: &AppState) ->
         "dataset_reviews" => crate::handlers::reviews::handle(args, state).await,
         "dataset_verify" => crate::handlers::misc::handle_verify(args, state).await,
         "dataset_publish" => crate::handlers::misc::handle_publish(args, state).await,
+        "dataset_bt_download" => crate::handlers::bt_download::handle(args, state).await,
         _ => Ok(format!("Tool '{name}' not yet implemented")),
+    };
+
+    let elapsed_ms = start.elapsed().as_millis();
+    match &result {
+        Ok(_) => info!(tool = name, elapsed_ms, "mcp.tool.ok"),
+        Err(e) => warn!(tool = name, elapsed_ms, error = %e, "mcp.tool.error"),
     }
+
+    result
 }

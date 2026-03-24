@@ -121,5 +121,16 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["cid"]
             }),
         },
+        ToolDefinition {
+            name: "dataset_bt_download".into(),
+            description: "Download a dataset from the BitTorrent network by info hash. Use dataset_search with source=bittorrent to find info hashes first.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "info_hash": { "type": "string", "description": "BitTorrent info hash (hex)" }
+                },
+                "required": ["info_hash"]
+            }),
+        },
     ]
 }

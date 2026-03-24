@@ -65,11 +65,13 @@ class GuixuEngine {
   }
 
   // Step 2: Search
-  async search(query, taskType) {
-    this.log('[S]', `dataset_search("${query}")`);
+  async search(query, taskType, sourceFilter) {
+    this.log('[S]', `dataset_search("${query}"${sourceFilter ? `, source=${sourceFilter}` : ''})`);
 
     if (this.live) {
-      const data = await this.callTool('dataset_search', { query, limit: 10 });
+      const filters = {};
+      if (sourceFilter) filters.source = sourceFilter;
+      const data = await this.callTool('dataset_search', { query, filters, limit: 10 });
       if (data && Array.isArray(data) && data.length > 0) {
         this.datasets = data.map(r => ({
           cid: r.cid,
@@ -90,7 +92,6 @@ class GuixuEngine {
             negative_rate: parseFloat(r.community?.negative_rate) / 100 || 0,
             task_signals: [],
           },
-          // TCV will be filled in evaluate step
           tcv: null,
           _raw: r,
         }));
@@ -105,6 +106,9 @@ class GuixuEngine {
     let key = 'gdp-prediction';
     if (taskType === 'classification') key = 'classification';
     this.datasets = DATASETS[key] || DATASETS['gdp-prediction'];
+    if (sourceFilter) {
+      this.datasets = this.datasets.filter(d => d.source === sourceFilter);
+    }
     const sources = [...new Set(this.datasets.map(d => d.source))];
     this.log('[S]', `Mock: ${this.datasets.length} results from ${sources.length} sources`);
     this.addLedger('search', `query="${query}" > ${this.datasets.length} results`);
@@ -163,6 +167,11 @@ class GuixuEngine {
   async purchase(dataset) {
     const m = this.getMode();
 
+    // BT datasets: download instead of purchase
+    if (dataset.source === 'bittorrent') {
+      return this.btDownload(dataset);
+    }
+
     if (this.live) {
       const data = await this.callTool('dataset_purchase', { cid: dataset.cid, max_price: 10 });
       if (data && data.status === 'purchased') {
@@ -191,6 +200,33 @@ class GuixuEngine {
     const txId = randomHash();
     this.addLedger('purchase', `${dataset.title} — $${totalPaid.toFixed(4)}`, { txId });
     return { pay, gasCost, totalPaid, txId, delivery: dataset.source === 'p2p' ? 'BitTorrent v2' : 'HTTPS CDN' };
+  }
+
+  // BT Download — for BitTorrent sourced datasets
+  async btDownload(dataset) {
+    this.log('[B]', `dataset_bt_download("${dataset.cid}")`);
+
+    if (this.live) {
+      const data = await this.callTool('dataset_bt_download', { info_hash: dataset.cid });
+      if (data && data.status === 'completed') {
+        this.log('[B]', `Downloaded to ${data.downloaded_to}`);
+        this.addLedger('download', `BT download: ${dataset.title}`, { txId: dataset.cid });
+        return {
+          pay: { protocol: 'BitTorrent', desc: 'Free P2P download via BT DHT' },
+          gasCost: 0, totalPaid: 0, txId: dataset.cid,
+          delivery: `BitTorrent DHT · ${dataset.schema.size}`,
+        };
+      }
+    }
+
+    // Mock fallback
+    this.log('[B]', `BT download: ${dataset.schema.size} via DHT swarm`);
+    this.addLedger('download', `BT download: ${dataset.title}`, { txId: dataset.cid });
+    return {
+      pay: { protocol: 'BitTorrent', desc: 'Free P2P download via BT DHT' },
+      gasCost: 0, totalPaid: 0, txId: dataset.cid || randomHash(),
+      delivery: `BitTorrent DHT · ${dataset.schema.size}`,
+    };
   }
 
   // Step 5: Feedback
