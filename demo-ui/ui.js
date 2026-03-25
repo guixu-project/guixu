@@ -32,9 +32,6 @@ async function runPipeline() {
   const budget = parseFloat($('budget').value) || 5.0;
   const sourceFilter = $('sourceFilter').value;
 
-  // Probe server
-  await engine.init();
-
   // Step 1: active
   activateStep('step1');
   engine.log('[>]', `Agent task: "${query}"`);

@@ -2,6 +2,7 @@ use anyhow::Result;
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::DatasetMetadata;
 use data_core::types::SearchResult;
+use tracing::warn;
 
 use crate::adapters::ExternalAdapter;
 use crate::intent::IntentParser;
@@ -129,8 +130,11 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let mut results = vec![];
         for adapter in &self.adapters {
-            if let Ok(mut r) = adapter.search(&intent.raw_query, limit).await {
-                results.append(&mut r);
+            match adapter.search(&intent.raw_query, limit).await {
+                Ok(mut r) => results.append(&mut r),
+                Err(e) => {
+                    warn!(adapter = adapter.name(), error = %e, "adapter search failed");
+                }
             }
         }
         Ok(results)

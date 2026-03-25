@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use data_core::types::*;
+use tracing::{warn, debug};
 
 /// Trait for external dataset platform adapters.
 #[async_trait::async_trait]
@@ -132,20 +133,43 @@ impl ExternalAdapter for BitTorrentAdapter {
     fn source_type(&self) -> DataSource { DataSource::BitTorrent }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        let resp = self
-            .client
-            .get(format!("{}/search", self.api_base))
-            .query(&[
-                ("q", query),
-                ("limit", &limit.min(100).to_string()),
-                ("sort", "seeders"),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<serde_json::Value>()
-            .await?
-            ;
+        let url = format!("{}/search", self.api_base);
+        debug!(adapter = "bittorrent", %url, %query, "sending search request");
+
+        let resp = match tokio::time::timeout(
+            Duration::from_secs(10),
+            self.client
+                .get(&url)
+                .query(&[
+                    ("q", query),
+                    ("limit", &limit.min(100).to_string()),
+                    ("sort", "seeders"),
+                ])
+                .send(),
+        )
+        .await
+        {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                warn!(adapter = "bittorrent", error = %e, "HTTP request failed");
+                return Err(e.into());
+            }
+            Err(_) => {
+                warn!(adapter = "bittorrent", "request timed out after 10s");
+                return Err(anyhow!("bittorrent search timed out after 10s"));
+            }
+        };
+
+        let status = resp.status();
+        if !status.is_success() {
+            warn!(adapter = "bittorrent", %status, "non-success HTTP status");
+            return Err(anyhow!("bittorrent API returned {status}"));
+        }
+
+        let resp = resp.json::<serde_json::Value>().await.map_err(|e| {
+            warn!(adapter = "bittorrent", error = %e, "failed to parse JSON response");
+            anyhow!("bittorrent JSON parse error: {e}")
+        })?;
 
         let results = resp
             .get("results")
