@@ -4,7 +4,7 @@
 // Falls back to mock data if server is unavailable
 // ============================================================
 
-const RPC_URL = 'http://localhost:3927/rpc';
+const RPC_URL = '/rpc';
 
 class GuixuEngine {
   constructor() {

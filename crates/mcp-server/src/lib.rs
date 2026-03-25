@@ -1,3 +1,4 @@
+pub mod demo_ui;
 pub mod handlers;
 pub mod protocol;
 pub mod server;

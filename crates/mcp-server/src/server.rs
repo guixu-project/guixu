@@ -32,6 +32,7 @@ use data_valuation::tcv::TcvEngine;
 use crate::protocol::{McpRequest, McpResponse};
 use crate::tools::all_tool_definitions;
 use crate::web_ui::INDEX_HTML;
+use crate::demo_ui;
 
 /// Shared state accessible by MCP tool handlers.
 pub struct AppState {
@@ -103,6 +104,10 @@ pub async fn run_http(state: Arc<AppState>, port: u16) -> Result<()> {
     let app = Router::new()
         // Web UI
         .route("/", get(serve_ui))
+        // Demo UI
+        .route("/demo", get(demo_ui::serve_demo))
+        .route("/demo/style.css", get(demo_ui::serve_demo_css))
+        .route("/demo/{file}", get(demo_ui::serve_demo_js))
         // REST API for Web UI
         .route("/api/datasets", get(api_list_datasets))
         .route("/api/publish", post(api_publish))
@@ -113,6 +118,7 @@ pub async fn run_http(state: Arc<AppState>, port: u16) -> Result<()> {
 
     let addr = format!("0.0.0.0:{port}");
     info!("Guixu Web UI → http://localhost:{port}");
+    info!("Guixu Demo UI → http://localhost:{port}/demo");
     info!("MCP HTTP RPC → http://localhost:{port}/rpc");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
