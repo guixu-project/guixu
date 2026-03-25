@@ -1,4 +1,6 @@
-use anyhow::Result;
+use std::time::Duration;
+
+use anyhow::{anyhow, Result};
 use data_core::types::*;
 
 /// Trait for external dataset platform adapters.
@@ -113,7 +115,12 @@ pub struct BitTorrentAdapter {
 impl Default for BitTorrentAdapter {
     fn default() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(3))
+                .timeout(Duration::from_secs(8))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             api_base: "https://bitsearch.to/api/v1".into(),
         }
     }
@@ -135,14 +142,16 @@ impl ExternalAdapter for BitTorrentAdapter {
             ])
             .send()
             .await?
+            .error_for_status()?
             .json::<serde_json::Value>()
-            .await?;
+            .await?
+            ;
 
         let results = resp
             .get("results")
             .and_then(|v| v.as_array())
             .cloned()
-            .unwrap_or_default();
+            .ok_or_else(|| anyhow!("bitsearch response missing 'results' array"))?;
 
         Ok(results
             .into_iter()
