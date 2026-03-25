@@ -1,10 +1,63 @@
 // ============================================================
-// Guixu Demo — Simulation Engine
-// Connects to real MCP server (data-node mcp --mode http)
-// Falls back to mock data if server is unavailable
+// Guixu Demo — Live Engine
+// Connects to real MCP server (data-node start)
 // ============================================================
 
 const RPC_URL = '/rpc';
+
+const MODES = {
+  'base-x402': {
+    chain: 'Base L2', protocol: 'x402', token: 'USDC',
+    badge: 'Base L2 / USDC / x402',
+    ledgerLabel: 'Base L2 — EAS Attestations',
+    gasCost: 0.001, attestCost: 0.0005,
+  },
+  'op-mpp': {
+    chain: 'OP Mainnet', protocol: 'Stripe MPP', token: 'USDC',
+    badge: 'OP Mainnet / USDC / MPP',
+    ledgerLabel: 'OP Mainnet — EAS Attestations',
+    gasCost: 0.0008, attestCost: 0.0003,
+  },
+  'arb-escrow': {
+    chain: 'Arbitrum One', protocol: 'ERC-8183 Escrow', token: 'USDC',
+    badge: 'Arbitrum / USDC / Escrow',
+    ledgerLabel: 'Arbitrum — EAS Attestations',
+    gasCost: 0.0005, attestCost: 0.0002,
+  },
+};
+
+const TCV_WEIGHTS = {
+  schema_fit: { weight: 0.25, label: 'SchemaFit', color: '#3b82f6', symbol: 'α' },
+  temporal_fit: { weight: 0.15, label: 'TemporalFit', color: '#06b6d4', symbol: 'β' },
+  info_gain: { weight: 0.15, label: 'InfoGain', color: '#22c55e', symbol: 'γ' },
+  quality: { weight: 0.10, label: 'Quality', color: '#eab308', symbol: 'δ' },
+  community: { weight: 0.15, label: 'Community', color: '#a855f7', symbol: 'ε' },
+  risk: { weight: -0.20, label: 'RiskPenalty', color: '#ef4444', symbol: 'ζ' },
+};
+
+function computeTCV(c) {
+  const raw = TCV_WEIGHTS.schema_fit.weight * c.schema_fit
+    + TCV_WEIGHTS.temporal_fit.weight * c.temporal_fit
+    + TCV_WEIGHTS.info_gain.weight * c.info_gain
+    + TCV_WEIGHTS.quality.weight * c.quality
+    + TCV_WEIGHTS.community.weight * c.community
+    + TCV_WEIGHTS.risk.weight * c.risk;
+  return Math.max(-100, Math.min(100, raw));
+}
+
+function tcvVerdict(score) {
+  if (score > 60) return { label: 'StrongPositive', cls: 'score-strong-pos', text: 'Strongly Recommended' };
+  if (score > 30) return { label: 'Positive', cls: 'score-pos', text: 'Recommended' };
+  if (score > 0) return { label: 'Neutral', cls: 'score-neutral', text: 'Marginal' };
+  if (score > -30) return { label: 'Negative', cls: 'score-neg', text: 'Not Recommended' };
+  return { label: 'StrongNegative', cls: 'score-strong-neg', text: 'Harmful' };
+}
+
+function randomHash() {
+  return '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('');
+}
+
+function shortHash(h) { return h.slice(0, 10) + '...' + h.slice(-6); }
 
 class GuixuEngine {
   constructor() {
@@ -14,7 +67,6 @@ class GuixuEngine {
     this.datasets = [];
     this.selectedDataset = null;
     this.logs = [];
-    this.live = false; // true if connected to real server
   }
 
   getMode() { return MODES[this.mode]; }
@@ -35,9 +87,9 @@ class GuixuEngine {
 
   // JSON-RPC call to real MCP server (with timeout)
   async rpc(method, params) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
       const res = await fetch(RPC_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -49,7 +101,9 @@ class GuixuEngine {
       if (json.error) throw new Error(json.error.message);
       return json.result;
     } catch (e) {
-      return null; // fallback to mock
+      clearTimeout(timeout);
+      this._lastError = e.message || String(e);
+      return null;
     }
   }
 
@@ -61,62 +115,60 @@ class GuixuEngine {
     return null;
   }
 
-  // Probe server on first run
-  async init() {
-    const res = await this.rpc('initialize', {});
-    this.live = !!res;
-    this.log('[i]', this.live ? 'Connected to MCP server (live data)' : 'Offline mode (mock data)');
-  }
-
   // Step 2: Search
   async search(query, taskType, sourceFilter) {
     this.log('[S]', `dataset_search("${query}"${sourceFilter ? `, source=${sourceFilter}` : ''})`);
 
-    if (this.live) {
-      const filters = {};
-      if (sourceFilter) filters.source = sourceFilter;
-      const data = await this.callTool('dataset_search', { query, filters, limit: 10 });
-      if (data && Array.isArray(data) && data.length > 0) {
-        this.datasets = data.map(r => ({
-          cid: r.cid,
-          title: r.title,
-          description: r.description,
-          source: r.source ? r.source.toLowerCase().replace(/\s/g,'') : 'p2p',
-          sourceLabel: r.source || 'P2P',
-          schema: {
-            columns: Array.from({ length: r.schema?.columns || 0 }, (_, i) => `col_${i}`),
-            rows: r.schema?.rows || 0,
-            size: formatBytes(r.schema?.size_bytes || 0),
-          },
-          price: typeof r.price === 'object' ? r.price.amount : (r.price || 0),
-          community: {
-            reviews: r.community?.total_reviews || 0,
-            avg_relevance: parseFloat(r.community?.avg_relevance) || 0,
-            positive_rate: parseFloat(r.community?.positive_rate) / 100 || 0,
-            negative_rate: parseFloat(r.community?.negative_rate) / 100 || 0,
-            task_signals: [],
-          },
-          tcv: null,
-          _raw: r,
-        }));
-        const sources = [...new Set(this.datasets.map(d => d.source))];
-        this.log('[S]', `Live: ${this.datasets.length} results from ${sources.length} sources`);
-        this.addLedger('search', `query="${query}" > ${this.datasets.length} results`);
-        return { datasets: this.datasets, sources };
-      }
+    const filters = {};
+    if (sourceFilter) filters.source = sourceFilter;
+    this._lastError = null;
+    const data = await this.callTool('dataset_search', { query, filters, limit: 10 });
+
+    // Response is { results: [...], errors: [...] } or legacy array
+    const results = Array.isArray(data) ? data : (data?.results || []);
+    const serverErrors = Array.isArray(data) ? [] : (data?.errors || []);
+
+    if (serverErrors.length > 0) {
+      serverErrors.forEach(e => this.log('[!]', `adapter error: ${e}`));
     }
 
-    // Fallback to mock
-    let key = 'gdp-prediction';
-    if (taskType === 'classification') key = 'classification';
-    this.datasets = DATASETS[key] || DATASETS['gdp-prediction'];
-    if (sourceFilter) {
-      this.datasets = this.datasets.filter(d => d.source === sourceFilter);
+    if (results.length > 0) {
+      this.datasets = results.map(r => ({
+        cid: r.cid,
+        title: r.title,
+        description: r.description,
+        source: r.source ? r.source.toLowerCase().replace(/\s/g,'') : 'p2p',
+        sourceLabel: r.source || 'P2P',
+        schema: {
+          columns: Array.from({ length: r.schema?.columns || 0 }, (_, i) => `col_${i}`),
+          rows: r.schema?.rows || 0,
+          size: formatBytes(r.schema?.size_bytes || 0),
+        },
+        price: typeof r.price === 'object' ? r.price.amount : (r.price || 0),
+        community: {
+          reviews: r.community?.total_reviews || 0,
+          avg_relevance: parseFloat(r.community?.avg_relevance) || 0,
+          positive_rate: parseFloat(r.community?.positive_rate) / 100 || 0,
+          negative_rate: parseFloat(r.community?.negative_rate) / 100 || 0,
+          task_signals: [],
+        },
+        tcv: null,
+        _raw: r,
+      }));
+      const sources = [...new Set(this.datasets.map(d => d.source))];
+      this.log('[S]', `${this.datasets.length} results from ${sources.length} sources`);
+      this.addLedger('search', `query="${query}" > ${this.datasets.length} results`);
+      return { datasets: this.datasets, sources };
     }
-    const sources = [...new Set(this.datasets.map(d => d.source))];
-    this.log('[S]', `Mock: ${this.datasets.length} results from ${sources.length} sources`);
-    this.addLedger('search', `query="${query}" > ${this.datasets.length} results`);
-    return { datasets: this.datasets, sources };
+
+    // 0 results — show error reason
+    this.datasets = [];
+    const reason = serverErrors.length > 0
+      ? serverErrors.join('; ')
+      : (this._lastError || 'no matching datasets found');
+    this.log('[!]', `0 results (${reason})`);
+    this.addLedger('search', `query="${query}" > 0 results`);
+    return { datasets: [], sources: [] };
   }
 
   // Step 3: Evaluate
@@ -128,8 +180,8 @@ class GuixuEngine {
       let tcvComps = d.tcv;
       let tcvScore;
 
-      if (this.live && !tcvComps && d.source === 'p2p') {
-        // Only call backend for local P2P datasets (they exist in store)
+      if (!tcvComps && d.source === 'p2p') {
+        // Call backend for local P2P datasets (they exist in store)
         const evalData = await this.callTool('dataset_evaluate', {
           cid: d.cid,
           task_description: taskDesc,
@@ -188,60 +240,48 @@ class GuixuEngine {
       return this.btDownload(dataset);
     }
 
-    if (this.live) {
-      const data = await this.callTool('dataset_purchase', { cid: dataset.cid, max_price: 10 });
-      if (data && data.status === 'purchased') {
-        const paid = data.price_paid || 0;
-        const gasCost = m.gasCost;
-        this.totalCost += paid + gasCost;
-        this.log('[P]', `Live: ${data.payment_protocol} $${paid}`);
-        this.log('[D]', `Delivery: ${data.delivery?.method || 'local'}`);
-        const txId = data.tx_id || randomHash();
-        this.addLedger('purchase', `${dataset.title} — $${(paid + gasCost).toFixed(4)}`, { txId });
-        return {
-          pay: { protocol: data.payment_protocol, desc: data.protocol_description },
-          gasCost, totalPaid: paid + gasCost, txId,
-          delivery: data.delivery?.method || 'local',
-        };
-      }
+    const data = await this.callTool('dataset_purchase', { cid: dataset.cid, max_price: 10 });
+    if (data && data.status === 'purchased') {
+      const paid = data.price_paid || 0;
+      const gasCost = m.gasCost;
+      this.totalCost += paid + gasCost;
+      this.log('[P]', `${data.payment_protocol} $${paid}`);
+      this.log('[D]', `Delivery: ${data.delivery?.method || 'local'}`);
+      const txId = data.tx_id || randomHash();
+      this.addLedger('purchase', `${dataset.title} — $${(paid + gasCost).toFixed(4)}`, { txId });
+      return {
+        pay: { protocol: data.payment_protocol, desc: data.protocol_description },
+        gasCost, totalPaid: paid + gasCost, txId,
+        delivery: data.delivery?.method || 'local',
+      };
     }
 
-    // Fallback
-    const pay = selectPaymentProtocol(dataset.price, this.mode);
-    const gasCost = dataset.price > 0 ? m.gasCost : 0;
-    const totalPaid = dataset.price + gasCost;
-    this.totalCost += totalPaid;
-    this.log('[P]', `${pay.protocol}: $${dataset.price.toFixed(4)} + gas $${gasCost.toFixed(4)}`);
-    this.log('[D]', `Delivery: ${dataset.schema.size} via ${dataset.source === 'p2p' ? 'BitTorrent v2' : 'HTTPS'}`);
-    const txId = randomHash();
-    this.addLedger('purchase', `${dataset.title} — $${totalPaid.toFixed(4)}`, { txId });
-    return { pay, gasCost, totalPaid, txId, delivery: dataset.source === 'p2p' ? 'BitTorrent v2' : 'HTTPS CDN' };
+    const reason = this._lastError || 'purchase failed';
+    this.log('[!]', `Purchase error: ${reason}`);
+    return { pay: { protocol: 'none', desc: reason }, gasCost: 0, totalPaid: 0, txId: '', delivery: 'failed' };
   }
 
   // BT Download — for BitTorrent sourced datasets
   async btDownload(dataset) {
     this.log('[B]', `dataset_bt_download("${dataset.cid}")`);
 
-    if (this.live) {
-      const data = await this.callTool('dataset_bt_download', { info_hash: dataset.cid });
-      if (data && data.status === 'completed') {
-        this.log('[B]', `Downloaded to ${data.downloaded_to}`);
-        this.addLedger('download', `BT download: ${dataset.title}`, { txId: dataset.cid });
-        return {
-          pay: { protocol: 'BitTorrent', desc: 'Free P2P download via BT DHT' },
-          gasCost: 0, totalPaid: 0, txId: dataset.cid,
-          delivery: `BitTorrent DHT · ${dataset.schema.size}`,
-        };
-      }
+    const data = await this.callTool('dataset_bt_download', { info_hash: dataset.cid });
+    if (data && data.status === 'completed') {
+      this.log('[B]', `Downloaded to ${data.downloaded_to}`);
+      this.addLedger('download', `BT download: ${dataset.title}`, { txId: dataset.cid });
+      return {
+        pay: { protocol: 'BitTorrent', desc: 'Free P2P download via BT DHT' },
+        gasCost: 0, totalPaid: 0, txId: dataset.cid,
+        delivery: `BitTorrent DHT · ${dataset.schema.size}`,
+      };
     }
 
-    // Mock fallback
-    this.log('[B]', `BT download: ${dataset.schema.size} via DHT swarm`);
-    this.addLedger('download', `BT download: ${dataset.title}`, { txId: dataset.cid });
+    const reason = this._lastError || 'BT download failed';
+    this.log('[!]', `BT error: ${reason}`);
     return {
-      pay: { protocol: 'BitTorrent', desc: 'Free P2P download via BT DHT' },
-      gasCost: 0, totalPaid: 0, txId: dataset.cid || randomHash(),
-      delivery: `BitTorrent DHT · ${dataset.schema.size}`,
+      pay: { protocol: 'BitTorrent', desc: reason },
+      gasCost: 0, totalPaid: 0, txId: dataset.cid || '',
+      delivery: 'failed',
     };
   }
 
@@ -255,21 +295,17 @@ class GuixuEngine {
       ? { relevance: 0.92, quality: 4, success: true, assessment: 'positive', comment: 'Complete data, good prediction results' }
       : { relevance: -0.5, quality: 2, success: false, assessment: 'negative', comment: 'Data does not match task requirements' };
 
-    if (this.live) {
-      await this.callTool('dataset_feedback', {
-        cid: dataset.cid,
-        relevance_score: fb.relevance,
-        quality_rating: fb.quality,
-        task_success: fb.success,
-        value_assessment: fb.assessment,
-        task_type: 'time_series_prediction',
-        task_description: 'GDP prediction',
-        comment: fb.comment,
-      });
-      this.log('[F]', `Live feedback recorded`);
-    } else {
-      this.log('[F]', `dataset_feedback(${fb.assessment}): relevance=${fb.relevance}`);
-    }
+    await this.callTool('dataset_feedback', {
+      cid: dataset.cid,
+      relevance_score: fb.relevance,
+      quality_rating: fb.quality,
+      task_success: fb.success,
+      value_assessment: fb.assessment,
+      task_type: 'time_series_prediction',
+      task_description: 'GDP prediction',
+      comment: fb.comment,
+    });
+    this.log('[F]', `Feedback recorded`);
 
     this.log('[A]', `EAS attestation on ${m.chain} (gas: $${attestCost.toFixed(4)})`);
     this.addLedger('feedback', `${fb.assessment} — "${fb.comment}"`, { attestCost });
