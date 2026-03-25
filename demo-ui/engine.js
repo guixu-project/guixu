@@ -88,7 +88,7 @@ class GuixuEngine {
   // JSON-RPC call to real MCP server (with timeout)
   async rpc(method, params) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 30000);
     try {
       const res = await fetch(RPC_URL, {
         method: 'POST',
@@ -124,8 +124,16 @@ class GuixuEngine {
     this._lastError = null;
     const data = await this.callTool('dataset_search', { query, filters, limit: 10 });
 
-    if (data && Array.isArray(data) && data.length > 0) {
-      this.datasets = data.map(r => ({
+    // Response is { results: [...], errors: [...] } or legacy array
+    const results = Array.isArray(data) ? data : (data?.results || []);
+    const serverErrors = Array.isArray(data) ? [] : (data?.errors || []);
+
+    if (serverErrors.length > 0) {
+      serverErrors.forEach(e => this.log('[!]', `adapter error: ${e}`));
+    }
+
+    if (results.length > 0) {
+      this.datasets = results.map(r => ({
         cid: r.cid,
         title: r.title,
         description: r.description,
@@ -155,7 +163,9 @@ class GuixuEngine {
 
     // 0 results — show error reason
     this.datasets = [];
-    const reason = this._lastError || 'no matching datasets found';
+    const reason = serverErrors.length > 0
+      ? serverErrors.join('; ')
+      : (this._lastError || 'no matching datasets found');
     this.log('[!]', `0 results (${reason})`);
     this.addLedger('search', `query="${query}" > 0 results`);
     return { datasets: [], sources: [] };

@@ -50,17 +50,17 @@ impl SearchEngine {
         local_metadata: &[DatasetMetadata],
         signal_fetcher: &SignalFetcher,
         limit: usize,
-    ) -> Result<Vec<RankedResult>> {
+    ) -> Result<SearchOutput> {
         let intent = self.intent_parser.parse(query).await?;
 
         // Parallel: local P2P store + all external adapters
-        let (local_results, external_results) = tokio::join!(
+        let (local_results, (external_results, errors)) = tokio::join!(
             self.search_local(&intent, filters, local_metadata),
             self.search_external(&intent, filters, limit),
         );
 
         let mut all: Vec<SearchResult> = local_results.unwrap_or_default();
-        all.extend(external_results.unwrap_or_default());
+        all.extend(external_results);
 
         // Apply filters
         if let Some(min_rows) = filters.min_rows {
@@ -90,7 +90,7 @@ impl SearchEngine {
         ranked.sort_by(|a, b| b.rank_score.partial_cmp(&a.rank_score).unwrap_or(std::cmp::Ordering::Equal));
         ranked.truncate(limit);
 
-        Ok(ranked)
+        Ok(SearchOutput { results: ranked, errors })
     }
 
     /// Search local P2P metadata store.
@@ -127,17 +127,19 @@ impl SearchEngine {
         intent: &ParsedIntent,
         _filters: &SearchFilters,
         limit: usize,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> (Vec<SearchResult>, Vec<String>) {
         let mut results = vec![];
+        let mut errors = vec![];
         for adapter in &self.adapters {
             match adapter.search(&intent.raw_query, limit).await {
                 Ok(mut r) => results.append(&mut r),
                 Err(e) => {
                     warn!(adapter = adapter.name(), error = %e, "adapter search failed");
+                    errors.push(format!("{}: {e}", adapter.name()));
                 }
             }
         }
-        Ok(results)
+        (results, errors)
     }
 }
 
@@ -147,6 +149,13 @@ pub struct RankedResult {
     pub result: SearchResult,
     pub rank_score: f64,
     pub signal: CommunitySignal,
+}
+
+/// Search output including results and any adapter errors.
+#[derive(Debug)]
+pub struct SearchOutput {
+    pub results: Vec<RankedResult>,
+    pub errors: Vec<String>,
 }
 
 /// Structured intent parsed from natural language query.

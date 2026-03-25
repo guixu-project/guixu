@@ -48,12 +48,12 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             })
     });
 
-    let ranked = state
+    let search_output = state
         .search_engine
         .search(query, &filters, &local_metadata, &signal_fetcher, limit)
         .await?;
 
-    let output: Vec<serde_json::Value> = ranked
+    let output: Vec<serde_json::Value> = search_output.results
         .iter()
         .enumerate()
         .map(|(i, r)| {
@@ -80,5 +80,10 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         })
         .collect();
 
-    Ok(serde_json::to_string_pretty(&output)?)
+    let response = json!({
+        "results": output,
+        "errors": search_output.errors,
+    });
+
+    Ok(serde_json::to_string_pretty(&response)?)
 }
