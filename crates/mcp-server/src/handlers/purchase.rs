@@ -8,7 +8,10 @@ use crate::server::AppState;
 
 pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String> {
     let cid_str = args.get("cid").and_then(|v| v.as_str()).unwrap_or("");
-    let max_price = args.get("max_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let max_price = args
+        .get("max_price")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
 
     let cid = DatasetCid(cid_str.to_string());
     let metadata = match state.store.get(&cid)? {
@@ -17,7 +20,11 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
     };
 
     if metadata.price.amount > max_price && max_price > 0.0 {
-        anyhow::bail!("Price ${:.2} exceeds budget ${:.2}", metadata.price.amount, max_price);
+        anyhow::bail!(
+            "Price ${:.2} exceeds budget ${:.2}",
+            metadata.price.amount,
+            max_price
+        );
     }
 
     let tx_ctx = TransactionContext {
@@ -44,10 +51,12 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         (Some(r), desc)
     };
 
-    let tx_id = receipt.as_ref()
+    let tx_id = receipt
+        .as_ref()
         .map(|r| r.tx_id.clone())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let protocol_name = receipt.as_ref()
+    let protocol_name = receipt
+        .as_ref()
         .map(|r| format!("{:?}", r.protocol))
         .unwrap_or_else(|| "none".into());
 
@@ -60,9 +69,10 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             })
         }
         _ => {
-            let download_dir = state.store.get_file_path(
-                &DatasetCid("__config_data_dir__".into())
-            )?.unwrap_or_else(|| std::path::PathBuf::from("/tmp/guixu-downloads"));
+            let download_dir = state
+                .store
+                .get_file_path(&DatasetCid("__config_data_dir__".into()))?
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp/guixu-downloads"));
             let dest = download_dir.join(format!("{}.dat", &cid_str[..16.min(cid_str.len())]));
             json!({
                 "method": "torrent_pending",

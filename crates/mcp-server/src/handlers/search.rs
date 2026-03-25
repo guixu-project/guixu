@@ -13,21 +13,31 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
 
     let filter_obj = args.get("filters").cloned().unwrap_or_default();
     let filters = SearchFilters {
-        topic: filter_obj.get("topic").and_then(|v| v.as_str()).map(String::from),
+        topic: filter_obj
+            .get("topic")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         min_rows: filter_obj.get("min_rows").and_then(|v| v.as_u64()),
         max_price: filter_obj.get("max_price").and_then(|v| v.as_f64()),
-        license: filter_obj.get("license").and_then(|v| v.as_str()).map(String::from),
+        license: filter_obj
+            .get("license")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         min_quality: filter_obj.get("min_quality").and_then(|v| v.as_f64()),
-        source: filter_obj.get("source").and_then(|v| v.as_str()).map(String::from),
+        source: filter_obj
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(String::from),
     };
 
     let local_metadata = state.store.list_all()?;
 
     let fb_store = state.feedback_store.clone();
-    let signal_fetcher: data_search::engine::SignalFetcher =
-        Box::new(move |cid_str: &str| {
-            let cid = DatasetCid(cid_str.to_string());
-            fb_store.compute_signal(&cid).unwrap_or_else(|_| CommunitySignal {
+    let signal_fetcher: data_search::engine::SignalFetcher = Box::new(move |cid_str: &str| {
+        let cid = DatasetCid(cid_str.to_string());
+        fb_store
+            .compute_signal(&cid)
+            .unwrap_or_else(|_| CommunitySignal {
                 dataset_cid: cid,
                 total_reviews: 0,
                 avg_relevance: 0.0,
@@ -36,7 +46,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
                 negative_rate: 0.0,
                 task_signals: vec![],
             })
-        });
+    });
 
     let ranked = state
         .search_engine

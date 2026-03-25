@@ -15,12 +15,22 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         None => anyhow::bail!("Dataset {cid_str} not found"),
     };
 
-    let task_desc = args.get("task_description").and_then(|v| v.as_str()).unwrap_or("general analysis");
-    let task_type = args.get("task_type").and_then(|v| v.as_str()).unwrap_or("general");
+    let task_desc = args
+        .get("task_description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("general analysis");
+    let task_type = args
+        .get("task_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("general");
     let required_cols: Vec<String> = args
         .get("required_columns")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let budget = args.get("budget").and_then(|v| v.as_f64()).unwrap_or(0.0);
 

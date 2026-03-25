@@ -15,9 +15,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("torrent engine not initialized — start node first"))?;
 
-    let path = engine
-        .download(info_hash, AccessMode::Open, None)
-        .await?;
+    let path = engine.download(info_hash, AccessMode::Open, None).await?;
 
     Ok(serde_json::to_string_pretty(&json!({
         "info_hash": info_hash,

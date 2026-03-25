@@ -8,13 +8,34 @@ use crate::server::AppState;
 
 pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String> {
     let cid_str = args.get("cid").and_then(|v| v.as_str()).unwrap_or("");
-    let relevance = args.get("relevance_score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let quality = args.get("quality_rating").and_then(|v| v.as_u64()).unwrap_or(3) as u8;
-    let success = args.get("task_success").and_then(|v| v.as_bool()).unwrap_or(true);
-    let assessment_str = args.get("value_assessment").and_then(|v| v.as_str()).unwrap_or("neutral");
-    let task_type = args.get("task_type").and_then(|v| v.as_str()).unwrap_or("general");
-    let task_desc = args.get("task_description").and_then(|v| v.as_str()).unwrap_or("");
-    let comment = args.get("comment").and_then(|v| v.as_str()).map(String::from);
+    let relevance = args
+        .get("relevance_score")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let quality = args
+        .get("quality_rating")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3) as u8;
+    let success = args
+        .get("task_success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let assessment_str = args
+        .get("value_assessment")
+        .and_then(|v| v.as_str())
+        .unwrap_or("neutral");
+    let task_type = args
+        .get("task_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("general");
+    let task_desc = args
+        .get("task_description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let comment = args
+        .get("comment")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     let assessment = match assessment_str {
         "positive" => ValueAssessment::Positive,

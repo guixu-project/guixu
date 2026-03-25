@@ -12,20 +12,21 @@ use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
+use data_auth::privacy::{PrivacyConfig, PrivacyLevel};
 use data_core::identity::NodeIdentity;
 use data_core::types::AccessMode;
 use data_p2p::dht::DhtIndex;
 use data_p2p::torrent::TorrentEngine;
+use data_search::adapters::default_adapters;
+use data_search::engine::SearchEngine;
+use data_search::intent::IntentParser;
+use data_search::vector_index::VectorIndex;
 use data_storage::feedback_store::FeedbackStore;
 use data_storage::metadata_store::MetadataStore;
 use data_trading::escrow::EscrowClient;
 use data_trading::mpp::MppClient;
 use data_trading::router::PaymentRouter;
 use data_trading::x402::X402Client;
-use data_search::adapters::default_adapters;
-use data_search::engine::SearchEngine;
-use data_search::intent::IntentParser;
-use data_search::vector_index::VectorIndex;
 use data_valuation::tcv::TcvEngine;
 
 use crate::protocol::{McpRequest, McpResponse};
@@ -83,11 +84,9 @@ pub async fn run_stdio(state: Arc<AppState>) -> Result<()> {
         }
         let response = match serde_json::from_str::<McpRequest>(&line) {
             Ok(req) => handle_request(req, &state).await,
-            Err(e) => McpResponse::error(
-                serde_json::Value::Null,
-                -32700,
-                format!("Parse error: {e}"),
-            ),
+            Err(e) => {
+                McpResponse::error(serde_json::Value::Null, -32700, format!("Parse error: {e}"))
+            }
         };
 
         let mut out = serde_json::to_vec(&response)?;
@@ -128,9 +127,7 @@ async fn serve_ui() -> Html<&'static str> {
 
 // --- REST API: list datasets ---
 
-async fn api_list_datasets(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn api_list_datasets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     info!("api.list_datasets");
     match state.store.list_all() {
         Ok(datasets) => {
@@ -177,6 +174,8 @@ async fn api_publish(
     let mut file_data: Option<(String, Bytes)> = None;
     let mut access = "open".to_string();
     let mut price = 0.0_f64;
+    let mut privacy_level = "standard".to_string();
+    let mut epsilon = "1.0".to_string();
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -204,8 +203,18 @@ async fn api_publish(
                     price = text.parse().unwrap_or(0.0);
                 }
             }
+            "privacy_level" => {
+                if let Ok(text) = field.text().await {
+                    privacy_level = text;
+                }
+            }
+            "epsilon" => {
+                if let Ok(text) = field.text().await {
+                    epsilon = text;
+                }
+            }
             _ => {
-                // consume other fields (privacy_level, epsilon — used by future versions)
+                // consume any additional form fields
                 let _ = field.bytes().await;
             }
         }
@@ -241,18 +250,34 @@ async fn api_publish(
         AccessMode::Open
     };
 
-    match data_p2p::publish::publish_file(
+    let privacy = match parse_publish_privacy(&privacy_level, &epsilon) {
+        Ok(config) => config,
+        Err(message) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response();
+        }
+    };
+
+    match data_p2p::publish::publish_file_with_privacy(
         &tmp_path,
         &state.identity,
         &state.dht,
         &state.store,
         access_mode,
         price,
+        &privacy,
+        false,
     )
     .await
     {
         Ok(metadata) => {
-            info!(cid = %metadata.cid.0, title = %metadata.title, "api.publish.ok");
+            info!(
+                cid = %metadata.cid.0,
+                title = %metadata.title,
+                privacy = ?privacy.level,
+                epsilon = privacy.epsilon,
+                "api.publish.ok"
+            );
             let _ = std::fs::remove_file(&tmp_path);
             (
                 StatusCode::OK,
@@ -262,6 +287,8 @@ async fn api_publish(
                     "rows": metadata.schema.row_count,
                     "size_bytes": metadata.schema.size_bytes,
                     "columns": metadata.schema.columns.len(),
+                    "privacy_level": format!("{:?}", privacy.level).to_lowercase(),
+                    "epsilon": privacy.epsilon,
                 })),
             )
                 .into_response()
@@ -275,6 +302,38 @@ async fn api_publish(
                 .into_response()
         }
     }
+}
+
+fn parse_publish_privacy(level: &str, epsilon: &str) -> std::result::Result<PrivacyConfig, String> {
+    let level = match level.trim().to_lowercase().as_str() {
+        "" | "standard" => PrivacyLevel::Standard,
+        "off" => PrivacyLevel::Off,
+        "strict" => PrivacyLevel::Strict,
+        other => {
+            return Err(format!(
+                "Invalid privacy_level '{other}'. Expected off, standard, or strict."
+            ))
+        }
+    };
+
+    let epsilon = if epsilon.trim().is_empty() {
+        1.0
+    } else {
+        epsilon
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| format!("Invalid epsilon '{epsilon}'. Expected a positive number."))?
+    };
+
+    if !epsilon.is_finite() || epsilon <= 0.0 {
+        return Err("epsilon must be a positive finite number.".into());
+    }
+
+    Ok(PrivacyConfig {
+        level,
+        epsilon,
+        ..Default::default()
+    })
 }
 
 // --- MCP JSON-RPC ---
@@ -319,6 +378,38 @@ async fn handle_request(req: McpRequest, state: &AppState) -> McpResponse {
         }
 
         _ => McpResponse::error(req.id, -32601, format!("Unknown method: {}", req.method)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_publish_privacy;
+    use data_auth::privacy::PrivacyLevel;
+
+    #[test]
+    fn parse_publish_privacy_uses_defaults() {
+        let config = parse_publish_privacy("", "").unwrap();
+        assert_eq!(config.level, PrivacyLevel::Standard);
+        assert_eq!(config.epsilon, 1.0);
+    }
+
+    #[test]
+    fn parse_publish_privacy_accepts_explicit_values() {
+        let config = parse_publish_privacy("strict", "0.5").unwrap();
+        assert_eq!(config.level, PrivacyLevel::Strict);
+        assert_eq!(config.epsilon, 0.5);
+    }
+
+    #[test]
+    fn parse_publish_privacy_rejects_invalid_level() {
+        let err = parse_publish_privacy("private", "1.0").unwrap_err();
+        assert!(err.contains("Invalid privacy_level"));
+    }
+
+    #[test]
+    fn parse_publish_privacy_rejects_invalid_epsilon() {
+        let err = parse_publish_privacy("standard", "0").unwrap_err();
+        assert!(err.contains("positive finite"));
     }
 }
 
