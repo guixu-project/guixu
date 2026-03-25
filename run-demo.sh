@@ -9,13 +9,28 @@ if ! command -v docker &>/dev/null; then
   exit 1
 fi
 
-# Detect if Docker Hub is reachable
-if curl -s --connect-timeout 3 https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
-  echo "Docker Hub reachable, using default registry."
-  REGISTRY=""
-else
-  echo "Docker Hub unreachable, using China mirror..."
-  REGISTRY="docker.zju.edu.cn/"
+# Detect reachable Docker registry
+REGISTRY=""
+MIRRORS=(
+  ""                                    # Docker Hub
+  "mirror.iscas.ac.cn/"                 # 中科院
+  "docker.m.daocloud.io/"              # DaoCloud
+  "dockerhub.timeweb.cloud/"           # TimeWeb
+)
+
+for m in "${MIRRORS[@]}"; do
+  host="${m%/}"
+  [ -z "$host" ] && host="registry-1.docker.io"
+  if curl -s --connect-timeout 3 "https://$host/v2/" >/dev/null 2>&1; then
+    REGISTRY="$m"
+    echo "Using registry: ${host}"
+    break
+  fi
+done
+
+if [ -z "$REGISTRY" ] && ! curl -s --connect-timeout 3 https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
+  echo "Error: no reachable Docker registry found. Configure a mirror manually." >&2
+  exit 1
 fi
 
 docker build --build-arg REGISTRY="$REGISTRY" -t guixu .
