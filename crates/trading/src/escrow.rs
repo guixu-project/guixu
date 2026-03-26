@@ -26,3 +26,10 @@ impl EscrowClient {
         })
     }
 }
+
+#[async_trait::async_trait]
+impl crate::protocol::PaymentProtocolHandler for EscrowClient {
+    async fn pay(&self, _seller_url: &str, ctx: &TransactionContext) -> Result<TransactionReceipt> {
+        self.pay(ctx).await
+    }
+}

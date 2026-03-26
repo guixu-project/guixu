@@ -7,5 +7,17 @@ edition.workspace = true
 data-core = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+base64 = "0.22"
+alloy-signer = "=1.6.3"
+alloy-signer-local = "=1.6.3"
+alloy-primitives = "1"
+alloy-sol-types = "1"
+hex = { workspace = true }
+dirs = { workspace = true }

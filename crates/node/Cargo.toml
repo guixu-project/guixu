@@ -7,12 +7,20 @@ edition.workspace = true
 name = "data-node"
 path = "src/main.rs"
 
+[features]
+default = ["full"]
+full = ["p2p", "torrent", "trading"]
+p2p = ["dep:data-p2p"]
+torrent = []
+trading = ["dep:data-trading"]
+
 [dependencies]
 data-core = { workspace = true }
 data-storage = { workspace = true }
-data-p2p = { workspace = true }
+data-p2p = { workspace = true, optional = true }
 data-auth = { workspace = true }
 data-mcp-server = { workspace = true }
+data-trading = { workspace = true, optional = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

@@ -11,6 +11,7 @@ Cargo.lock
 *.swp
 
 docs/CN
+figure/
 
 # LaTeX
 *.aux

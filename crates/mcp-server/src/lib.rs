@@ -1,6 +1,10 @@
 pub mod demo_ui;
 pub mod handlers;
+pub mod http;
 pub mod protocol;
+pub mod rpc;
 pub mod server;
+pub mod state;
+pub mod stdio;
 pub mod tools;
 pub mod web_ui;

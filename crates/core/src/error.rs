@@ -26,6 +26,9 @@ pub enum DataProtocolError {
     #[error("Verification failed: {0}")]
     VerificationFailed(String),
 
+    #[error("Configuration error: {0}")]
+    Config(String),
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

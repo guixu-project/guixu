@@ -24,6 +24,44 @@ pub struct NodeConfig {
     /// Use ephemeral DIDs per dataset (prevents cross-dataset correlation).
     #[serde(default)]
     pub ephemeral_dids: bool,
+    /// Payment subsystem configuration.
+    #[serde(default)]
+    pub payment: PaymentConfig,
+}
+
+/// Payment subsystem configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentConfig {
+    /// Path to the wallet private key file.
+    #[serde(default = "default_wallet_path")]
+    pub wallet_key_path: PathBuf,
+    /// Use testnet (Base Sepolia) instead of mainnet.
+    #[serde(default = "default_true")]
+    pub testnet: bool,
+    /// x402 facilitator URL.
+    #[serde(default = "default_facilitator")]
+    pub facilitator_url: String,
+}
+
+fn default_wallet_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".data-node")
+        .join("wallet.key")
+}
+
+fn default_facilitator() -> String {
+    "https://x402.coinbase.com".into()
+}
+
+impl Default for PaymentConfig {
+    fn default() -> Self {
+        Self {
+            wallet_key_path: default_wallet_path(),
+            testnet: true,
+            facilitator_url: default_facilitator(),
+        }
+    }
 }
 
 fn default_epsilon() -> f64 {
@@ -85,6 +123,7 @@ impl Default for NodeConfig {
             privacy_epsilon: 1.0,
             disable_mdns: true,
             ephemeral_dids: false,
+            payment: PaymentConfig::default(),
         }
     }
 }

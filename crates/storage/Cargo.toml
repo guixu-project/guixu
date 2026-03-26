@@ -8,3 +8,7 @@ data-core = { workspace = true }
 rocksdb = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }
+chrono = { workspace = true }

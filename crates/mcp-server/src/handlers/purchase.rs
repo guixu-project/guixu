@@ -36,6 +36,10 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         is_session_batch: false,
         prefer_fiat: false,
         requires_verification: metadata.price.amount > 1.0,
+        seller_endpoint: args
+            .get("seller_endpoint")
+            .and_then(|v| v.as_str())
+            .map(String::from),
     };
 
     let (receipt, protocol_desc) = if metadata.price.is_free() {
