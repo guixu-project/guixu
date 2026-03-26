@@ -59,6 +59,118 @@ function randomHash() {
 
 function shortHash(h) { return h.slice(0, 10) + '...' + h.slice(-6); }
 
+function prettySourceName(source) {
+  const map = {
+    p2p: 'P2P',
+    bittorrent: 'BitTorrent',
+    huggingface: 'HuggingFace',
+    kaggle: 'Kaggle',
+    ipfs: 'IPFS',
+    postgresql: 'PostgreSQL',
+    duckdb: 'DuckDB',
+  };
+  return map[source] || source || 'Unknown';
+}
+
+function tokenize(text) {
+  const stopwords = new Set([
+    'a', 'an', 'and', 'as', 'at', 'be', 'build', 'by', 'data', 'dataset', 'for', 'from',
+    'i', 'in', 'into', 'is', 'need', 'of', 'on', 'or', 'predict', 'the', 'to', 'with',
+  ]);
+  return String(text || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length > 1 && !stopwords.has(token));
+}
+
+function lexicalSimilarity(left, right) {
+  const leftTokens = tokenize(left);
+  const rightTokens = new Set(tokenize(right));
+  if (leftTokens.length === 0 || rightTokens.size === 0) return 0;
+  const matched = leftTokens.filter(token => rightTokens.has(token)).length;
+  return (matched / leftTokens.length) * 100;
+}
+
+function normalizeLog(value, saturation) {
+  if (!value || value <= 0) return 0;
+  if (!saturation || saturation <= 1) return 100;
+  return Math.min(100, (Math.log(value + 1) / Math.log(saturation + 1)) * 100);
+}
+
+function parseSeeders(description) {
+  const match = String(description || '').match(/(\d+)\s+seeders?/i);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+function inferRequiredColumns(taskDesc, taskType) {
+  const query = String(taskDesc || '').toLowerCase();
+  if (taskType === 'classification') return ['label'];
+  if (taskType === 'time_series_prediction') {
+    if (query.includes('gdp')) return ['province', 'year', 'gdp'];
+    return ['timestamp', 'value'];
+  }
+  if (taskType === 'regression') return ['feature', 'target'];
+  if (taskType === 'video_classification') return ['video', 'label'];
+  if (taskType === 'nlp') return ['text', 'label'];
+  return [];
+}
+
+function estimateExternalTCV(dataset, taskDesc, taskType, requiredCols) {
+  const cols = requiredCols && requiredCols.length > 0
+    ? requiredCols
+    : inferRequiredColumns(taskDesc, taskType);
+  const text = `${dataset.title} ${dataset.description || ''}`;
+  const similarity = lexicalSimilarity(taskDesc, text);
+  const rankPrior = dataset.rankScore ?? 50;
+  const seederScore = normalizeLog(dataset.seeders, 500);
+  const sizeScore = normalizeLog(dataset.schema.sizeBytes, 1024 * 1024 * 1024);
+  const rowScore = normalizeLog(dataset.schema.rows, 100000);
+
+  const labelHint = /(label|class|category|target|classification)/i.test(text);
+  const timeHint = /(time series|forecast|prediction|gdp|economic|economy|year|month|date|quarter)/i.test(text);
+  const entityHint = tokenize(taskDesc).some(token => text.toLowerCase().includes(token));
+
+  let schemaFit = Math.max(15, 0.6 * rankPrior + 0.4 * similarity);
+  let temporalFit = 50;
+
+  if (taskType === 'classification' || taskType === 'video_classification' || taskType === 'nlp') {
+    if (labelHint) schemaFit += 15;
+    temporalFit = 50;
+  } else if (taskType === 'time_series_prediction') {
+    if (timeHint) {
+      schemaFit += 10;
+      temporalFit = 75;
+    } else {
+      temporalFit = 35;
+    }
+  } else if (taskType === 'regression') {
+    schemaFit += dataset.schema.columns.length > 0 ? 10 : 0;
+  }
+
+  if (cols.length > 0 && dataset.schema.columns.length > 0) {
+    schemaFit += 10;
+  }
+  if (entityHint) {
+    schemaFit += 5;
+  }
+
+  const infoGain = Math.min(100, 0.5 * rankPrior + 0.3 * similarity + 0.2 * sizeScore);
+  const quality = Math.min(100, 0.45 * sizeScore + 0.20 * rowScore + 0.35 * seederScore);
+  const community = dataset.community.reviews > 0
+    ? Math.min(100, dataset.community.positive_rate * 80 + dataset.community.reviews * 2)
+    : Math.max(20, seederScore * 0.8);
+  const risk = dataset.community.negative_rate > 0 ? dataset.community.negative_rate * 100 : 0;
+
+  return {
+    schema_fit: Math.min(100, schemaFit),
+    temporal_fit: Math.min(100, temporalFit),
+    info_gain: Math.min(100, infoGain),
+    quality: Math.min(100, quality),
+    community: Math.min(100, community),
+    risk: Math.min(100, risk),
+  };
+}
+
 class GuixuEngine {
   constructor() {
     this.mode = 'base-x402';
@@ -138,13 +250,16 @@ class GuixuEngine {
         title: r.title,
         description: r.description,
         source: r.source ? r.source.toLowerCase().replace(/\s/g,'') : 'p2p',
-        sourceLabel: r.source || 'P2P',
+        sourceLabel: prettySourceName(r.source ? r.source.toLowerCase().replace(/\s/g,'') : 'p2p'),
         schema: {
           columns: Array.from({ length: r.schema?.columns || 0 }, (_, i) => `col_${i}`),
           rows: r.schema?.rows || 0,
+          sizeBytes: r.schema?.size_bytes || 0,
           size: formatBytes(r.schema?.size_bytes || 0),
         },
         price: typeof r.price === 'object' ? r.price.amount : (r.price || 0),
+        rankScore: parseFloat(r.rank_score) || 0,
+        seeders: parseSeeders(r.description),
         community: {
           reviews: r.community?.total_reviews || 0,
           avg_relevance: parseFloat(r.community?.avg_relevance) || 0,
@@ -157,6 +272,12 @@ class GuixuEngine {
       }));
       const sources = [...new Set(this.datasets.map(d => d.source))];
       this.log('[S]', `${this.datasets.length} results from ${sources.length} sources`);
+      if (!sourceFilter && sources.length === 1 && sources[0] === 'bittorrent') {
+        this.log(
+          '[i]',
+          'Only BitTorrent returned results. Kaggle/HuggingFace need credentials, P2P needs locally indexed metadata, and the remaining adapters currently return empty results.',
+        );
+      }
       this.addLedger('search', `query="${query}" > ${this.datasets.length} results`);
       return { datasets: this.datasets, sources };
     }
@@ -176,6 +297,9 @@ class GuixuEngine {
     this.log('[E]', `dataset_evaluate() x ${this.datasets.length}`);
 
     const results = [];
+    const effectiveRequiredCols = requiredCols && requiredCols.length > 0
+      ? requiredCols
+      : inferRequiredColumns(taskDesc, taskType);
     for (const d of this.datasets) {
       let tcvComps = d.tcv;
       let tcvScore;
@@ -186,7 +310,7 @@ class GuixuEngine {
           cid: d.cid,
           task_description: taskDesc,
           task_type: taskType,
-          required_columns: requiredCols,
+          required_columns: effectiveRequiredCols,
           budget: 10,
         });
         if (evalData && evalData.tcv) {
@@ -205,15 +329,7 @@ class GuixuEngine {
 
       // Client-side TCV for external datasets (BT, Kaggle, HF, etc.)
       if (!tcvComps) {
-        const sizeScore = Math.min(100, (d.schema.rows || 1) / 100);
-        tcvComps = d.tcv || {
-          schema_fit: d.schema.columns.length > 0 ? 60 : 20,
-          temporal_fit: 50,
-          info_gain: 60,
-          quality: Math.min(80, 30 + sizeScore * 0.5),
-          community: d.community.reviews > 0 ? d.community.positive_rate * 80 : 30,
-          risk: d.community.negative_rate * 100 || 0,
-        };
+        tcvComps = d.tcv || estimateExternalTCV(d, taskDesc, taskType, effectiveRequiredCols);
       }
       if (tcvScore === undefined) tcvScore = computeTCV(tcvComps);
 
