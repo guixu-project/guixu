@@ -157,6 +157,7 @@ pub enum DataSource {
     BitTorrent,
     PostgreSql,
     DuckDb,
+    LocalFile,
 }
 
 /// Payment protocol used for a transaction.
