@@ -3,9 +3,9 @@ use libp2p::{
     futures::StreamExt,
     gossipsub, identify, kad,
     mdns::tokio::Behaviour as Mdns,
-    noise, tcp, yamux,
+    noise,
     swarm::{behaviour::toggle::Toggle, SwarmEvent},
-    Multiaddr, PeerId, StreamProtocol, Swarm,
+    tcp, yamux, Multiaddr, PeerId, StreamProtocol,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -25,9 +25,18 @@ pub enum NetworkEvent {
 /// Commands sent from upper layers to the network task.
 #[derive(Debug)]
 pub enum NetworkCommand {
-    DhtPut { key: Vec<u8>, value: Vec<u8> },
-    DhtGet { key: Vec<u8>, reply: tokio::sync::oneshot::Sender<Option<Vec<u8>>> },
-    GossipPublish { topic: String, data: Vec<u8> },
+    DhtPut {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    DhtGet {
+        key: Vec<u8>,
+        reply: tokio::sync::oneshot::Sender<Option<Vec<u8>>>,
+    },
+    GossipPublish {
+        topic: String,
+        data: Vec<u8>,
+    },
 }
 
 #[derive(libp2p::swarm::NetworkBehaviour)]
@@ -48,18 +57,24 @@ pub struct NetworkHandle {
 
 impl NetworkHandle {
     pub async fn dht_put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
-        self.cmd_tx.send(NetworkCommand::DhtPut { key, value }).await?;
+        self.cmd_tx
+            .send(NetworkCommand::DhtPut { key, value })
+            .await?;
         Ok(())
     }
 
     pub async fn dht_get(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.cmd_tx.send(NetworkCommand::DhtGet { key, reply: tx }).await?;
+        self.cmd_tx
+            .send(NetworkCommand::DhtGet { key, reply: tx })
+            .await?;
         Ok(rx.await?)
     }
 
     pub async fn gossip_publish(&self, topic: String, data: Vec<u8>) -> Result<()> {
-        self.cmd_tx.send(NetworkCommand::GossipPublish { topic, data }).await?;
+        self.cmd_tx
+            .send(NetworkCommand::GossipPublish { topic, data })
+            .await?;
         Ok(())
     }
 }
@@ -71,7 +86,7 @@ pub async fn start(
     event_tx: mpsc::Sender<NetworkEvent>,
 ) -> Result<NetworkHandle> {
     // Build identity from seed (deterministic)
-    let mut id_bytes = [0u8; 64];
+    let _id_bytes = [0u8; 64];
     // ed25519 in libp2p uses the full 64-byte expanded key, but we can derive from seed
     let id_keypair = libp2p::identity::Keypair::ed25519_from_bytes(keypair_seed.to_vec())
         .map_err(|e| anyhow::anyhow!("keypair from seed: {e}"))?;
@@ -116,11 +131,20 @@ pub async fn start(
         id_keypair.public(),
     ));
 
-    let behaviour = Behaviour { kademlia, gossipsub, mdns, identify };
+    let behaviour = Behaviour {
+        kademlia,
+        gossipsub,
+        mdns,
+        identify,
+    };
 
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(id_keypair)
         .with_tokio()
-        .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
+        .with_tcp(
+            tcp::Config::default(),
+            noise::Config::new,
+            yamux::Config::default,
+        )?
         .with_behaviour(|_| Ok(behaviour))
         .map_err(|e| anyhow::anyhow!("behaviour: {e}"))?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
@@ -152,7 +176,7 @@ pub async fn start(
 
     // Spawn swarm event loop
     tokio::spawn(async move {
-        let topic = gossipsub::IdentTopic::new(DATASETS_TOPIC);
+        let _topic = gossipsub::IdentTopic::new(DATASETS_TOPIC);
         loop {
             tokio::select! {
                 Some(cmd) = cmd_rx.recv() => {
@@ -233,5 +257,8 @@ pub async fn start(
         }
     });
 
-    Ok(NetworkHandle { cmd_tx, local_peer_id })
+    Ok(NetworkHandle {
+        cmd_tx,
+        local_peer_id,
+    })
 }

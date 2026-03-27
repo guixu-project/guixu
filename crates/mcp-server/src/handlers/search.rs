@@ -55,10 +55,18 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
 
     let search_output = state
         .search_engine
-        .search_with_task_type(query, task_type, &filters, &local_metadata, &signal_fetcher, limit)
+        .search_with_task_type(
+            query,
+            task_type,
+            &filters,
+            &local_metadata,
+            &signal_fetcher,
+            limit,
+        )
         .await?;
 
-    let output: Vec<serde_json::Value> = search_output.results
+    let output: Vec<serde_json::Value> = search_output
+        .results
         .iter()
         .enumerate()
         .map(|(i, r)| {

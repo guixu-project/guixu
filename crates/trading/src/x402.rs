@@ -145,10 +145,16 @@ impl X402Client {
             .context("x402: no accepted payment schemes")?;
 
         if scheme.scheme != "exact" {
-            bail!("x402: unsupported scheme '{}', expected 'exact'", scheme.scheme);
+            bail!(
+                "x402: unsupported scheme '{}', expected 'exact'",
+                scheme.scheme
+            );
         }
 
-        let pay_to: Address = scheme.pay_to.parse().context("x402: invalid payTo address")?;
+        let pay_to: Address = scheme
+            .pay_to
+            .parse()
+            .context("x402: invalid payTo address")?;
         let price_str = scheme
             .max_amount_required
             .as_deref()
@@ -156,8 +162,8 @@ impl X402Client {
             .context("x402: no price in payment requirements")?;
 
         // Parse amount — could be "$0.01" or raw units "10000"
-        let amount_raw = if price_str.starts_with('$') {
-            let dollars: f64 = price_str[1..].parse()?;
+        let amount_raw = if let Some(stripped) = price_str.strip_prefix('$') {
+            let dollars: f64 = stripped.parse()?;
             (dollars * 1_000_000.0) as u128 // USDC has 6 decimals
         } else {
             price_str.parse::<u128>()?
@@ -175,9 +181,9 @@ impl X402Client {
         let nonce = U256::from(rand_nonce());
         let deadline = U256::from(chrono::Utc::now().timestamp() as u64 + 3600);
 
-        let hash =
-            self.wallet
-                .eip712_transfer_hash(pay_to, amount, nonce, deadline, usdc_token, chain_id);
+        let hash = self
+            .wallet
+            .eip712_transfer_hash(pay_to, amount, nonce, deadline, usdc_token, chain_id);
 
         let signature = self.wallet.sign_hash(hash).await?;
         let sig_hex = format!("0x{}", hex::encode(&signature));
@@ -204,8 +210,8 @@ impl X402Client {
             },
         };
 
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode(serde_json::to_string(&payload)?);
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(serde_json::to_string(&payload)?);
 
         let resp = self
             .http
@@ -226,14 +232,12 @@ impl X402Client {
             .get("payment-response")
             .and_then(|h| h.to_str().ok())
             .and_then(|h| {
-                serde_json::from_str::<PaymentResponse>(h)
-                    .ok()
-                    .or_else(|| {
-                        base64::engine::general_purpose::STANDARD
-                            .decode(h)
-                            .ok()
-                            .and_then(|b| serde_json::from_slice(&b).ok())
-                    })
+                serde_json::from_str::<PaymentResponse>(h).ok().or_else(|| {
+                    base64::engine::general_purpose::STANDARD
+                        .decode(h)
+                        .ok()
+                        .and_then(|b| serde_json::from_slice(&b).ok())
+                })
             })
             .and_then(|pr| pr.tx_hash)
             .unwrap_or_default();

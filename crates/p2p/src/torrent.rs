@@ -1,9 +1,6 @@
 use anyhow::Result;
 use data_core::types::AccessMode;
-use librqbit::{
-    AddTorrent, AddTorrentOptions, Session, SessionOptions,
-    CreateTorrentOptions,
-};
+use librqbit::{AddTorrent, AddTorrentOptions, CreateTorrentOptions, Session, SessionOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
@@ -60,17 +57,17 @@ impl TorrentEngine {
                 .map_err(|e| anyhow::anyhow!("bt session: {e}"))?
             }
         };
-        Ok(Self { session: session.into(), download_dir })
+        Ok(Self {
+            session,
+            download_dir,
+        })
     }
 
     /// Create a .torrent for a local file and return the info hash hex.
     pub async fn create_torrent(&self, file_path: &Path) -> Result<String> {
-        let torrent_result = librqbit::create_torrent(
-            file_path,
-            CreateTorrentOptions::default(),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("create torrent: {e}"))?;
+        let torrent_result = librqbit::create_torrent(file_path, CreateTorrentOptions::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("create torrent: {e}"))?;
 
         // Add to session to start seeding immediately
         let handle = self
@@ -79,7 +76,11 @@ impl TorrentEngine {
                 AddTorrent::from_bytes(torrent_result.as_bytes()?),
                 Some(AddTorrentOptions {
                     output_folder: Some(
-                        file_path.parent().unwrap_or(Path::new(".")).to_string_lossy().into(),
+                        file_path
+                            .parent()
+                            .unwrap_or(Path::new("."))
+                            .to_string_lossy()
+                            .into(),
                     ),
                     overwrite: true,
                     ..Default::default()
@@ -98,7 +99,7 @@ impl TorrentEngine {
     /// Seed an already-known torrent.
     pub async fn start_seed(
         &self,
-        file_path: &Path,
+        _file_path: &Path,
         info_hash: &str,
         _access: AccessMode,
     ) -> Result<()> {
@@ -123,7 +124,9 @@ impl TorrentEngine {
     ) -> Result<PathBuf> {
         let handle = self.ensure_handle(info_hash).await?;
 
-        handle.wait_until_completed().await
+        handle
+            .wait_until_completed()
+            .await
             .map_err(|e| anyhow::anyhow!("download wait: {e}"))?;
 
         Ok(self.download_dir.join(info_hash))
@@ -133,11 +136,7 @@ impl TorrentEngine {
     ///
     /// Uses librqbit's streaming API which automatically prioritises the pieces
     /// being read, so only the beginning of the file is fetched from peers.
-    pub async fn download_preview(
-        &self,
-        info_hash: &str,
-        max_bytes: usize,
-    ) -> Result<Vec<u8>> {
+    pub async fn download_preview(&self, info_hash: &str, max_bytes: usize) -> Result<Vec<u8>> {
         let handle = self.ensure_handle(info_hash).await?;
 
         // Metadata should already be resolved by ensure_handle, but wait
@@ -151,7 +150,8 @@ impl TorrentEngine {
         .map_err(|e| anyhow::anyhow!("torrent init failed: {e}"))?;
 
         // Stream file_id 0 (first / only file in most dataset torrents)
-        let mut stream = handle.stream(0)
+        let mut stream = handle
+            .stream(0)
             .map_err(|e| anyhow::anyhow!("create stream: {e}"))?;
 
         let to_read = max_bytes.min(stream.len() as usize);
@@ -166,7 +166,7 @@ impl TorrentEngine {
             .await;
 
             match chunk_result {
-                Ok(Ok(0)) => break,           // EOF
+                Ok(Ok(0)) => break, // EOF
                 Ok(Ok(n)) => total += n,
                 Ok(Err(e)) => {
                     warn!(info_hash, error = %e, bytes_read = total, "preview stream error");
@@ -194,18 +194,29 @@ impl TorrentEngine {
         let tracker_params: String = PUBLIC_TRACKERS
             .iter()
             .map(|t| {
-                let encoded: String = t.bytes().map(|b| match b {
-                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-                    | b'-' | b'_' | b'.' | b'~' | b':' | b'/' => (b as char).to_string(),
-                    _ => format!("%{b:02X}"),
-                }).collect();
+                let encoded: String = t
+                    .bytes()
+                    .map(|b| match b {
+                        b'A'..=b'Z'
+                        | b'a'..=b'z'
+                        | b'0'..=b'9'
+                        | b'-'
+                        | b'_'
+                        | b'.'
+                        | b'~'
+                        | b':'
+                        | b'/' => (b as char).to_string(),
+                        _ => format!("%{b:02X}"),
+                    })
+                    .collect();
                 format!("&tr={encoded}")
             })
             .collect();
         let magnet = format!("magnet:?xt=urn:btih:{info_hash}{tracker_params}");
         tokio::time::timeout(
             MAGNET_RESOLVE_TIMEOUT,
-            self.session.add_torrent(AddTorrent::from_url(&magnet), Some(bt_add_options())),
+            self.session
+                .add_torrent(AddTorrent::from_url(&magnet), Some(bt_add_options())),
         )
         .await
         .map_err(|_| anyhow::anyhow!("timeout resolving torrent metadata for {info_hash}"))?
@@ -227,14 +238,20 @@ impl TorrentEngine {
     pub fn get_stats(&self, info_hash: &str) -> Result<serde_json::Value> {
         let id = librqbit::api::TorrentIdOrHash::parse(info_hash)
             .map_err(|e| anyhow::anyhow!("bad info_hash: {e}"))?;
-        let handle = self.session.get(id)
+        let handle = self
+            .session
+            .get(id)
             .ok_or_else(|| anyhow::anyhow!("torrent not found in session"))?;
 
         let stats = handle.stats();
-        let speed_str = stats.live.as_ref()
+        let speed_str = stats
+            .live
+            .as_ref()
             .map(|l| format!("{}", l.download_speed))
             .unwrap_or_else(|| "0 B/s".into());
-        let eta = stats.live.as_ref()
+        let eta = stats
+            .live
+            .as_ref()
             .and_then(|l| l.time_remaining.as_ref())
             .map(|t| format!("{t}"));
 
@@ -259,7 +276,12 @@ impl TorrentEngine {
 
 fn bt_add_options() -> AddTorrentOptions {
     AddTorrentOptions {
-        trackers: Some(PUBLIC_TRACKERS.iter().map(|tracker| (*tracker).to_string()).collect()),
+        trackers: Some(
+            PUBLIC_TRACKERS
+                .iter()
+                .map(|tracker| (*tracker).to_string())
+                .collect(),
+        ),
         ..Default::default()
     }
 }
@@ -334,7 +356,9 @@ mod tests {
     async fn create_torrent_nonexistent_file_returns_error() {
         let dir = temp_dir("no_file");
         let engine = TorrentEngine::new(dir.clone()).await.unwrap();
-        let result = engine.create_torrent(Path::new("/tmp/guixu_nonexistent_file.csv")).await;
+        let result = engine
+            .create_torrent(Path::new("/tmp/guixu_nonexistent_file.csv"))
+            .await;
         assert!(result.is_err());
     }
 
@@ -377,12 +401,9 @@ mod tests {
         .unwrap();
         let session: Arc<Session> = session.into();
 
-        let torrent_result = librqbit::create_torrent(
-            &file_path,
-            CreateTorrentOptions::default(),
-        )
-        .await
-        .unwrap();
+        let torrent_result = librqbit::create_torrent(&file_path, CreateTorrentOptions::default())
+            .await
+            .unwrap();
         let torrent_bytes = torrent_result.as_bytes().unwrap();
 
         let handle = session
@@ -400,7 +421,9 @@ mod tests {
             .unwrap();
 
         let info_hash = format!("{:?}", handle.info_hash());
-        let port = session.tcp_listen_port().expect("seeder must have a listen port");
+        let port = session
+            .tcp_listen_port()
+            .expect("seeder must have a listen port");
         (session, torrent_bytes, info_hash, port)
     }
 
@@ -505,7 +528,11 @@ mod tests {
         assert!(total > 0, "should have read some bytes");
         // Verify content starts with our CSV header
         let text = String::from_utf8_lossy(&buf[..total]);
-        assert!(text.starts_with("col_a,col_b"), "unexpected content: {}", &text[..text.len().min(50)]);
+        assert!(
+            text.starts_with("col_a,col_b"),
+            "unexpected content: {}",
+            &text[..text.len().min(50)]
+        );
     }
 
     #[test]

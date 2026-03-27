@@ -9,9 +9,5 @@ use crate::router::TransactionContext;
 #[async_trait]
 pub trait PaymentProtocolHandler: Send + Sync {
     /// Execute a payment against a seller endpoint.
-    async fn pay(
-        &self,
-        seller_url: &str,
-        ctx: &TransactionContext,
-    ) -> Result<TransactionReceipt>;
+    async fn pay(&self, seller_url: &str, ctx: &TransactionContext) -> Result<TransactionReceipt>;
 }

@@ -14,11 +14,11 @@ use tracing::info;
 use data_auth::privacy::{PrivacyConfig, PrivacyLevel};
 use data_core::types::AccessMode;
 
+use crate::demo_ui;
 use crate::protocol::{McpRequest, McpResponse};
 use crate::rpc::handle_request;
 use crate::state::AppState;
 use crate::web_ui::INDEX_HTML;
-use crate::demo_ui;
 
 /// HTTP server: MCP JSON-RPC + REST API + embedded Web UI.
 pub async fn run_http(state: Arc<AppState>, port: u16) -> Result<()> {

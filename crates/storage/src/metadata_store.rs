@@ -1,7 +1,7 @@
 use anyhow::Result;
 use data_core::metadata::DatasetMetadata;
 use data_core::types::DatasetCid;
-use rocksdb::{DB, Options};
+use rocksdb::{Options, DB};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -53,7 +53,8 @@ impl MetadataStore {
     /// Record the local file path for a dataset CID.
     pub fn put_file_path(&self, cid: &DatasetCid, path: &Path) -> Result<()> {
         let key = format!("file:{}", cid.0);
-        self.db.put(key.as_bytes(), path.to_string_lossy().as_bytes())?;
+        self.db
+            .put(key.as_bytes(), path.to_string_lossy().as_bytes())?;
         Ok(())
     }
 
@@ -61,7 +62,9 @@ impl MetadataStore {
     pub fn get_file_path(&self, cid: &DatasetCid) -> Result<Option<std::path::PathBuf>> {
         let key = format!("file:{}", cid.0);
         match self.db.get(key.as_bytes())? {
-            Some(bytes) => Ok(Some(std::path::PathBuf::from(String::from_utf8_lossy(&bytes).to_string()))),
+            Some(bytes) => Ok(Some(std::path::PathBuf::from(
+                String::from_utf8_lossy(&bytes).to_string(),
+            ))),
             None => Ok(None),
         }
     }

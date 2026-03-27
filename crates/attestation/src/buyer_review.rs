@@ -58,7 +58,10 @@ pub async fn fetch_buyer_reviews(
             let raw = ttx.value.parse::<u128>().ok()?;
             Some((
                 ttx.hash.to_lowercase(),
-                PaymentAmount { token, amount: token.to_display_amount(raw) },
+                PaymentAmount {
+                    token,
+                    amount: token.to_display_amount(raw),
+                },
             ))
         })
         .collect();
@@ -120,7 +123,7 @@ pub(crate) fn parse_review_from_input(
         return None;
     }
     let str_len = u256_to_usize(&bytes[str_len_offset..str_len_offset + 32])?;
-    let padded_str_len = (str_len + 31) / 32 * 32;
+    let padded_str_len = str_len.div_ceil(32) * 32;
     let abi_end = 4 + 32 + 32 + padded_str_len;
 
     if bytes.len() <= abi_end {
@@ -134,7 +137,9 @@ pub(crate) fn parse_review_from_input(
 
     let rating = review_bytes[0].clamp(1, 5);
     let comment = if review_bytes.len() > 1 {
-        String::from_utf8_lossy(&review_bytes[1..]).trim().to_string()
+        String::from_utf8_lossy(&review_bytes[1..])
+            .trim()
+            .to_string()
     } else {
         String::new()
     };

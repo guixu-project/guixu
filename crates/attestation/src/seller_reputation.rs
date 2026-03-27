@@ -51,7 +51,11 @@ pub async fn fetch_seller_reputation(
         .iter()
         .filter(|tx| {
             tx.is_error == "0"
-                && tx.function_name.as_deref().unwrap_or("").contains("purchase")
+                && tx
+                    .function_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("purchase")
         })
         .collect();
 
@@ -96,8 +100,14 @@ pub async fn fetch_seller_reputation(
 
     // Stablecoins count as 1:1 USD; ETH excluded from USD total
     // (no price oracle — conservative approach)
-    let total_volume_usd = volume_by_token.get(&PaymentToken::USDC).copied().unwrap_or(0.0)
-        + volume_by_token.get(&PaymentToken::USDT).copied().unwrap_or(0.0);
+    let total_volume_usd = volume_by_token
+        .get(&PaymentToken::USDC)
+        .copied()
+        .unwrap_or(0.0)
+        + volume_by_token
+            .get(&PaymentToken::USDT)
+            .copied()
+            .unwrap_or(0.0);
 
     let tier = compute_tier(total_sales, total_volume_usd, buyers.len() as u64);
 

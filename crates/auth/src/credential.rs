@@ -17,7 +17,7 @@ pub struct DatasetCredential {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialSubject {
-    pub id: String,          // CID
+    pub id: String, // CID
     pub merkle_root: String,
     pub schema_hash: String,
     pub row_count: u64,
@@ -40,9 +40,7 @@ impl DatasetCredential {
         let subject = CredentialSubject {
             id: format!("cid:{}", metadata.cid.0),
             merkle_root: metadata.info_hash.clone(),
-            schema_hash: data_core::identity::sha256_hex(
-                &serde_json::to_vec(&metadata.schema)?,
-            ),
+            schema_hash: data_core::identity::sha256_hex(&serde_json::to_vec(&metadata.schema)?),
             row_count: metadata.schema.row_count,
             null_rate: metadata.stats.as_ref().map(|s| s.null_rate).unwrap_or(0.0),
             provenance: serde_json::to_string(&metadata.provenance)?,

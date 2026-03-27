@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::seller_reputation::{compute_tier, ReputationTier};
     use crate::buyer_review::{summarize_reviews, BuyerReview};
     use crate::client::{BasescanTx, PaymentAmount, PaymentToken};
+    use crate::seller_reputation::{compute_tier, ReputationTier};
 
     // --- Reputation tier tests (now USD-based thresholds) ---
 
@@ -117,7 +117,10 @@ mod tests {
 
         let token_payments = std::collections::HashMap::new();
         let review = super::super::buyer_review::parse_review_from_input(
-            &tx.input, "listing-1", &tx, &token_payments,
+            &tx.input,
+            "listing-1",
+            &tx,
+            &token_payments,
         );
         assert!(review.is_some());
         let r = review.unwrap();
@@ -154,11 +157,17 @@ mod tests {
         let mut token_payments = std::collections::HashMap::new();
         token_payments.insert(
             "0xtx_usdc".to_string(),
-            PaymentAmount { token: PaymentToken::USDC, amount: 25.0 },
+            PaymentAmount {
+                token: PaymentToken::USDC,
+                amount: 25.0,
+            },
         );
 
         let review = super::super::buyer_review::parse_review_from_input(
-            &tx.input, "listing-1", &tx, &token_payments,
+            &tx.input,
+            "listing-1",
+            &tx,
+            &token_payments,
         );
         assert!(review.is_some());
         let r = review.unwrap();
@@ -187,7 +196,10 @@ mod tests {
 
         let token_payments = std::collections::HashMap::new();
         let review = super::super::buyer_review::parse_review_from_input(
-            &tx.input, "listing-1", &tx, &token_payments,
+            &tx.input,
+            "listing-1",
+            &tx,
+            &token_payments,
         );
         assert!(review.is_none());
     }

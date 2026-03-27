@@ -27,6 +27,7 @@ pub type SignalFetcher = Box<dyn Fn(&str) -> CommunitySignal + Send + Sync>;
 /// The unified search engine. Merges results from local store, DHT,
 /// and external adapters (Kaggle, HuggingFace, IPFS, PostgreSQL, DuckDB).
 pub struct SearchEngine {
+    #[allow(dead_code)]
     vector_index: VectorIndex,
     intent_parser: IntentParser,
     adapters: Vec<Box<dyn ExternalAdapter>>,
@@ -38,7 +39,11 @@ impl SearchEngine {
         intent_parser: IntentParser,
         adapters: Vec<Box<dyn ExternalAdapter>>,
     ) -> Self {
-        Self { vector_index, intent_parser, adapters }
+        Self {
+            vector_index,
+            intent_parser,
+            adapters,
+        }
     }
 
     /// Main search entry point — called by MCP tool `dataset_search`.
@@ -101,7 +106,11 @@ impl SearchEngine {
             all.retain(|r| r.price.amount <= max_price);
         }
         if let Some(ref src) = filters.source {
-            all.retain(|r| format!("{:?}", r.source).to_lowercase().contains(&src.to_lowercase()));
+            all.retain(|r| {
+                format!("{:?}", r.source)
+                    .to_lowercase()
+                    .contains(&src.to_lowercase())
+            });
         }
 
         // Deduplicate by CID
@@ -121,14 +130,25 @@ impl SearchEngine {
             .map(|r| {
                 let signal = signal_fetcher(&r.cid.0);
                 let score = rank_with_signal(&r, &signal, profile);
-                RankedResult { result: r, rank_score: score, signal }
+                RankedResult {
+                    result: r,
+                    rank_score: score,
+                    signal,
+                }
             })
             .collect();
 
-        ranked.sort_by(|a, b| b.rank_score.partial_cmp(&a.rank_score).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.sort_by(|a, b| {
+            b.rank_score
+                .partial_cmp(&a.rank_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         ranked.truncate(limit);
 
-        Ok(SearchOutput { results: ranked, errors })
+        Ok(SearchOutput {
+            results: ranked,
+            errors,
+        })
     }
 
     /// Search local P2P metadata store.
@@ -150,10 +170,9 @@ impl SearchEngine {
                 let all_text = format!("{title} {desc} {tags_str}");
 
                 // Match if query substring or any keyword matches
-                all_text.contains(&query_lower)
-                    || keywords.iter().any(|kw| all_text.contains(kw))
+                all_text.contains(&query_lower) || keywords.iter().any(|kw| all_text.contains(kw))
             })
-            .map(|m| metadata_to_search_result(m))
+            .map(metadata_to_search_result)
             .collect();
 
         Ok(results)
@@ -259,10 +278,14 @@ fn strict_task_data_type(task_type: Option<&str>) -> Option<data_core::types::Da
     use data_core::types::DataType;
 
     match task_type.map(|s| s.trim().to_lowercase()) {
-        Some(task_type) if matches!(
-            task_type.as_str(),
-            "time_series_prediction" | "forecasting" | "regression"
-        ) => Some(DataType::Tabular),
+        Some(task_type)
+            if matches!(
+                task_type.as_str(),
+                "time_series_prediction" | "forecasting" | "regression"
+            ) =>
+        {
+            Some(DataType::Tabular)
+        }
         Some(task_type) if task_type == "nlp" => Some(DataType::Text),
         Some(task_type) if task_type == "video_classification" => Some(DataType::Video),
         _ => None,
@@ -283,7 +306,7 @@ fn metadata_to_search_result(m: &DatasetMetadata) -> SearchResult {
         license: m.license.clone(),
         provider: m.provider.clone(),
         source: DataSource::P2p,
-        data_type: m.data_type.clone(),
+        data_type: m.data_type,
         created_at: m.created_at,
     }
 }
