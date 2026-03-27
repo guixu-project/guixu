@@ -9,6 +9,11 @@ use crate::server::AppState;
 
 pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String> {
     let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+    let task_type = args
+        .get("task_type")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
     let filter_obj = args.get("filters").cloned().unwrap_or_default();
@@ -50,7 +55,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
 
     let search_output = state
         .search_engine
-        .search(query, &filters, &local_metadata, &signal_fetcher, limit)
+        .search_with_task_type(query, task_type, &filters, &local_metadata, &signal_fetcher, limit)
         .await?;
 
     let output: Vec<serde_json::Value> = search_output.results
@@ -63,6 +68,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
                 "title": r.result.title,
                 "description": r.result.description,
                 "source": r.result.source,
+                "data_type": r.result.data_type,
                 "price": r.result.price,
                 "schema": {
                     "columns": r.result.schema.columns.len(),
