@@ -673,3 +673,48 @@ async fn search_result_includes_data_type() {
     // metadata_to_search_result should propagate data_type from metadata
     assert_eq!(output.results[0].result.data_type, DataType::Tabular); // make_metadata uses Tabular
 }
+
+// ===========================================================================
+// DataCite Commons integration test (requires network, run with --ignored)
+// ===========================================================================
+
+#[tokio::test]
+#[ignore] // requires network access — run with: cargo test -p data-search -- --ignored
+async fn datacite_commons_live_search_returns_results() {
+    let adapter = adapters::DataCiteCommonsAdapter::default();
+    let results = adapter.search("climate", 5).await.expect("DataCite API call failed");
+
+    assert!(!results.is_empty(), "expected at least one result for 'climate'");
+    assert!(results.len() <= 5, "should respect limit");
+
+    for r in &results {
+        // CID should be a DOI
+        assert!(r.cid.0.starts_with("10."), "cid should be a DOI, got: {}", r.cid.0);
+        assert!(!r.title.is_empty(), "title must not be empty");
+        assert!(matches!(r.source, DataSource::DataCiteCommons));
+        assert!(r.price.amount == 0.0, "DataCite datasets should be free");
+        assert!(r.provider.0.starts_with("doi:"), "provider should be doi: prefixed");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn datacite_commons_live_empty_query_does_not_panic() {
+    let adapter = adapters::DataCiteCommonsAdapter::default();
+    // Empty or very obscure query — should return ok (possibly empty)
+    let result = adapter.search("zzzxxx_nonexistent_dataset_42", 3).await;
+    assert!(result.is_ok(), "should not error on obscure query");
+}
+
+#[tokio::test]
+#[ignore]
+async fn datacite_commons_live_result_has_description_or_year() {
+    let adapter = adapters::DataCiteCommonsAdapter::default();
+    let results = adapter.search("genomics", 3).await.expect("API call failed");
+
+    // At least one result should have a description with year prefix
+    if !results.is_empty() {
+        let has_desc = results.iter().any(|r| r.description.is_some());
+        assert!(has_desc, "expected at least one result with a description");
+    }
+}

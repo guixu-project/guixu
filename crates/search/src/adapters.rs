@@ -349,11 +349,16 @@ impl ExternalAdapter for DuckDbAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Google Dataset Search — scrapes the public JSON-LD endpoint
+// Google Dataset Search — via Google Custom Search JSON API
+//   Requires GOOGLE_API_KEY and GOOGLE_CSE_ID env vars.
+//   Create a Programmable Search Engine scoped to datasetsearch.research.google.com
+//   at https://programmablesearchengine.google.com/
 // ---------------------------------------------------------------------------
 
 pub struct GoogleDatasetSearchAdapter {
     client: reqwest::Client,
+    api_key: Option<String>,
+    cse_id: Option<String>,
 }
 
 impl Default for GoogleDatasetSearchAdapter {
@@ -364,6 +369,8 @@ impl Default for GoogleDatasetSearchAdapter {
                 .user_agent("guixu/0.1")
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
+            api_key: std::env::var("GOOGLE_API_KEY").ok(),
+            cse_id: std::env::var("GOOGLE_CSE_ID").ok(),
         }
     }
 }
@@ -374,10 +381,18 @@ impl ExternalAdapter for GoogleDatasetSearchAdapter {
     fn source_type(&self) -> DataSource { DataSource::GoogleDatasetSearch }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        let url = "https://datasetsearch.research.google.com/api/search";
+        let (api_key, cse_id) = match (&self.api_key, &self.cse_id) {
+            (Some(k), Some(c)) => (k.as_str(), c.as_str()),
+            _ => return Ok(vec![]),
+        };
+
+        let num = limit.min(10).to_string(); // Google CSE max 10 per request
         let resp = tokio::time::timeout(
             Duration::from_secs(10),
-            self.client.get(url).query(&[("query", query)]).send(),
+            self.client
+                .get("https://www.googleapis.com/customsearch/v1")
+                .query(&[("key", api_key), ("cx", cse_id), ("q", query), ("num", &num)])
+                .send(),
         )
         .await
         .map_err(|_| anyhow!("google dataset search: timeout"))??
@@ -386,31 +401,28 @@ impl ExternalAdapter for GoogleDatasetSearchAdapter {
         .await?;
 
         let empty = vec![];
-        let items = resp.get("results")
-            .or_else(|| resp.get("datasets"))
-            .and_then(|v| v.as_array())
-            .unwrap_or(&empty);
+        let items = resp.get("items").and_then(|v| v.as_array()).unwrap_or(&empty);
 
         Ok(items.iter().take(limit).filter_map(|item| {
             let title = item.get("title").and_then(|v| v.as_str())?;
-            let desc = item.get("description").and_then(|v| v.as_str()).map(String::from);
-            let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let link = item.get("link").and_then(|v| v.as_str()).unwrap_or("");
+            let snippet = item.get("snippet").and_then(|v| v.as_str()).map(String::from);
             let cid_hash = {
                 use sha2::Digest;
                 let mut h = sha2::Sha256::new();
-                h.update(format!("gds:{title}:{url}").as_bytes());
+                h.update(format!("gds:{title}:{link}").as_bytes());
                 hex::encode(h.finalize())
             };
 
             Some(SearchResult {
                 cid: DatasetCid(cid_hash),
                 title: title.to_string(),
-                description: desc,
+                description: snippet,
                 schema: DatasetSchema { columns: vec![], row_count: 0, size_bytes: 0 },
                 quality: None,
                 price: Price::free(),
                 license: License { spdx_id: "unknown".into(), commercial_use: false, derivative_allowed: false },
-                provider: Did(format!("gds:{url}")),
+                provider: Did(format!("gds:{link}")),
                 source: DataSource::GoogleDatasetSearch,
                 data_type: infer_data_type_from_title(title),
                 created_at: chrono::Utc::now(),

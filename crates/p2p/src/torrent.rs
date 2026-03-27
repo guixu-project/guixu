@@ -50,6 +50,7 @@ impl TorrentEngine {
                     output_folder: Some(
                         file_path.parent().unwrap_or(Path::new(".")).to_string_lossy().into(),
                     ),
+                    overwrite: true,
                     ..Default::default()
                 }),
             )
@@ -212,5 +213,250 @@ impl TorrentEngine {
             "finished": stats.finished,
             "error": stats.error,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let p = std::env::temp_dir()
+            .join("guixu-bt-test")
+            .join(name)
+            .join(format!("{}", std::process::id()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[tokio::test]
+    async fn engine_new_creates_download_dir() {
+        let dir = temp_dir("engine_new");
+        let sub = dir.join("nested");
+        assert!(!sub.exists());
+        let engine = TorrentEngine::new(sub.clone()).await;
+        assert!(engine.is_ok());
+        assert!(sub.exists());
+    }
+
+    /// Create a test file in a subdirectory (not the download_dir itself)
+    /// so librqbit's add_torrent won't conflict with existing files.
+    fn write_test_file(dir: &Path, name: &str) -> PathBuf {
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let file_path = src.join(name);
+        let data = "col_a,col_b\n".repeat(5000);
+        std::fs::write(&file_path, &data).unwrap();
+        file_path
+    }
+
+    #[tokio::test]
+    async fn create_torrent_returns_info_hash() {
+        let dir = temp_dir("create_torrent");
+        let engine = TorrentEngine::new(dir.clone()).await.unwrap();
+        let file_path = write_test_file(&dir, "test_dataset.csv");
+
+        let info_hash = engine.create_torrent(&file_path).await.unwrap();
+        assert!(!info_hash.is_empty(), "info_hash should not be empty");
+    }
+
+    #[tokio::test]
+    async fn create_torrent_and_get_stats() {
+        let dir = temp_dir("stats");
+        let engine = TorrentEngine::new(dir.clone()).await.unwrap();
+        let file_path = write_test_file(&dir, "stats_dataset.csv");
+
+        let info_hash = engine.create_torrent(&file_path).await.unwrap();
+        let stats = engine.get_stats(&info_hash).unwrap();
+
+        assert!(stats.get("state").is_some());
+        assert!(stats.get("total_bytes").is_some());
+        assert!(stats.get("progress_pct").is_some());
+    }
+
+    #[tokio::test]
+    async fn get_stats_unknown_hash_returns_error() {
+        let dir = temp_dir("stats_unknown");
+        let engine = TorrentEngine::new(dir).await.unwrap();
+        let result = engine.get_stats("0000000000000000000000000000000000000000");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_torrent_nonexistent_file_returns_error() {
+        let dir = temp_dir("no_file");
+        let engine = TorrentEngine::new(dir.clone()).await.unwrap();
+        let result = engine.create_torrent(Path::new("/tmp/guixu_nonexistent_file.csv")).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_torrent_is_deterministic() {
+        let dir = temp_dir("deterministic");
+        let engine = TorrentEngine::new(dir.clone()).await.unwrap();
+        let file_path = write_test_file(&dir, "det.csv");
+
+        let hash1 = engine.create_torrent(&file_path).await.unwrap();
+
+        // Second engine, same file content
+        let dir2 = temp_dir("deterministic2");
+        let engine2 = TorrentEngine::new(dir2.clone()).await.unwrap();
+        let file_path2 = write_test_file(&dir2, "det.csv");
+
+        let hash2 = engine2.create_torrent(&file_path2).await.unwrap();
+        assert_eq!(hash1, hash2, "same content should produce same info_hash");
+    }
+
+    /// Helper: create a seeder session on a specific port range and return
+    /// (session, torrent_bytes, info_hash, listen_port).
+    async fn setup_seeder(name: &str) -> (Arc<Session>, bytes::Bytes, String, u16) {
+        let dir = temp_dir(name);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let file_path = src.join("data.csv");
+        std::fs::write(&file_path, "col_a,col_b\n".repeat(5000)).unwrap();
+
+        let session = Session::new_with_opts(
+            dir,
+            SessionOptions {
+                disable_dht: false,
+                disable_dht_persistence: true,
+                listen_port_range: Some(14000..14100),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let session: Arc<Session> = session.into();
+
+        let torrent_result = librqbit::create_torrent(
+            &file_path,
+            CreateTorrentOptions::default(),
+        )
+        .await
+        .unwrap();
+        let torrent_bytes = torrent_result.as_bytes().unwrap();
+
+        let handle = session
+            .add_torrent(
+                AddTorrent::from_bytes(torrent_bytes.clone()),
+                Some(AddTorrentOptions {
+                    output_folder: Some(src.to_string_lossy().into()),
+                    overwrite: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap()
+            .into_handle()
+            .unwrap();
+
+        let info_hash = format!("{:?}", handle.info_hash());
+        let port = session.tcp_listen_port().expect("seeder must have a listen port");
+        (session, torrent_bytes, info_hash, port)
+    }
+
+    #[tokio::test]
+    async fn download_from_seeder() {
+        let (_seeder, torrent_bytes, _info_hash, port) = setup_seeder("dl_seed").await;
+
+        let dl_dir = temp_dir("dl_down");
+        let dl_session = Session::new_with_opts(
+            dl_dir.clone(),
+            SessionOptions {
+                disable_dht: true,
+                disable_dht_persistence: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let peer_addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let handle = dl_session
+            .add_torrent(
+                AddTorrent::from_bytes(torrent_bytes.clone()),
+                Some(AddTorrentOptions {
+                    initial_peers: Some(vec![peer_addr]),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap()
+            .into_handle()
+            .unwrap();
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            handle.wait_until_completed(),
+        )
+        .await
+        .expect("download timed out")
+        .expect("download failed");
+
+        assert!(handle.stats().finished);
+    }
+
+    #[tokio::test]
+    async fn download_preview_from_seeder() {
+        let (_seeder, torrent_bytes, _info_hash, port) = setup_seeder("prev_seed").await;
+
+        let dl_dir = temp_dir("prev_down");
+        let dl_session = Session::new_with_opts(
+            dl_dir.clone(),
+            SessionOptions {
+                disable_dht: true,
+                disable_dht_persistence: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let peer_addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let handle = dl_session
+            .add_torrent(
+                AddTorrent::from_bytes(torrent_bytes.clone()),
+                Some(AddTorrentOptions {
+                    initial_peers: Some(vec![peer_addr]),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap()
+            .into_handle()
+            .unwrap();
+
+        // Wait for metadata
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            handle.wait_until_initialized(),
+        )
+        .await
+        .expect("metadata timed out")
+        .expect("metadata failed");
+
+        // Stream first 1024 bytes
+        let mut stream = handle.stream(0).expect("stream file 0");
+        let mut buf = vec![0u8; 1024];
+        let mut total = 0usize;
+        while total < buf.len() {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                stream.read(&mut buf[total..]),
+            )
+            .await
+            {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => total += n,
+                Ok(Err(e)) => panic!("preview read error: {e}"),
+                Err(_) => panic!("preview read timed out"),
+            }
+        }
+
+        assert!(total > 0, "should have read some bytes");
+        // Verify content starts with our CSV header
+        let text = String::from_utf8_lossy(&buf[..total]);
+        assert!(text.starts_with("col_a,col_b"), "unexpected content: {}", &text[..text.len().min(50)]);
     }
 }
