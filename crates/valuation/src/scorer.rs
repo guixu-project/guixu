@@ -65,7 +65,11 @@ impl QualityScorer {
     }
 
     /// Score with actual data access (more accurate, requires download).
-    pub fn score_from_data(&self, _data: &[u8], metadata: &DatasetMetadata) -> Result<QualityScore> {
+    pub fn score_from_data(
+        &self,
+        _data: &[u8],
+        metadata: &DatasetMetadata,
+    ) -> Result<QualityScore> {
         // TODO(milestone-2): use Polars to compute actual stats
         Ok(self.score_from_metadata(metadata))
     }

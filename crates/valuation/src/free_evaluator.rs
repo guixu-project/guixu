@@ -79,7 +79,11 @@ impl FreeDataEvaluator {
         let matched = task
             .required_columns
             .iter()
-            .filter(|rc| dataset_cols.iter().any(|dc| dc.contains(&rc.to_lowercase())))
+            .filter(|rc| {
+                dataset_cols
+                    .iter()
+                    .any(|dc| dc.contains(&rc.to_lowercase()))
+            })
             .count();
         (matched as f64 / task.required_columns.len() as f64) * 100.0
     }
@@ -122,9 +126,13 @@ impl FreeDataEvaluator {
             let best = dataset_cols
                 .iter()
                 .map(|dc| {
-                    if dc == &req_lower { 1.0 }
-                    else if dc.contains(&req_lower) || req_lower.contains(dc) { 0.5 }
-                    else { 0.0 }
+                    if dc == &req_lower {
+                        1.0
+                    } else if dc.contains(&req_lower) || req_lower.contains(dc) {
+                        0.5
+                    } else {
+                        0.0
+                    }
                 })
                 .fold(0.0_f64, f64::max);
 

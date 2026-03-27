@@ -12,3 +12,6 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
 rand = { workspace = true }
+
+[lints]
+workspace = true

@@ -16,7 +16,7 @@ impl VectorIndex {
     }
 
     /// Index a dataset's metadata (embed title+description+tags → vector).
-    pub async fn upsert(&self, metadata: &DatasetMetadata) -> Result<()> {
+    pub async fn upsert(&self, _metadata: &DatasetMetadata) -> Result<()> {
         // TODO(milestone-2):
         // 1. Concatenate title + description + tags
         // 2. Run through all-MiniLM-L6-v2 (ONNX)
@@ -25,7 +25,7 @@ impl VectorIndex {
     }
 
     /// Semantic search: embed query → nearest neighbors.
-    pub async fn search(&self, query_embedding: &[f32], limit: usize) -> Result<Vec<DatasetCid>> {
+    pub async fn search(&self, _query_embedding: &[f32], _limit: usize) -> Result<Vec<DatasetCid>> {
         // TODO(milestone-2): Qdrant search → return CIDs
         Ok(vec![])
     }

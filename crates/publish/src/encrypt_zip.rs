@@ -8,10 +8,7 @@ use zip::ZipWriter;
 /// Returns the zip bytes.
 pub fn encrypt_zip(path: &Path, password: &str) -> Result<Vec<u8>> {
     let data = std::fs::read(path).context("read source file")?;
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("data");
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("data");
 
     let buf = Cursor::new(Vec::new());
     let mut zip = ZipWriter::new(buf);

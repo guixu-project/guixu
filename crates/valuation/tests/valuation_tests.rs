@@ -196,7 +196,10 @@ mod free_evaluator_tests {
     async fn pmi_high_for_exact_column_match() {
         let eval = FreeDataEvaluator;
         let meta = make_metadata("a", &[("text", "utf8"), ("label", "int64")], 0.0);
-        let report = eval.evaluate(&meta, &task(&["text", "label"])).await.unwrap();
+        let report = eval
+            .evaluate(&meta, &task(&["text", "label"]))
+            .await
+            .unwrap();
         // Exact match on all columns → high information gain
         assert!(
             report.information_gain > 50.0,
@@ -209,7 +212,10 @@ mod free_evaluator_tests {
     async fn pmi_low_for_no_column_match() {
         let eval = FreeDataEvaluator;
         let meta = make_metadata("a", &[("foo", "utf8"), ("bar", "int64")], 0.0);
-        let report = eval.evaluate(&meta, &task(&["text", "label"])).await.unwrap();
+        let report = eval
+            .evaluate(&meta, &task(&["text", "label"]))
+            .await
+            .unwrap();
         assert!(
             report.information_gain < 10.0,
             "no match info gain ({}) should be < 10",
@@ -221,7 +227,10 @@ mod free_evaluator_tests {
     async fn pmi_partial_for_substring_match() {
         let eval = FreeDataEvaluator;
         let meta = make_metadata("a", &[("text_content", "utf8"), ("id", "int64")], 0.0);
-        let report = eval.evaluate(&meta, &task(&["text", "label"])).await.unwrap();
+        let report = eval
+            .evaluate(&meta, &task(&["text", "label"]))
+            .await
+            .unwrap();
         // Partial match: "text_content" contains "text"
         assert!(report.information_gain > 0.0);
         assert!(report.information_gain < 70.0);
@@ -239,7 +248,10 @@ mod free_evaluator_tests {
     async fn total_score_reflects_all_dimensions() {
         let eval = FreeDataEvaluator;
         let meta = make_metadata("a", &[("text", "utf8"), ("label", "int64")], 0.0);
-        let report = eval.evaluate(&meta, &task(&["text", "label"])).await.unwrap();
+        let report = eval
+            .evaluate(&meta, &task(&["text", "label"]))
+            .await
+            .unwrap();
         assert!(report.total_score > 0.0);
         assert!(report.total_score <= 100.0);
     }
@@ -259,10 +271,7 @@ mod paid_evaluator_tests {
         let quality = make_quality(80.0);
         let signal = make_signal(10, 0.8, 0.1);
 
-        let report_no_free = eval
-            .evaluate(&meta, &quality, &[], &signal)
-            .await
-            .unwrap();
+        let report_no_free = eval.evaluate(&meta, &quality, &[], &signal).await.unwrap();
 
         let free_meta = make_metadata("free", &[("text", "utf8")], 0.0);
         let free_q = make_quality(70.0);
@@ -304,7 +313,11 @@ mod paid_evaluator_tests {
         let eval = PaidDataEvaluator;
         let meta = make_metadata(
             "paid",
-            &[("text", "utf8"), ("label", "int64"), ("embedding", "float64")],
+            &[
+                ("text", "utf8"),
+                ("label", "int64"),
+                ("embedding", "float64"),
+            ],
             1.0,
         );
         let quality = make_quality(90.0);
@@ -449,8 +462,7 @@ mod memory_evaluator_tests {
 
         assert!(report.total_score > 50.0);
         assert!(
-            report.recommendation.contains("suitable")
-                || report.recommendation.contains("Highly"),
+            report.recommendation.contains("suitable") || report.recommendation.contains("Highly"),
             "good fit should be recommended, got: {}",
             report.recommendation
         );
@@ -469,7 +481,11 @@ mod scorer_tests {
         let scorer = QualityScorer;
         let meta = make_metadata("good", &[("a", "int64"), ("b", "utf8")], 0.0);
         let score = scorer.score_from_metadata(&meta);
-        assert!(score.total > 50.0, "good metadata should score > 50, got {}", score.total);
+        assert!(
+            score.total > 50.0,
+            "good metadata should score > 50, got {}",
+            score.total
+        );
     }
 
     #[test]
