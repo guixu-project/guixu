@@ -144,9 +144,7 @@ mod tests {
         store.put(&make_feedback("cid-1", "fb-1", true)).unwrap();
         store.put(&make_feedback("cid-1", "fb-2", false)).unwrap();
 
-        let signal = store
-            .compute_signal(&DatasetCid("cid-1".into()))
-            .unwrap();
+        let signal = store.compute_signal(&DatasetCid("cid-1".into())).unwrap();
         assert_eq!(signal.total_reviews, 2);
         assert!((signal.positive_rate - 0.5).abs() < f64::EPSILON);
         assert!((signal.negative_rate - 0.5).abs() < f64::EPSILON);

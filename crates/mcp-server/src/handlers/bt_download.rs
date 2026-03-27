@@ -61,7 +61,13 @@ pub async fn handle_preview(args: serde_json::Value, state: &AppState) -> Result
                     let hex_part: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
                     let ascii_part: String = chunk
                         .iter()
-                        .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+                        .map(|&b| {
+                            if b.is_ascii_graphic() || b == b' ' {
+                                b as char
+                            } else {
+                                '.'
+                            }
+                        })
                         .collect();
                     format!("{:<48} {}", hex_part.join(" "), ascii_part)
                 })

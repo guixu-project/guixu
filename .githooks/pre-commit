@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+cargo fmt -- --check || {
+    echo "❌ cargo fmt failed. Run 'cargo fmt' and re-commit."
+    exit 1
+}
+
+cargo clippy --workspace -- -D warnings || {
+    echo "❌ cargo clippy failed. Fix warnings and re-commit."
+    exit 1
+}

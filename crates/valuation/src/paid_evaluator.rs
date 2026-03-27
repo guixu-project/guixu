@@ -100,7 +100,10 @@ impl PaidDataEvaluator {
         } else if roi_ratio > 2.0 {
             let mut msg = format!("Strong buy (ROI = {roi_ratio:.1}x)");
             if let Some(sr) = previous_buyer_success_rate {
-                msg.push_str(&format!(". {:.0}% of previous buyers succeeded", sr * 100.0));
+                msg.push_str(&format!(
+                    ". {:.0}% of previous buyers succeeded",
+                    sr * 100.0
+                ));
             }
             msg
         } else if roi_ratio > 1.0 {
@@ -165,7 +168,11 @@ impl PaidDataEvaluator {
             .collect();
         let intersection = cols_a.intersection(&cols_b).count() as f64;
         let union = cols_a.union(&cols_b).count() as f64;
-        let jaccard_dist = if union > 0.0 { 1.0 - intersection / union } else { 1.0 };
+        let jaccard_dist = if union > 0.0 {
+            1.0 - intersection / union
+        } else {
+            1.0
+        };
 
         // RBF kernel: k(x,y) = exp(-||x-y||² / 2σ²), σ² = 2·dim
         let sigma_sq = 2.0 * q_diffs.len() as f64;

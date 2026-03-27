@@ -14,7 +14,10 @@ use data_storage::feedback_store::FeedbackStore;
 use data_storage::metadata_store::MetadataStore;
 
 #[derive(Parser)]
-#[command(name = "data-node", about = "Guixu: On-Chain Data Valuation for AI Agents")]
+#[command(
+    name = "data-node",
+    about = "Guixu: On-Chain Data Valuation for AI Agents"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -42,8 +45,7 @@ async fn main() -> Result<()> {
     let log_dir = NodeConfig::config_dir().join("logs");
     std::fs::create_dir_all(&log_dir).ok();
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let file_appender = tracing_appender::rolling::daily(&log_dir, "guixu.log");
     let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
@@ -182,15 +184,18 @@ async fn cmd_start() -> Result<()> {
     });
 
     // Start embedded Web UI + MCP HTTP server
-    let state = Arc::new(AppState::new(
-        NodeIdentity::from_seed(identity.seed()),
-        DhtIndex::new(data_p2p::network::NetworkHandle {
-            cmd_tx: dht.handle().cmd_tx.clone(),
-            local_peer_id: dht.handle().local_peer_id,
-        }),
-        store,
-        feedback_store,
-    ).await);
+    let state = Arc::new(
+        AppState::new(
+            NodeIdentity::from_seed(identity.seed()),
+            DhtIndex::new(data_p2p::network::NetworkHandle {
+                cmd_tx: dht.handle().cmd_tx.clone(),
+                local_peer_id: dht.handle().local_peer_id,
+            }),
+            store,
+            feedback_store,
+        )
+        .await,
+    );
     let http_port = 3927;
     info!("Web UI → http://localhost:{http_port}");
     tokio::spawn(async move {
@@ -206,7 +211,11 @@ async fn cmd_start() -> Result<()> {
 
 async fn cmd_mcp(mode: String) -> Result<()> {
     let (config, identity) = load_config_and_identity()?;
-    let node_mode = if mode == "full" { NodeMode::Full } else { NodeMode::Light };
+    let node_mode = if mode == "full" {
+        NodeMode::Full
+    } else {
+        NodeMode::Light
+    };
     info!(?node_mode, did = %identity.did.0, "starting MCP server");
 
     let store = MetadataStore::open(&NodeConfig::db_path())?;
@@ -239,12 +248,15 @@ async fn cmd_mcp(mode: String) -> Result<()> {
         }
     });
 
-    let state = Arc::new(AppState::new(
-        NodeIdentity::from_seed(identity.seed()),
-        dht,
-        store,
-        feedback_store,
-    ).await);
+    let state = Arc::new(
+        AppState::new(
+            NodeIdentity::from_seed(identity.seed()),
+            dht,
+            store,
+            feedback_store,
+        )
+        .await,
+    );
 
     if mode == "http" {
         data_mcp_server::server::run_http(state, 3927).await
@@ -277,9 +289,9 @@ fn load_config_and_identity() -> Result<(NodeConfig, NodeIdentity)> {
 }
 
 fn shellexpand(s: String) -> std::path::PathBuf {
-    if s.starts_with('~') {
+    if let Some(stripped) = s.strip_prefix('~') {
         if let Some(home) = dirs::home_dir() {
-            return home.join(s.strip_prefix("~/").unwrap_or(&s[1..]));
+            return home.join(stripped.strip_prefix('/').unwrap_or(stripped));
         }
     }
     std::path::PathBuf::from(s)

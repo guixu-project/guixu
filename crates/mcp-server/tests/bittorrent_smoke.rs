@@ -40,16 +40,19 @@ async fn cat_bittorrent_search_preview_and_download_first_result() {
     let first = &results[0];
     eprintln!(
         "selected first BT result: title={:?} info_hash={} description={:?}",
-        first.title,
-        first.cid.0,
-        first.description
+        first.title, first.cid.0, first.description
     );
 
     let engine = TorrentEngine::new(temp_dir("cat-preview-download"))
         .await
         .expect("create torrent engine");
 
-    let preview_ok = match timeout(Duration::from_secs(60), engine.download_preview(&first.cid.0, 4096)).await {
+    let preview_ok = match timeout(
+        Duration::from_secs(60),
+        engine.download_preview(&first.cid.0, 4096),
+    )
+    .await
+    {
         Ok(Ok(preview)) => {
             eprintln!("preview bytes read: {}", preview.len());
             !preview.is_empty()
@@ -64,17 +67,18 @@ async fn cat_bittorrent_search_preview_and_download_first_result() {
         }
     };
 
-    let start_download_ok = match timeout(Duration::from_secs(20), engine.start_download(&first.cid.0)).await {
-        Ok(Ok(())) => true,
-        Ok(Err(err)) => {
-            eprintln!("start download failed: {err}");
-            false
-        }
-        Err(err) => {
-            eprintln!("start download timed out: {err:?}");
-            false
-        }
-    };
+    let start_download_ok =
+        match timeout(Duration::from_secs(20), engine.start_download(&first.cid.0)).await {
+            Ok(Ok(())) => true,
+            Ok(Err(err)) => {
+                eprintln!("start download failed: {err}");
+                false
+            }
+            Err(err) => {
+                eprintln!("start download timed out: {err:?}");
+                false
+            }
+        };
 
     let mut saw_session = false;
     let mut saw_progress = false;
@@ -116,8 +120,14 @@ async fn cat_bittorrent_search_preview_and_download_first_result() {
         }
     }
 
-    assert!(start_download_ok, "start download for first BT result did not succeed");
-    assert!(saw_session, "download never became visible in torrent session");
+    assert!(
+        start_download_ok,
+        "start download for first BT result did not succeed"
+    );
+    assert!(
+        saw_session,
+        "download never became visible in torrent session"
+    );
     assert!(
         saw_progress,
         "download for first BT result made no progress within 60 seconds"
