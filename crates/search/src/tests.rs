@@ -92,6 +92,18 @@ fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> Sea
     }
 }
 
+fn make_external_result_with_type(
+    cid_suffix: &str,
+    title: &str,
+    description: &str,
+    data_type: DataType,
+) -> SearchResult {
+    SearchResult {
+        data_type,
+        ..make_external_result(cid_suffix, title, description)
+    }
+}
+
 fn neutral_signal_fetcher() -> SignalFetcher {
     Box::new(|cid_str: &str| CommunitySignal {
         dataset_cid: DatasetCid(cid_str.to_string()),
@@ -305,6 +317,45 @@ async fn search_wrapper_preserves_existing_behaviour_by_profiling_then_searching
 
     assert_eq!(via_wrapper.results.len(), via_profile.results.len());
     assert_eq!(via_wrapper.results[0].result.cid.0, via_profile.results[0].result.cid.0);
+}
+
+#[tokio::test]
+async fn search_with_task_type_prefers_results_matching_requested_modality() {
+    let engine = make_engine(vec![Box::new(StubAdapter {
+        results: vec![
+            make_external_result_with_type(
+                "tabular-cat",
+                "Cat Population Time Series",
+                "Tabular yearly population history for cats",
+                DataType::Tabular,
+            ),
+            make_external_result_with_type(
+                "video-cat",
+                "Adventure Time Fiona Cake S02E04 The Cat Who Tipped the Box",
+                "Episode rip with HEVC video",
+                DataType::Video,
+            ),
+        ],
+    })]);
+
+    let output = engine
+        .search_with_task_type(
+            "cat",
+            Some("time_series_prediction"),
+            &SearchFilters::default(),
+            &[],
+            &neutral_signal_fetcher(),
+            10,
+        )
+        .await
+        .unwrap();
+
+    let result_types: Vec<DataType> = output.results.iter().map(|r| r.result.data_type).collect();
+    dump_json("search.task_type.results", &output.results);
+
+    assert_eq!(output.results.len(), 1);
+    assert_eq!(output.results[0].result.title, "Cat Population Time Series");
+    assert_eq!(result_types, vec![DataType::Tabular]);
 }
 
 // ===========================================================================

@@ -12,6 +12,10 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Natural language search query" },
+                    "task_type": {
+                        "type": "string",
+                        "description": "Optional task category used to filter and rank compatible dataset modalities"
+                    },
                     "filters": {
                         "type": "object",
                         "properties": {

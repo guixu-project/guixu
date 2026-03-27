@@ -124,7 +124,12 @@ class GuixuEngine {
     const filters = {};
     if (sourceFilter) filters.source = sourceFilter;
     this._lastError = null;
-    const data = await this.callTool('dataset_search', { query, filters, limit: 10 });
+    const data = await this.callTool('dataset_search', {
+      query,
+      task_type: taskType,
+      filters,
+      limit: 10,
+    });
 
     // Response is { results: [...], errors: [...] } or legacy array
     const results = Array.isArray(data) ? data : (data?.results || []);

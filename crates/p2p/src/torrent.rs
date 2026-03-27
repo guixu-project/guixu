@@ -16,19 +16,50 @@ pub struct TorrentEngine {
     download_dir: PathBuf,
 }
 
+const PUBLIC_TRACKERS: &[&str] = &[
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://tracker.openbittorrent.com:6969/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://explodie.org:6969/announce",
+    "https://tracker.opentrackr.org:443/announce",
+];
+
+/// Timeout for resolving torrent metadata from magnet links.
+/// `add_torrent` with a magnet blocks until metadata is fetched from peers/DHT,
+/// which can take very long on a cold DHT or when trackers don't know the hash.
+const MAGNET_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 impl TorrentEngine {
     pub async fn new(download_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&download_dir)?;
-        let session = Session::new_with_opts(
+        // Try with DHT persistence first; fall back to non-persistent if it
+        // fails (e.g. in test environments or restricted filesystems).
+        let session = match Session::new_with_opts(
             download_dir.clone(),
             SessionOptions {
                 disable_dht: false,
-                disable_dht_persistence: true,
+                disable_dht_persistence: false,
                 ..Default::default()
             },
         )
         .await
-        .map_err(|e| anyhow::anyhow!("bt session: {e}"))?;
+        {
+            Ok(s) => s,
+            Err(_) => {
+                warn!("DHT persistence unavailable, falling back to ephemeral DHT");
+                Session::new_with_opts(
+                    download_dir.clone(),
+                    SessionOptions {
+                        disable_dht: false,
+                        disable_dht_persistence: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("bt session: {e}"))?
+            }
+        };
         Ok(Self { session: session.into(), download_dir })
     }
 
@@ -78,14 +109,7 @@ impl TorrentEngine {
 
     /// Start downloading a torrent (non-blocking). Poll `get_stats` for progress.
     pub async fn start_download(&self, info_hash: &str) -> Result<()> {
-        let magnet = format!("magnet:?xt=urn:btih:{info_hash}");
-        self.session
-            .add_torrent(
-                AddTorrent::from_url(&magnet),
-                Some(AddTorrentOptions::default()),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("start download: {e}"))?;
+        self.ensure_handle(info_hash).await?;
         info!(info_hash, "download started");
         Ok(())
     }
@@ -97,19 +121,8 @@ impl TorrentEngine {
         _access: AccessMode,
         _access_token: Option<String>,
     ) -> Result<PathBuf> {
-        let magnet = format!("magnet:?xt=urn:btih:{info_hash}");
-        let handle = self
-            .session
-            .add_torrent(
-                AddTorrent::from_url(&magnet),
-                Some(AddTorrentOptions::default()),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("download torrent: {e}"))?
-            .into_handle()
-            .ok_or_else(|| anyhow::anyhow!("torrent already managed"))?;
+        let handle = self.ensure_handle(info_hash).await?;
 
-        // Wait for completion
         handle.wait_until_completed().await
             .map_err(|e| anyhow::anyhow!("download wait: {e}"))?;
 
@@ -125,22 +138,12 @@ impl TorrentEngine {
         info_hash: &str,
         max_bytes: usize,
     ) -> Result<Vec<u8>> {
-        let magnet = format!("magnet:?xt=urn:btih:{info_hash}");
-        let handle = self
-            .session
-            .add_torrent(
-                AddTorrent::from_url(&magnet),
-                Some(AddTorrentOptions::default()),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("add torrent for preview: {e}"))?
-            .into_handle()
-            .ok_or_else(|| anyhow::anyhow!("torrent already managed"))?;
+        let handle = self.ensure_handle(info_hash).await?;
 
-        // Wait for metadata (torrent info) — not the full download.
-        // Timeout: metadata resolution depends on DHT / tracker availability.
+        // Metadata should already be resolved by ensure_handle, but wait
+        // briefly as a safety net for handles returned via get_existing_handle.
         tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(5),
             handle.wait_until_initialized(),
         )
         .await
@@ -155,7 +158,6 @@ impl TorrentEngine {
         let mut buf = vec![0u8; to_read];
         let mut total = 0usize;
 
-        // Read with a timeout per chunk to avoid hanging on dead torrents
         while total < to_read {
             let chunk_result = tokio::time::timeout(
                 std::time::Duration::from_secs(15),
@@ -180,6 +182,45 @@ impl TorrentEngine {
         buf.truncate(total);
         info!(info_hash, bytes = total, "preview downloaded");
         Ok(buf)
+    }
+
+    async fn ensure_handle(&self, info_hash: &str) -> Result<Arc<librqbit::ManagedTorrent>> {
+        if let Some(handle) = self.get_existing_handle(info_hash)? {
+            return Ok(handle);
+        }
+
+        // Build a magnet link with public trackers so metadata resolution
+        // doesn't rely solely on DHT (which is slow on a fresh session).
+        let tracker_params: String = PUBLIC_TRACKERS
+            .iter()
+            .map(|t| {
+                let encoded: String = t.bytes().map(|b| match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+                    | b'-' | b'_' | b'.' | b'~' | b':' | b'/' => (b as char).to_string(),
+                    _ => format!("%{b:02X}"),
+                }).collect();
+                format!("&tr={encoded}")
+            })
+            .collect();
+        let magnet = format!("magnet:?xt=urn:btih:{info_hash}{tracker_params}");
+        tokio::time::timeout(
+            MAGNET_RESOLVE_TIMEOUT,
+            self.session.add_torrent(AddTorrent::from_url(&magnet), Some(bt_add_options())),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout resolving torrent metadata for {info_hash}"))?
+        .map_err(|e| anyhow::anyhow!("add torrent: {e}"))?
+        .into_handle()
+        .ok_or_else(|| anyhow::anyhow!("torrent handle unavailable"))
+    }
+
+    fn get_existing_handle(
+        &self,
+        info_hash: &str,
+    ) -> Result<Option<Arc<librqbit::ManagedTorrent>>> {
+        let id = librqbit::api::TorrentIdOrHash::parse(info_hash)
+            .map_err(|e| anyhow::anyhow!("bad info_hash: {e}"))?;
+        Ok(self.session.get(id))
     }
 
     /// Query download stats for a torrent managed by this session.
@@ -213,6 +254,13 @@ impl TorrentEngine {
             "finished": stats.finished,
             "error": stats.error,
         }))
+    }
+}
+
+fn bt_add_options() -> AddTorrentOptions {
+    AddTorrentOptions {
+        trackers: Some(PUBLIC_TRACKERS.iter().map(|tracker| (*tracker).to_string()).collect()),
+        ..Default::default()
     }
 }
 
@@ -458,5 +506,13 @@ mod tests {
         // Verify content starts with our CSV header
         let text = String::from_utf8_lossy(&buf[..total]);
         assert!(text.starts_with("col_a,col_b"), "unexpected content: {}", &text[..text.len().min(50)]);
+    }
+
+    #[test]
+    fn bt_add_options_include_trackers() {
+        let opts = bt_add_options();
+        let trackers = opts.trackers.expect("trackers should be configured");
+        assert!(!trackers.is_empty(), "trackers should not be empty");
+        assert!(trackers.iter().all(|tracker| tracker.contains("://")));
     }
 }

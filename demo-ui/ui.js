@@ -124,16 +124,50 @@ async function downloadDataset(idx) {
     return;
   }
 
+  let consecutiveStatsErrors = 0;
+  let lastProgressAt = Date.now();
+  let lastProgressPct = 0;
+  const finishWithError = (message) => {
+    clearInterval(poll);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '❌ Error';
+    }
+    const text = progressEl?.querySelector('.progress-text');
+    if (text) text.textContent = message;
+    engine.log('[!]', `BT download failed: ${message}`);
+    renderLog();
+  };
+
   // Poll stats until finished
   const poll = setInterval(async () => {
     const stats = await engine.callTool('dataset_bt_stats', { info_hash: d.cid });
-    if (!stats) return;
+    if (!stats) {
+      consecutiveStatsErrors += 1;
+      if (consecutiveStatsErrors >= 3) {
+        finishWithError(engine._lastError || 'download status unavailable');
+      }
+      return;
+    }
+    consecutiveStatsErrors = 0;
 
     const pct = parseFloat(stats.progress_pct) || 0;
+    const speed = stats.download_speed || '0 B/s';
     const fill = progressEl?.querySelector('.progress-fill');
     const text = progressEl?.querySelector('.progress-text');
     if (fill) fill.style.width = pct + '%';
-    if (text) text.textContent = `${pct.toFixed(1)}% · ${stats.download_speed || '0 B/s'}${stats.eta ? ' · ETA ' + stats.eta : ''}`;
+    if (text) {
+      const state = stats.state ? ` · ${stats.state}` : '';
+      text.textContent = `${pct.toFixed(1)}% · ${speed}${stats.eta ? ' · ETA ' + stats.eta : ''}${state}`;
+    }
+
+    if (pct > lastProgressPct || speed !== '0 B/s') {
+      lastProgressPct = pct;
+      lastProgressAt = Date.now();
+    } else if (Date.now() - lastProgressAt > 45000) {
+      finishWithError('no peers or metadata found');
+      return;
+    }
 
     if (stats.finished) {
       clearInterval(poll);
@@ -143,9 +177,7 @@ async function downloadDataset(idx) {
       renderLog();
     }
     if (stats.error) {
-      clearInterval(poll);
-      if (btn) btn.textContent = '❌ Error';
-      if (text) text.textContent = stats.error;
+      finishWithError(stats.error);
     }
   }, 1500);
 }
