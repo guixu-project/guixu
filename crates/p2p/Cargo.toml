@@ -19,3 +19,6 @@ bytes = { workspace = true }
 notify = { workspace = true }
 chrono = { workspace = true }
 librqbit = { workspace = true }
+
+[lints]
+workspace = true

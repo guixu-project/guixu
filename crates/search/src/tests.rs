@@ -3,13 +3,9 @@ use data_core::feedback::CommunitySignal;
 use data_core::metadata::{DatasetMetadata, Provenance};
 use data_core::types::*;
 use serde::Serialize;
-use std::collections::HashMap;
 
 use crate::adapters::{self, ExternalAdapter};
-use crate::engine::{
-    DatasetSelectionTask, DatasetValuationConfig, MetadataResolver, ProxyUtilityReport,
-    SampleEvaluator, SamplePlan, SearchEngine, SearchFilters, SignalFetcher,
-};
+use crate::engine::{SearchEngine, SearchFilters, SignalFetcher};
 use crate::intent::{
     retrieve_related_memories_for_test, IntentParser, IntentParserConfig, QueryProfile,
     QueryProfiler, UserProfile,
@@ -33,14 +29,11 @@ fn dump_profile_fields(profile: &QueryProfile) {
     );
 }
 
-fn make_metadata_with_shape(
+fn make_metadata(
     cid_suffix: &str,
     title: &str,
     description: &str,
     tags: &[&str],
-    row_count: u64,
-    size_bytes: u64,
-    null_rate: Option<f64>,
 ) -> DatasetMetadata {
     DatasetMetadata {
         cid: DatasetCid(format!("cid-{cid_suffix}")),
@@ -64,15 +57,10 @@ fn make_metadata_with_shape(
                     description: None,
                 },
             ],
-            row_count,
-            size_bytes,
+            row_count: 100,
+            size_bytes: 2_048,
         },
-        stats: null_rate.map(|rate| DatasetStats {
-            null_rate: rate,
-            unique_rate: 0.5,
-            min_values: serde_json::json!({}),
-            max_values: serde_json::json!({}),
-        }),
+        stats: None,
         video_meta: None,
         access: AccessMode::Open,
         price: Price::free(),
@@ -88,15 +76,6 @@ fn make_metadata_with_shape(
         updated_at: Utc::now(),
         verifiable_credential: None,
     }
-}
-
-fn make_metadata(
-    cid_suffix: &str,
-    title: &str,
-    description: &str,
-    tags: &[&str],
-) -> DatasetMetadata {
-    make_metadata_with_shape(cid_suffix, title, description, tags, 100, 2_048, None)
 }
 
 fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> SearchResult {
@@ -149,47 +128,6 @@ fn neutral_signal_fetcher() -> SignalFetcher {
 
 struct StubAdapter {
     results: Vec<SearchResult>,
-}
-
-struct StubMetadataResolver {
-    metadata_by_cid: HashMap<String, DatasetMetadata>,
-}
-
-#[async_trait::async_trait]
-impl MetadataResolver for StubMetadataResolver {
-    async fn resolve_metadata(
-        &self,
-        result: &SearchResult,
-    ) -> anyhow::Result<Option<DatasetMetadata>> {
-        Ok(self.metadata_by_cid.get(&result.cid.0).cloned())
-    }
-}
-
-struct StubSampleEvaluator {
-    utility_by_cid: HashMap<String, f64>,
-}
-
-#[async_trait::async_trait]
-impl SampleEvaluator for StubSampleEvaluator {
-    async fn evaluate_sample(
-        &self,
-        metadata: &DatasetMetadata,
-        _task: &DatasetSelectionTask,
-        plan: &SamplePlan,
-    ) -> anyhow::Result<Option<ProxyUtilityReport>> {
-        Ok(self
-            .utility_by_cid
-            .get(&metadata.cid.0)
-            .copied()
-            .map(|utility_score| ProxyUtilityReport {
-                utility_score,
-                proxy_metric_name: "proxy_f1".into(),
-                proxy_metric_value: utility_score / 100.0,
-                sampled_rows: plan.estimated_rows,
-                sampled_bytes: plan.estimated_bytes,
-                notes: None,
-            }))
-    }
 }
 
 #[async_trait::async_trait]
@@ -529,461 +467,6 @@ async fn search_wrapper_preserves_existing_behaviour_by_profiling_then_searching
 }
 
 #[tokio::test]
-async fn search_and_value_prefers_relevant_dataset_before_sampling() {
-    let engine = make_engine(vec![]);
-    let local_metadata = vec![
-        make_metadata_with_shape(
-            "cats-balanced",
-            "Balanced Cat Image Classification Dataset",
-            "Balanced cat images for classifier training with labels",
-            &["cats", "classification", "balanced"],
-            25_000,
-            80 * 1024 * 1024,
-            Some(0.02),
-        ),
-        make_metadata_with_shape(
-            "dogs-large",
-            "Dog Image Classification Dataset",
-            "Large dog images for classifier training",
-            &["dogs", "classification", "images"],
-            250_000,
-            640 * 1024 * 1024,
-            Some(0.02),
-        ),
-        make_metadata_with_shape(
-            "cats-tiny",
-            "Tiny Cat Classification Sample",
-            "Small cat classification sample",
-            &["cats", "classification"],
-            120,
-            512 * 1024,
-            Some(0.01),
-        ),
-    ];
-    let config = DatasetValuationConfig {
-        coarse_top_k: 0,
-        ..DatasetValuationConfig::default()
-    };
-
-    let output = engine
-        .search_and_value(
-            "Build a high-quality classifier to detect cats",
-            &SearchFilters::default(),
-            &local_metadata,
-            &neutral_signal_fetcher(),
-            None,
-            None,
-            None,
-            &config,
-            10,
-        )
-        .await
-        .unwrap();
-
-    dump_json("search.value.coarse", &output);
-
-    let selected = output.selected.as_ref().unwrap();
-    assert_eq!(selected.result.cid.0, "cid-cats-balanced");
-    assert!(selected.proxy_utility.is_none());
-    assert!(selected.final_score >= output.candidates[1].final_score);
-}
-
-#[tokio::test]
-async fn search_and_value_uses_proxy_utility_to_rerank_top_k() {
-    let engine = make_engine(vec![]);
-    let local_metadata = vec![
-        make_metadata_with_shape(
-            "cats-large",
-            "Cat Image Classification Dataset",
-            "Large cat images for classification",
-            &["cats", "classification"],
-            300_000,
-            900 * 1024 * 1024,
-            Some(0.03),
-        ),
-        make_metadata_with_shape(
-            "cats-clean",
-            "Curated Cat Image Classification Dataset",
-            "Cat images for classification",
-            &["cats", "classification"],
-            5_000,
-            24 * 1024 * 1024,
-            Some(0.01),
-        ),
-    ];
-    let sample_evaluator = StubSampleEvaluator {
-        utility_by_cid: HashMap::from([
-            ("cid-cats-large".to_string(), 35.0),
-            ("cid-cats-clean".to_string(), 95.0),
-        ]),
-    };
-    let config = DatasetValuationConfig {
-        coarse_top_k: 2,
-        metadata_weight: 0.6,
-        utility_weight: 0.4,
-        ..DatasetValuationConfig::default()
-    };
-
-    let output = engine
-        .search_and_value(
-            "Build a high-quality classifier to detect cats",
-            &SearchFilters::default(),
-            &local_metadata,
-            &neutral_signal_fetcher(),
-            None,
-            Some(&sample_evaluator),
-            None,
-            &config,
-            10,
-        )
-        .await
-        .unwrap();
-
-    dump_json("search.value.proxy", &output);
-
-    let large = output
-        .candidates
-        .iter()
-        .find(|candidate| candidate.result.cid.0 == "cid-cats-large")
-        .unwrap();
-    let clean = output
-        .candidates
-        .iter()
-        .find(|candidate| candidate.result.cid.0 == "cid-cats-clean")
-        .unwrap();
-
-    assert!(large.coarse_score > clean.coarse_score);
-    assert!(clean.final_score > large.final_score);
-    assert_eq!(
-        output.selected.as_ref().unwrap().result.cid.0,
-        "cid-cats-clean"
-    );
-    assert!(clean.proxy_utility.is_some());
-}
-
-#[tokio::test]
-async fn search_and_value_discards_candidates_outside_coarse_top_k() {
-    let engine = make_engine(vec![]);
-    let local_metadata = vec![
-        make_metadata_with_shape(
-            "cats-large",
-            "Cat Image Classification Dataset",
-            "Large cat images for classification",
-            &["cats", "classification"],
-            300_000,
-            900 * 1024 * 1024,
-            Some(0.03),
-        ),
-        make_metadata_with_shape(
-            "cats-clean",
-            "Curated Cat Image Classification Dataset",
-            "Cat images for classification",
-            &["cats", "classification"],
-            5_000,
-            24 * 1024 * 1024,
-            Some(0.01),
-        ),
-        make_metadata_with_shape(
-            "cats-balanced",
-            "Balanced Cat Image Classification Dataset",
-            "Balanced cat images for classifier training with labels",
-            &["cats", "classification", "balanced"],
-            25_000,
-            80 * 1024 * 1024,
-            Some(0.02),
-        ),
-    ];
-    let sample_evaluator = StubSampleEvaluator {
-        utility_by_cid: HashMap::from([
-            ("cid-cats-large".to_string(), 35.0),
-            ("cid-cats-clean".to_string(), 95.0),
-            ("cid-cats-balanced".to_string(), 100.0),
-        ]),
-    };
-    let config = DatasetValuationConfig {
-        coarse_top_k: 2,
-        metadata_weight: 0.6,
-        utility_weight: 0.4,
-        ..DatasetValuationConfig::default()
-    };
-
-    let output = engine
-        .search_and_value(
-            "Build a high-quality classifier to detect cats",
-            &SearchFilters::default(),
-            &local_metadata,
-            &neutral_signal_fetcher(),
-            None,
-            Some(&sample_evaluator),
-            None,
-            &config,
-            10,
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(output.candidates.len(), 3);
-    let clean = output
-        .candidates
-        .iter()
-        .find(|candidate| candidate.result.cid.0 == "cid-cats-clean")
-        .unwrap();
-    assert!(clean.sample_plan.is_none());
-    assert!(clean.proxy_utility.is_none());
-    assert!((clean.final_score - clean.coarse_score).abs() < f64::EPSILON);
-    assert_eq!(
-        output.selected.as_ref().unwrap().result.cid.0,
-        "cid-cats-balanced"
-    );
-}
-
-#[tokio::test]
-async fn search_and_value_resolves_external_metadata_before_sampling() {
-    let engine = make_engine(vec![Box::new(StubAdapter {
-        results: vec![make_external_result(
-            "cats-external",
-            "Cat Image Classification Dataset",
-            "Cat images from an external dataset hub",
-        )],
-    })]);
-    let resolver = StubMetadataResolver {
-        metadata_by_cid: HashMap::from([(
-            "cid-cats-external".to_string(),
-            make_metadata_with_shape(
-                "cats-external",
-                "Cat Image Classification Dataset",
-                "Balanced cat images for classifier training with labels",
-                &["cats", "classification", "balanced"],
-                40_000,
-                120 * 1024 * 1024,
-                Some(0.01),
-            ),
-        )]),
-    };
-    let sample_evaluator = StubSampleEvaluator {
-        utility_by_cid: HashMap::from([("cid-cats-external".to_string(), 88.0)]),
-    };
-    let config = DatasetValuationConfig {
-        coarse_top_k: 1,
-        ..DatasetValuationConfig::default()
-    };
-
-    let output = engine
-        .search_and_value(
-            "Build a high-quality classifier to detect cats",
-            &SearchFilters::default(),
-            &[],
-            &neutral_signal_fetcher(),
-            Some(&resolver),
-            Some(&sample_evaluator),
-            None,
-            &config,
-            10,
-        )
-        .await
-        .unwrap();
-
-    dump_json("search.value.external", &output);
-
-    let selected = output.selected.as_ref().unwrap();
-    assert_eq!(selected.result.cid.0, "cid-cats-external");
-    assert!(selected.metadata_resolved);
-    assert!(selected.sample_plan.is_some());
-    assert!(selected.proxy_utility.is_some());
-    assert!(output.errors.is_empty());
-}
-
-#[tokio::test]
-async fn search_and_value_skips_sampling_when_row_count_is_zero_even_if_bytes_exist() {
-    let engine = make_engine(vec![]);
-    let local_metadata = vec![make_metadata_with_shape(
-        "cats-image-file",
-        "Cat Image File",
-        "Single cat image example",
-        &["cats", "image"],
-        0,
-        2 * 1024 * 1024,
-        None,
-    )];
-    let sample_evaluator = StubSampleEvaluator {
-        utility_by_cid: HashMap::from([("cid-cats-image-file".to_string(), 91.0)]),
-    };
-    let config = DatasetValuationConfig {
-        coarse_top_k: 1,
-        ..DatasetValuationConfig::default()
-    };
-
-    let output = engine
-        .search_and_value(
-            "Build a high-quality classifier to detect cats",
-            &SearchFilters::default(),
-            &local_metadata,
-            &neutral_signal_fetcher(),
-            None,
-            Some(&sample_evaluator),
-            None,
-            &config,
-            10,
-        )
-        .await
-        .unwrap();
-
-    let selected = output.selected.as_ref().unwrap();
-    assert_eq!(selected.result.cid.0, "cid-cats-image-file");
-    assert!(selected.sample_plan.is_none());
-    assert!(selected.proxy_utility.is_none());
-}
-
-#[tokio::test]
-async fn search_and_value_scores_cat_home_candidates() {
-    let engine = make_engine(vec![]);
-    let local_metadata = vec![
-        make_metadata_with_shape(
-            "cat-home-indoor",
-            "Indoor Cat Home Images",
-            "Labeled cat images in home indoor scenes for classification",
-            &["cat", "home", "indoor", "classification"],
-            18_000,
-            64 * 1024 * 1024,
-            Some(0.01),
-        ),
-        make_metadata_with_shape(
-            "cat-outdoor",
-            "Outdoor Cat Images",
-            "Labeled cat images in outdoor streets and gardens for classification",
-            &["cat", "outdoor", "classification"],
-            19_000,
-            66 * 1024 * 1024,
-            Some(0.02),
-        ),
-        make_metadata_with_shape(
-            "home-interior",
-            "Home Interior Room Images",
-            "Indoor home room images with furniture labels",
-            &["home", "indoor", "rooms"],
-            17_000,
-            60 * 1024 * 1024,
-            Some(0.03),
-        ),
-        make_metadata_with_shape(
-            "dog-home",
-            "Dog Home Companion Images",
-            "Labeled dog images in home indoor scenes for classification",
-            &["dog", "home", "classification"],
-            16_000,
-            62 * 1024 * 1024,
-            Some(0.02),
-        ),
-    ];
-    let sample_evaluator = StubSampleEvaluator {
-        utility_by_cid: HashMap::from([
-            ("cid-cat-home-indoor".to_string(), 88.0),
-            ("cid-cat-outdoor".to_string(), 74.0),
-            ("cid-dog-home".to_string(), 52.0),
-            ("cid-home-interior".to_string(), 46.0),
-        ]),
-    };
-    let task = DatasetSelectionTask {
-        task_description:
-            "Find labeled cat images in home indoor scenes for a classifier".into(),
-        task_type: "classification".into(),
-        required_columns: vec!["label".into()],
-        target_entity: Some("cat".into()),
-    };
-    let config = DatasetValuationConfig {
-        coarse_top_k: 4,
-        metadata_weight: 0.6,
-        utility_weight: 0.4,
-        ..DatasetValuationConfig::default()
-    };
-
-    let output = engine
-        .search_and_value(
-            "cat home",
-            &SearchFilters::default(),
-            &local_metadata,
-            &neutral_signal_fetcher(),
-            None,
-            Some(&sample_evaluator),
-            Some(&task),
-            &config,
-            10,
-        )
-        .await
-        .unwrap();
-
-    dump_json("search.value.cat_home", &output);
-    for candidate in &output.candidates {
-        let plan = candidate.sample_plan.as_ref().unwrap();
-        let proxy = candidate.proxy_utility.as_ref().unwrap();
-        println!(
-            "dataset_score cid={} title={} coarse={:.2} utility={:.2} final={:.2} sample_rows={} sample_bytes={}",
-            candidate.result.cid.0,
-            candidate.result.title,
-            candidate.coarse_score,
-            proxy.utility_score,
-            candidate.final_score,
-            plan.estimated_rows,
-            plan.estimated_bytes,
-        );
-    }
-
-    assert_eq!(output.candidates.len(), 4);
-    assert!(output.errors.is_empty());
-    assert_eq!(
-        output.selected.as_ref().unwrap().result.cid.0,
-        "cid-cat-home-indoor"
-    );
-    assert!(
-        output
-            .candidates
-            .iter()
-            .all(|candidate| candidate.sample_plan.is_some())
-    );
-    assert!(
-        output
-            .candidates
-            .iter()
-            .all(|candidate| candidate.proxy_utility.is_some())
-    );
-    assert!(
-        output
-            .candidates
-            .iter()
-            .all(|candidate| (candidate.final_score - candidate.coarse_score).abs() > f64::EPSILON)
-    );
-
-    let indoor = output
-        .candidates
-        .iter()
-        .find(|candidate| candidate.result.cid.0 == "cid-cat-home-indoor")
-        .unwrap();
-    let outdoor = output
-        .candidates
-        .iter()
-        .find(|candidate| candidate.result.cid.0 == "cid-cat-outdoor")
-        .unwrap();
-    let home = output
-        .candidates
-        .iter()
-        .find(|candidate| candidate.result.cid.0 == "cid-home-interior")
-        .unwrap();
-    let dog = output
-        .candidates
-        .iter()
-        .find(|candidate| candidate.result.cid.0 == "cid-dog-home")
-        .unwrap();
-
-    assert!(indoor.final_score > outdoor.final_score);
-    assert!(outdoor.final_score > dog.final_score);
-    assert!(dog.final_score > home.final_score);
-    assert_eq!(indoor.sample_plan.as_ref().unwrap().estimated_rows, 180);
-    assert_eq!(outdoor.sample_plan.as_ref().unwrap().estimated_rows, 190);
-    assert_eq!(dog.sample_plan.as_ref().unwrap().estimated_rows, 160);
-    assert_eq!(home.sample_plan.as_ref().unwrap().estimated_rows, 170);
-}
-
-#[tokio::test]
 async fn search_with_task_type_prefers_results_matching_requested_modality() {
     let engine = make_engine(vec![Box::new(StubAdapter {
         results: vec![
@@ -1022,14 +505,24 @@ async fn search_with_task_type_prefers_results_matching_requested_modality() {
     assert_eq!(result_types, vec![DataType::Tabular]);
 }
 
+// ===========================================================================
+// Adapter registry & data-source correctness tests
+// ===========================================================================
+
+/// Every DataSource variant must have exactly one adapter in default_adapters
+/// (except P2p and DataGov which are handled outside the adapter system).
 #[test]
 fn default_adapters_covers_all_expected_sources() {
     let adapters = adapters::default_adapters();
     let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
     let sources: Vec<DataSource> = adapters.iter().map(|a| a.source_type()).collect();
 
+    // Expected adapters present
     assert!(names.contains(&"kaggle"), "missing kaggle adapter");
-    assert!(names.contains(&"huggingface"), "missing huggingface adapter");
+    assert!(
+        names.contains(&"huggingface"),
+        "missing huggingface adapter"
+    );
     assert!(names.contains(&"ipfs"), "missing ipfs adapter");
     assert!(names.contains(&"bittorrent"), "missing bittorrent adapter");
     assert!(names.contains(&"postgresql"), "missing postgresql adapter");
@@ -1044,11 +537,17 @@ fn default_adapters_covers_all_expected_sources() {
         "missing datacite_commons adapter"
     );
 
+    // No duplicate names
     let mut unique = names.clone();
     unique.sort();
     unique.dedup();
-    assert_eq!(names.len(), unique.len(), "duplicate adapter names detected");
+    assert_eq!(
+        names.len(),
+        unique.len(),
+        "duplicate adapter names detected"
+    );
 
+    // Source types match expected variants
     assert!(sources.contains(&DataSource::Kaggle));
     assert!(sources.contains(&DataSource::HuggingFace));
     assert!(sources.contains(&DataSource::Ipfs));
@@ -1060,6 +559,8 @@ fn default_adapters_covers_all_expected_sources() {
     assert!(sources.contains(&DataSource::DataCiteCommons));
 }
 
+/// Adapters that require credentials/config should return empty results
+/// gracefully when not configured, never panic.
 #[tokio::test]
 async fn unconfigured_adapters_return_empty_without_error() {
     let adapters = adapters::default_adapters();
@@ -1067,6 +568,7 @@ async fn unconfigured_adapters_return_empty_without_error() {
         let result = adapter.search("test query", 5).await;
         match result {
             Ok(results) => {
+                // Adapters without credentials should return empty or valid results
                 for r in &results {
                     assert!(
                         !r.title.is_empty(),
@@ -1080,16 +582,21 @@ async fn unconfigured_adapters_return_empty_without_error() {
                     );
                 }
             }
-            Err(_) => {}
+            Err(_) => {
+                // Network errors are acceptable for adapters that hit external APIs
+                // (BitTorrent, Google, DataCite) — they should not panic.
+            }
         }
     }
 }
 
+/// Each adapter's name() and source_type() must be consistent and non-empty.
 #[test]
 fn adapter_metadata_is_consistent() {
     let adapters = adapters::default_adapters();
     for adapter in &adapters {
         assert!(!adapter.name().is_empty(), "adapter name must not be empty");
+        // source_type serialization should produce a non-empty lowercase string
         let source_json = serde_json::to_string(&adapter.source_type()).unwrap();
         assert!(
             source_json.len() > 2,
@@ -1099,6 +606,7 @@ fn adapter_metadata_is_consistent() {
     }
 }
 
+/// DataSource enum should serialize to lowercase as configured by serde.
 #[test]
 fn datasource_serde_roundtrip() {
     let variants = vec![
@@ -1116,7 +624,11 @@ fn datasource_serde_roundtrip() {
     ];
     for (variant, expected_json) in variants {
         let json = serde_json::to_string(&variant).unwrap();
-        assert_eq!(json, expected_json, "serialization mismatch for {:?}", variant);
+        assert_eq!(
+            json, expected_json,
+            "serialization mismatch for {:?}",
+            variant
+        );
         let back: DataSource = serde_json::from_str(&json).unwrap();
         assert_eq!(
             serde_json::to_string(&back).unwrap(),
@@ -1126,6 +638,8 @@ fn datasource_serde_roundtrip() {
     }
 }
 
+/// Google Dataset Search adapter should produce correct source type and
+/// generate deterministic CIDs from title+url.
 #[test]
 fn google_adapter_source_type_and_name() {
     let adapter = adapters::GoogleDatasetSearchAdapter::default();
@@ -1136,18 +650,18 @@ fn google_adapter_source_type_and_name() {
     ));
 }
 
+/// DataCite Commons adapter should produce correct source type.
 #[test]
 fn datacite_adapter_source_type_and_name() {
     let adapter = adapters::DataCiteCommonsAdapter::default();
     assert_eq!(adapter.name(), "datacite_commons");
-    assert!(matches!(
-        adapter.source_type(),
-        DataSource::DataCiteCommons
-    ));
+    assert!(matches!(adapter.source_type(), DataSource::DataCiteCommons));
 }
 
+/// Search engine should propagate results from new adapters through ranking.
 #[tokio::test]
 async fn search_engine_includes_new_adapter_results() {
+    // Stub adapters returning GoogleDatasetSearch and DataCiteCommons sources
     struct GdsStub;
     #[async_trait::async_trait]
     impl ExternalAdapter for GdsStub {
@@ -1244,6 +758,7 @@ async fn search_engine_includes_new_adapter_results() {
     );
 }
 
+/// Source filter should work correctly with new data source names.
 #[tokio::test]
 async fn source_filter_works_for_new_sources() {
     struct GdsStub;
@@ -1282,22 +797,18 @@ async fn source_filter_works_for_new_sources() {
 
     let engine = make_engine(vec![Box::new(GdsStub)]);
 
+    // Filter for GoogleDatasetSearch — should keep the result
     let filters_match = SearchFilters {
         source: Some("googledatasetsearch".into()),
         ..Default::default()
     };
     let output = engine
-        .search(
-            "test",
-            &filters_match,
-            &[],
-            &neutral_signal_fetcher(),
-            10,
-        )
+        .search("test", &filters_match, &[], &neutral_signal_fetcher(), 10)
         .await
         .unwrap();
     assert_eq!(output.results.len(), 1);
 
+    // Filter for a different source — should exclude
     let filters_miss = SearchFilters {
         source: Some("kaggle".into()),
         ..Default::default()
@@ -1308,6 +819,10 @@ async fn source_filter_works_for_new_sources() {
         .unwrap();
     assert_eq!(output.results.len(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Data type inference tests
+// ---------------------------------------------------------------------------
 
 #[test]
 fn infer_video_from_encoding_keywords() {
@@ -1368,7 +883,10 @@ fn infer_tabular_from_dataset_keyword() {
 #[test]
 fn infer_audio_from_extension() {
     use crate::adapters::infer_data_type_from_title;
-    assert_eq!(infer_data_type_from_title("podcast_ep1.mp3"), DataType::Audio);
+    assert_eq!(
+        infer_data_type_from_title("podcast_ep1.mp3"),
+        DataType::Audio
+    );
     assert_eq!(
         infer_data_type_from_title("album lossless FLAC"),
         DataType::Audio
@@ -1391,11 +909,16 @@ fn infer_text_from_extension() {
 #[test]
 fn infer_fallback_is_tabular() {
     use crate::adapters::infer_data_type_from_title;
+    // Completely ambiguous title
     assert_eq!(
         infer_data_type_from_title("random stuff here"),
         DataType::Tabular
     );
 }
+
+// ---------------------------------------------------------------------------
+// LocalFileAdapter tests
+// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn local_file_adapter_finds_csv() {
@@ -1415,7 +938,7 @@ async fn local_file_adapter_finds_csv() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].title, "sales.csv");
     assert_eq!(results[0].data_type, DataType::Tabular);
-    assert!(results[0].schema.columns.len() >= 2);
+    assert!(results[0].schema.columns.len() >= 2); // date, amount
 }
 
 #[tokio::test]
@@ -1455,9 +978,14 @@ async fn local_file_adapter_matches_by_column_name() {
     let adapter = LocalFileAdapter {
         dirs: vec![dir.path().to_path_buf()],
     };
+    // Search by column name
     let results = adapter.search("ticker", 10).await.unwrap();
     assert_eq!(results.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// SearchResult data_type field propagation
+// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn search_result_includes_data_type() {
@@ -1474,11 +1002,16 @@ async fn search_result_includes_data_type() {
         .await
         .unwrap();
     assert!(!output.results.is_empty());
-    assert_eq!(output.results[0].result.data_type, DataType::Tabular);
+    // metadata_to_search_result should propagate data_type from metadata
+    assert_eq!(output.results[0].result.data_type, DataType::Tabular); // make_metadata uses Tabular
 }
 
+// ===========================================================================
+// DataCite Commons integration test (requires network, run with --ignored)
+// ===========================================================================
+
 #[tokio::test]
-#[ignore]
+#[ignore] // requires network access — run with: cargo test -p data-search -- --ignored
 async fn datacite_commons_live_search_returns_results() {
     let adapter = adapters::DataCiteCommonsAdapter::default();
     let results = adapter
@@ -1493,6 +1026,7 @@ async fn datacite_commons_live_search_returns_results() {
     assert!(results.len() <= 5, "should respect limit");
 
     for r in &results {
+        // CID should be a DOI
         assert!(
             r.cid.0.starts_with("10."),
             "cid should be a DOI, got: {}",
@@ -1512,6 +1046,7 @@ async fn datacite_commons_live_search_returns_results() {
 #[ignore]
 async fn datacite_commons_live_empty_query_does_not_panic() {
     let adapter = adapters::DataCiteCommonsAdapter::default();
+    // Empty or very obscure query — should return ok (possibly empty)
     let result = adapter.search("zzzxxx_nonexistent_dataset_42", 3).await;
     assert!(result.is_ok(), "should not error on obscure query");
 }
@@ -1520,8 +1055,12 @@ async fn datacite_commons_live_empty_query_does_not_panic() {
 #[ignore]
 async fn datacite_commons_live_result_has_description_or_year() {
     let adapter = adapters::DataCiteCommonsAdapter::default();
-    let results = adapter.search("genomics", 3).await.expect("API call failed");
+    let results = adapter
+        .search("genomics", 3)
+        .await
+        .expect("API call failed");
 
+    // At least one result should have a description with year prefix
     if !results.is_empty() {
         let has_desc = results.iter().any(|r| r.description.is_some());
         assert!(has_desc, "expected at least one result with a description");

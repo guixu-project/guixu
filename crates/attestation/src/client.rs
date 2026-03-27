@@ -154,7 +154,10 @@ pub struct BasescanTokenTx {
 
 impl BaseChainClient {
     pub fn new(config: ChainConfig) -> Self {
-        Self { config, http: reqwest::Client::new() }
+        Self {
+            config,
+            http: reqwest::Client::new(),
+        }
     }
 
     /// Fetch normal transactions for an address from Basescan.
@@ -169,12 +172,8 @@ impl BaseChainClient {
             "{}?module=account&action=txlist&address={}&startblock={}&endblock={}&sort=desc&apikey={}",
             self.config.explorer_api, address, start_block, end_block, api_key,
         );
-        let resp: BasescanResponse<Vec<BasescanTx>> = self.http
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let resp: BasescanResponse<Vec<BasescanTx>> =
+            self.http.get(&url).send().await?.json().await?;
 
         if resp.status != "1" {
             return Ok(vec![]);
@@ -198,12 +197,8 @@ impl BaseChainClient {
         if let Some(ca) = contract_address {
             url.push_str(&format!("&contractaddress={}", ca));
         }
-        let resp: BasescanResponse<Vec<BasescanTokenTx>> = self.http
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let resp: BasescanResponse<Vec<BasescanTokenTx>> =
+            self.http.get(&url).send().await?.json().await?;
 
         if resp.status != "1" {
             return Ok(vec![]);

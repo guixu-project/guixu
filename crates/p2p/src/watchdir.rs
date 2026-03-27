@@ -2,7 +2,7 @@ use anyhow::Result;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::info;
 
 /// Events from the file watcher.
 #[derive(Debug, Clone)]
@@ -56,7 +56,9 @@ pub fn watch(data_dir: &Path) -> Result<mpsc::Receiver<WatchEvent>> {
                     };
                     if let Some(we) = we {
                         let tx = tx.clone();
-                        rt_handle.spawn(async move { let _ = tx.send(we).await; });
+                        rt_handle.spawn(async move {
+                            let _ = tx.send(we).await;
+                        });
                     }
                 }
             }

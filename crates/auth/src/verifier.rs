@@ -37,7 +37,11 @@ pub fn verify(metadata: &DatasetMetadata, data: Option<&[u8]>) -> Result<Verific
         _ => TrustLevel::L0Untrusted,
     };
 
-    Ok(VerificationReport { signature_valid, integrity_valid, trust_level })
+    Ok(VerificationReport {
+        signature_valid,
+        integrity_valid,
+        trust_level,
+    })
 }
 
 fn verify_signature(metadata: &DatasetMetadata) -> bool {

@@ -62,9 +62,19 @@ impl FeedbackStore {
 
         let n = feedbacks.len() as f64;
         let avg_relevance = feedbacks.iter().map(|f| f.relevance_score).sum::<f64>() / n;
-        let avg_quality = feedbacks.iter().map(|f| f.quality_rating as f64).sum::<f64>() / n;
-        let positive_count = feedbacks.iter().filter(|f| f.value_assessment == ValueAssessment::Positive).count();
-        let negative_count = feedbacks.iter().filter(|f| f.value_assessment == ValueAssessment::Negative).count();
+        let avg_quality = feedbacks
+            .iter()
+            .map(|f| f.quality_rating as f64)
+            .sum::<f64>()
+            / n;
+        let positive_count = feedbacks
+            .iter()
+            .filter(|f| f.value_assessment == ValueAssessment::Positive)
+            .count();
+        let negative_count = feedbacks
+            .iter()
+            .filter(|f| f.value_assessment == ValueAssessment::Negative)
+            .count();
 
         // Group by task_type
         let mut task_map: std::collections::HashMap<String, Vec<&DatasetFeedback>> =
@@ -78,8 +88,14 @@ impl FeedbackStore {
             .map(|(task_type, fbs)| {
                 let count = fbs.len() as u64;
                 let avg_rel = fbs.iter().map(|f| f.relevance_score).sum::<f64>() / count as f64;
-                let success_rate = fbs.iter().filter(|f| f.task_success).count() as f64 / count as f64;
-                TaskSignal { task_type, count, avg_relevance: avg_rel, success_rate }
+                let success_rate =
+                    fbs.iter().filter(|f| f.task_success).count() as f64 / count as f64;
+                TaskSignal {
+                    task_type,
+                    count,
+                    avg_relevance: avg_rel,
+                    success_rate,
+                }
             })
             .collect();
 

@@ -146,8 +146,8 @@ impl MppClient {
             amount: amount_str.to_string(),
         };
 
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode(serde_json::to_string(&credential)?);
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(serde_json::to_string(&credential)?);
 
         // Step 4: Retry with Authorization header
         let resp = self

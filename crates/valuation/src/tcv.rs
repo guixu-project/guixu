@@ -54,11 +54,11 @@ pub struct TaskContext {
 }
 
 const ALPHA: f64 = 0.25; // schema fit
-const BETA: f64 = 0.15;  // temporal fit
+const BETA: f64 = 0.15; // temporal fit
 const GAMMA: f64 = 0.15; // information gain
 const DELTA: f64 = 0.10; // quality
 const EPSILON: f64 = 0.15; // community signal
-const ZETA: f64 = 0.20;  // risk penalty (high weight — negative feedback matters)
+const ZETA: f64 = 0.20; // risk penalty (high weight — negative feedback matters)
 
 impl TcvEngine {
     /// Compute Task-Conditioned Value for a dataset.
@@ -84,8 +84,8 @@ impl TcvEngine {
             }
             _ => 0.0,
         };
-        let quality_score = quality_score * (1.0 - if type_bonus > 0.0 { 0.5 } else { 0.0 })
-            + type_bonus;
+        let quality_score =
+            quality_score * (1.0 - if type_bonus > 0.0 { 0.5 } else { 0.0 }) + type_bonus;
 
         // TCV in range [-100, +100]
         let raw = ALPHA * schema_fit
@@ -136,7 +136,9 @@ impl TcvEngine {
             .iter()
             .filter(|rc| {
                 let rc_lower = rc.to_lowercase();
-                dataset_cols.iter().any(|dc| dc.contains(&rc_lower) || rc_lower.contains(dc))
+                dataset_cols
+                    .iter()
+                    .any(|dc| dc.contains(&rc_lower) || rc_lower.contains(dc))
             })
             .count();
         (matched as f64 / task.required_columns.len() as f64) * 100.0
@@ -242,6 +244,7 @@ impl TcvEngine {
         completeness * 0.4 + freshness * 0.3 + has_schema * 0.3
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn explain(
         &self,
         verdict: &TcvVerdict,
