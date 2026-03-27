@@ -142,11 +142,12 @@ pub struct SearchResult {
     pub license: License,
     pub provider: Did,
     pub source: DataSource,
+    pub data_type: DataType,
     pub created_at: DateTime<Utc>,
 }
 
 /// Where a dataset was discovered.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DataSource {
     P2p,
@@ -157,6 +158,9 @@ pub enum DataSource {
     BitTorrent,
     PostgreSql,
     DuckDb,
+    LocalFile,
+    GoogleDatasetSearch,
+    DataCiteCommons,
 }
 
 /// Payment protocol used for a transaction.

@@ -56,6 +56,8 @@ async fn dispatch_tool(name: &str, args: serde_json::Value, state: &AppState) ->
         "dataset_verify" => crate::handlers::misc::handle_verify(args, state).await,
         "dataset_publish" => crate::handlers::misc::handle_publish(args, state).await,
         "dataset_bt_download" => crate::handlers::bt_download::handle(args, state).await,
+        "dataset_bt_preview" => crate::handlers::bt_download::handle_preview(args, state).await,
+        "dataset_bt_stats" => crate::handlers::bt_download::handle_stats(args, state).await,
         _ => Ok(format!("Tool '{name}' not yet implemented")),
     };
 

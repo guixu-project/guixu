@@ -190,7 +190,7 @@ async fn cmd_start() -> Result<()> {
         }),
         store,
         feedback_store,
-    ));
+    ).await);
     let http_port = 3927;
     info!("Web UI → http://localhost:{http_port}");
     tokio::spawn(async move {
@@ -244,7 +244,7 @@ async fn cmd_mcp(mode: String) -> Result<()> {
         dht,
         store,
         feedback_store,
-    ));
+    ).await);
 
     if mode == "http" {
         data_mcp_server::server::run_http(state, 3927).await

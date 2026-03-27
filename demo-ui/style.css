@@ -467,3 +467,116 @@ textarea:focus { outline: none; border-color: var(--accent); }
   .step.disabled { opacity: 0.5; }
   @page { margin: 1cm; }
 }
+
+/* Data type badge */
+.result-type {
+  display: inline-block;
+  padding: 0px 4px;
+  border-radius: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: capitalize;
+}
+
+/* Action buttons row */
+.result-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.btn-sm {
+  padding: 2px 8px;
+  font-size: 9px;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-sm:hover { border-color: var(--accent); color: var(--accent); }
+.btn-sm:disabled { opacity: 0.5; cursor: default; }
+.btn-download:hover { border-color: var(--green); color: var(--green); }
+.btn-preview:hover { border-color: var(--cyan); color: var(--cyan); }
+
+/* Preview modal */
+.preview-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.15s;
+}
+.preview-content {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 90%;
+  max-width: 700px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 12px;
+  font-weight: 600;
+}
+.preview-header small { color: var(--text-dim); font-weight: 400; }
+.preview-header button {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+}
+.preview-header button:hover { color: var(--text); }
+.preview-body {
+  padding: 12px 14px;
+  overflow: auto;
+  font-size: 10px;
+  line-height: 1.5;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  flex: 1;
+}
+
+/* Download progress */
+.download-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--border-light);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--green);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.progress-text {
+  font-size: 9px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  min-width: 120px;
+}
