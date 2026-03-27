@@ -7,8 +7,8 @@ use serde::Serialize;
 use crate::adapters::{self, ExternalAdapter};
 use crate::engine::{SearchEngine, SearchFilters, SignalFetcher};
 use crate::intent::{
-    retrieve_related_memories_for_test, IntentParser, IntentParserConfig, QueryProfile,
-    QueryProfiler, UserProfile,
+    retrieve_related_memories_for_test, DataStandard, IntentParser, IntentParserConfig,
+    QueryProfile, QueryProfiler, UserProfile,
 };
 use crate::vector_index::VectorIndex;
 
@@ -310,6 +310,7 @@ async fn search_with_profile_matches_local_metadata() {
             "cats".into(),
         ],
         user_profile: UserProfile::default(),
+        data_standard: DataStandard::default(),
     };
 
     let output = engine
@@ -358,6 +359,7 @@ async fn search_with_profile_deduplicates_local_and_external_results_by_cid() {
         target_entity: Some("cats".into()),
         keywords: vec!["cats".into(), "classifier".into()],
         user_profile: UserProfile::default(),
+        data_standard: DataStandard::default(),
     };
 
     let output = engine
