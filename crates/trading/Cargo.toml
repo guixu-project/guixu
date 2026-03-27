@@ -21,3 +21,6 @@ alloy-primitives = "1"
 alloy-sol-types = "1"
 hex = { workspace = true }
 dirs = { workspace = true }
+
+[lints]
+workspace = true

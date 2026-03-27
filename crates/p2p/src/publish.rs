@@ -3,7 +3,6 @@ use data_auth::privacy::{sanitize_metadata, PrivacyConfig};
 use data_core::identity::{sha256_hex, NodeIdentity};
 use data_core::metadata::{DatasetMetadata, Provenance};
 use data_core::types::*;
-use sha2::Digest;
 use std::path::Path;
 use tracing::info;
 
@@ -21,10 +20,21 @@ pub async fn publish_file(
     access: AccessMode,
     price: f64,
 ) -> Result<DatasetMetadata> {
-    publish_file_with_privacy(path, identity, dht, store, access, price, &PrivacyConfig::default(), false).await
+    publish_file_with_privacy(
+        path,
+        identity,
+        dht,
+        store,
+        access,
+        price,
+        &PrivacyConfig::default(),
+        false,
+    )
+    .await
 }
 
 /// Publish with explicit privacy configuration.
+#[allow(clippy::too_many_arguments)]
 pub async fn publish_file_with_privacy(
     path: &Path,
     identity: &NodeIdentity,
@@ -84,7 +94,11 @@ pub async fn publish_file_with_privacy(
         stats: None,
         video_meta: None,
         access,
-        price: if price > 0.0 { Price::usdc(price) } else { Price::free() },
+        price: if price > 0.0 {
+            Price::usdc(price)
+        } else {
+            Price::free()
+        },
         license,
         provider: signing_identity.did.clone(),
         signature: String::new(), // filled below
@@ -127,10 +141,7 @@ pub async fn publish_file_with_privacy(
 
 /// Infer a basic schema from file content. For M1 we do minimal CSV parsing.
 fn infer_schema(path: &Path, data: &[u8]) -> Result<(DatasetSchema, Vec<String>)> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     let size_bytes = data.len() as u64;
 
@@ -163,7 +174,11 @@ fn infer_schema(path: &Path, data: &[u8]) -> Result<(DatasetSchema, Vec<String>)
                 .collect();
 
             Ok((
-                DatasetSchema { columns, row_count, size_bytes },
+                DatasetSchema {
+                    columns,
+                    row_count,
+                    size_bytes,
+                },
                 tags,
             ))
         }
@@ -171,37 +186,55 @@ fn infer_schema(path: &Path, data: &[u8]) -> Result<(DatasetSchema, Vec<String>)
             // Count top-level array elements or lines
             let row_count = data.iter().filter(|&&b| b == b'\n').count().max(1) as u64;
             Ok((
-                DatasetSchema { columns: vec![], row_count, size_bytes },
+                DatasetSchema {
+                    columns: vec![],
+                    row_count,
+                    size_bytes,
+                },
                 vec!["json".into()],
             ))
         }
         "parquet" => {
             // For M1, just record size; proper Parquet parsing in M2 with Polars
             Ok((
-                DatasetSchema { columns: vec![], row_count: 0, size_bytes },
+                DatasetSchema {
+                    columns: vec![],
+                    row_count: 0,
+                    size_bytes,
+                },
                 vec!["parquet".into()],
             ))
         }
-        "mp4" | "avi" | "mkv" | "mov" | "webm" => {
-            Ok((
-                DatasetSchema { columns: vec![], row_count: 0, size_bytes },
-                vec!["video".into(), ext.into()],
-            ))
-        }
-        "png" | "jpg" | "jpeg" | "webp" | "tiff" => {
-            Ok((
-                DatasetSchema { columns: vec![], row_count: 0, size_bytes },
-                vec!["image".into(), ext.into()],
-            ))
-        }
-        "mp3" | "wav" | "flac" | "ogg" => {
-            Ok((
-                DatasetSchema { columns: vec![], row_count: 0, size_bytes },
-                vec!["audio".into(), ext.into()],
-            ))
-        }
+        "mp4" | "avi" | "mkv" | "mov" | "webm" => Ok((
+            DatasetSchema {
+                columns: vec![],
+                row_count: 0,
+                size_bytes,
+            },
+            vec!["video".into(), ext.into()],
+        )),
+        "png" | "jpg" | "jpeg" | "webp" | "tiff" => Ok((
+            DatasetSchema {
+                columns: vec![],
+                row_count: 0,
+                size_bytes,
+            },
+            vec!["image".into(), ext.into()],
+        )),
+        "mp3" | "wav" | "flac" | "ogg" => Ok((
+            DatasetSchema {
+                columns: vec![],
+                row_count: 0,
+                size_bytes,
+            },
+            vec!["audio".into(), ext.into()],
+        )),
         _ => Ok((
-            DatasetSchema { columns: vec![], row_count: 0, size_bytes },
+            DatasetSchema {
+                columns: vec![],
+                row_count: 0,
+                size_bytes,
+            },
             vec![],
         )),
     }

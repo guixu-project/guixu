@@ -1,5 +1,5 @@
 use anyhow::Result;
-use data_auth::privacy::{PrivacyConfig, safe_tags_for_dht};
+use data_auth::privacy::{safe_tags_for_dht, PrivacyConfig};
 use data_core::metadata::DatasetMetadata;
 use data_core::types::DatasetCid;
 use tracing::debug;
@@ -14,11 +14,17 @@ pub struct DhtIndex {
 
 impl DhtIndex {
     pub fn new(net: NetworkHandle) -> Self {
-        Self { net, privacy_config: PrivacyConfig::default() }
+        Self {
+            net,
+            privacy_config: PrivacyConfig::default(),
+        }
     }
 
     pub fn with_privacy(net: NetworkHandle, privacy_config: PrivacyConfig) -> Self {
-        Self { net, privacy_config }
+        Self {
+            net,
+            privacy_config,
+        }
     }
 
     pub fn handle(&self) -> &NetworkHandle {

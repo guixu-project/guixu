@@ -1,6 +1,5 @@
 /// Embedded Web UI for dataset publishing.
 /// Served at GET / when running `guixu start` or `guixu mcp --mode http`.
-
 pub const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>

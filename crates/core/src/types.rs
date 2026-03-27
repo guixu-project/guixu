@@ -26,7 +26,7 @@ pub enum AccessMode {
 /// License type (machine-readable).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct License {
-    pub spdx_id: String,       // e.g. "CC-BY-4.0"
+    pub spdx_id: String, // e.g. "CC-BY-4.0"
     pub commercial_use: bool,
     pub derivative_allowed: bool,
 }
@@ -118,11 +118,17 @@ pub struct Price {
 
 impl Price {
     pub fn free() -> Self {
-        Self { amount: 0.0, currency: "USDC".into() }
+        Self {
+            amount: 0.0,
+            currency: "USDC".into(),
+        }
     }
 
     pub fn usdc(amount: f64) -> Self {
-        Self { amount, currency: "USDC".into() }
+        Self {
+            amount,
+            currency: "USDC".into(),
+        }
     }
 
     pub fn is_free(&self) -> bool {

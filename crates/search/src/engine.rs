@@ -28,6 +28,7 @@ pub type SignalFetcher = Box<dyn Fn(&str) -> CommunitySignal + Send + Sync>;
 /// The unified search engine. Merges results from local store, DHT,
 /// and external adapters (Kaggle, HuggingFace, IPFS, PostgreSQL, DuckDB).
 pub struct SearchEngine {
+    #[allow(dead_code)]
     vector_index: VectorIndex,
     intent_parser: IntentParser,
     adapters: Vec<Box<dyn ExternalAdapter>>,
@@ -358,7 +359,7 @@ impl SearchEngine {
                 // Match if query substring or any keyword matches
                 all_text.contains(&query_lower) || keywords.iter().any(|kw| all_text.contains(kw))
             })
-            .map(|m| metadata_to_search_result(m))
+            .map(metadata_to_search_result)
             .collect();
 
         Ok(results)
@@ -582,10 +583,14 @@ fn strict_task_data_type(task_type: Option<&str>) -> Option<data_core::types::Da
     use data_core::types::DataType;
 
     match task_type.map(|s| s.trim().to_lowercase()) {
-        Some(task_type) if matches!(
-            task_type.as_str(),
-            "time_series_prediction" | "forecasting" | "regression"
-        ) => Some(DataType::Tabular),
+        Some(task_type)
+            if matches!(
+                task_type.as_str(),
+                "time_series_prediction" | "forecasting" | "regression"
+            ) =>
+        {
+            Some(DataType::Tabular)
+        }
         Some(task_type) if task_type == "nlp" => Some(DataType::Text),
         Some(task_type) if task_type == "video_classification" => Some(DataType::Video),
         _ => None,
@@ -1076,7 +1081,7 @@ fn metadata_to_search_result(m: &DatasetMetadata) -> SearchResult {
         license: m.license.clone(),
         provider: m.provider.clone(),
         source: DataSource::P2p,
-        data_type: m.data_type.clone(),
+        data_type: m.data_type,
         created_at: m.created_at,
     }
 }

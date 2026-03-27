@@ -81,10 +81,7 @@ impl MemoryEvaluator {
         let recommendation = if total > 75.0 {
             "Highly suitable for this task".into()
         } else if total > 50.0 {
-            format!(
-                "Partially suitable. Missing: {}",
-                missing.join(", ")
-            )
+            format!("Partially suitable. Missing: {}", missing.join(", "))
         } else {
             "Not recommended for this task".into()
         };
@@ -165,7 +162,11 @@ impl MemoryEvaluator {
         if needed.is_empty() {
             return (50.0, vec![]);
         }
-        let provided: Vec<String> = memory.capabilities.iter().map(|c| c.to_lowercase()).collect();
+        let provided: Vec<String> = memory
+            .capabilities
+            .iter()
+            .map(|c| c.to_lowercase())
+            .collect();
         let mut missing = vec![];
         let mut matched = 0;
         for cap in needed {
@@ -198,7 +199,14 @@ impl MemoryEvaluator {
                     .as_ref()
                     .is_some_and(|cv| cv != &d.version)
             })
-            .map(|d| format!("{} ({} → {})", d.name, d.version, d.current_version.as_deref().unwrap_or("?")))
+            .map(|d| {
+                format!(
+                    "{} ({} → {})",
+                    d.name,
+                    d.version,
+                    d.current_version.as_deref().unwrap_or("?")
+                )
+            })
             .collect();
 
         let dep_penalty = outdated.len() as f64 * 10.0;

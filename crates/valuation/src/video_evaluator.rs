@@ -58,6 +58,10 @@ impl VideoEvaluator {
     /// Labelled / annotated video is far more valuable.
     fn score_annotation(vm: Option<&VideoMeta>) -> f64 {
         let Some(vm) = vm else { return 10.0 };
-        if vm.labels.is_empty() { 10.0 } else { (vm.labels.len() as f64 * 10.0).clamp(20.0, 100.0) }
+        if vm.labels.is_empty() {
+            10.0
+        } else {
+            (vm.labels.len() as f64 * 10.0).clamp(20.0, 100.0)
+        }
     }
 }

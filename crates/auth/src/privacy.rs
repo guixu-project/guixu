@@ -5,21 +5,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Privacy protection level for metadata publication.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PrivacyLevel {
     /// No privacy protection (current behaviour).
     Off,
     /// Standard: DP noise on stats, hash sensitive column names.
+    #[default]
     Standard,
     /// Strict: all of Standard + suppress min/max entirely, hash ALL column names.
     Strict,
-}
-
-impl Default for PrivacyLevel {
-    fn default() -> Self {
-        Self::Standard
-    }
 }
 
 /// Configuration for differential privacy noise.
@@ -227,7 +222,10 @@ mod tests {
             min_values: serde_json::json!({"a": 0}),
             max_values: serde_json::json!({"a": 100}),
         };
-        let config = PrivacyConfig { epsilon: 0.1, ..Default::default() };
+        let config = PrivacyConfig {
+            epsilon: 0.1,
+            ..Default::default()
+        };
         let sanitized = sanitize_stats(&stats, &config).unwrap();
         assert!((0.0..=1.0).contains(&sanitized.null_rate));
         assert!((0.0..=1.0).contains(&sanitized.unique_rate));

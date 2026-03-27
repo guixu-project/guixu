@@ -1,6 +1,6 @@
-pub mod types;
-pub mod identity;
-pub mod error;
-pub mod metadata;
 pub mod config;
+pub mod error;
 pub mod feedback;
+pub mod identity;
+pub mod metadata;
+pub mod types;

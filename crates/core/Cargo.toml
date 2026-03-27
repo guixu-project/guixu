@@ -17,3 +17,6 @@ hex = { workspace = true }
 bs58 = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
+
+[lints]
+workspace = true

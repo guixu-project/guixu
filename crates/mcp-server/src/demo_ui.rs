@@ -6,7 +6,8 @@ const DEMO_CSS: &str = include_str!("../../../demo-ui/style.css");
 const DEMO_ENGINE_JS: &str = include_str!("../../../demo-ui/engine.js");
 const DEMO_UI_JS: &str = include_str!("../../../demo-ui/ui.js");
 
-const NO_CACHE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+const NO_CACHE: (header::HeaderName, &str) =
+    (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
 
 pub async fn serve_demo() -> Html<&'static str> {
     Html(DEMO_HTML)
@@ -23,7 +24,11 @@ pub async fn serve_demo_js(axum::extract::Path(file): axum::extract::Path<String
         _ => ("", false),
     };
     if found {
-        ([(header::CONTENT_TYPE, "application/javascript"), NO_CACHE], body).into_response()
+        (
+            [(header::CONTENT_TYPE, "application/javascript"), NO_CACHE],
+            body,
+        )
+            .into_response()
     } else {
         (axum::http::StatusCode::NOT_FOUND, "not found").into_response()
     }

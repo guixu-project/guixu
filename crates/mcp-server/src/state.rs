@@ -31,7 +31,14 @@ impl AppState {
         store: MetadataStore,
         feedback_store: FeedbackStore,
     ) -> Self {
-        Self::with_payment_config(identity, dht, store, feedback_store, &PaymentConfig::default()).await
+        Self::with_payment_config(
+            identity,
+            dht,
+            store,
+            feedback_store,
+            &PaymentConfig::default(),
+        )
+        .await
     }
 
     pub async fn with_payment_config(
@@ -46,17 +53,16 @@ impl AppState {
         let adapters = default_adapters();
         let search_engine = SearchEngine::new(vector_index, intent_parser, adapters);
 
-        let wallet = AgentWallet::from_keyfile(&payment.wallet_key_path)
-            .unwrap_or_else(|_| {
-                tracing::warn!(
-                    "No wallet key at {} — payments will fail.",
-                    payment.wallet_key_path.display()
-                );
-                AgentWallet::from_private_key(
-                    "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-                )
-                .expect("hardcoded key")
-            });
+        let wallet = AgentWallet::from_keyfile(&payment.wallet_key_path).unwrap_or_else(|_| {
+            tracing::warn!(
+                "No wallet key at {} — payments will fail.",
+                payment.wallet_key_path.display()
+            );
+            AgentWallet::from_private_key(
+                "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+            )
+            .expect("hardcoded key")
+        });
 
         let download_dir = data_core::config::NodeConfig::config_dir().join("downloads");
         let torrent_engine = match TorrentEngine::new(download_dir).await {
