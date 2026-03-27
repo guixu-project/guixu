@@ -6,7 +6,8 @@ use librqbit::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::info;
+use tokio::io::AsyncReadExt;
+use tracing::{info, warn};
 
 /// BitTorrent engine backed by librqbit.
 /// Handles seeding, downloading, and torrent creation for dataset distribution.
@@ -100,13 +101,69 @@ impl TorrentEngine {
         Ok(self.download_dir.join(info_hash))
     }
 
-    /// Download only the first N pieces for preview.
+    /// Download only the first N bytes of a torrent for preview.
+    ///
+    /// Uses librqbit's streaming API which automatically prioritises the pieces
+    /// being read, so only the beginning of the file is fetched from peers.
     pub async fn download_preview(
         &self,
         info_hash: &str,
-        _num_pieces: usize,
+        max_bytes: usize,
     ) -> Result<Vec<u8>> {
-        // TODO: partial piece download via librqbit priority API
-        Ok(vec![])
+        let magnet = format!("magnet:?xt=urn:btih:{info_hash}");
+        let handle = self
+            .session
+            .add_torrent(
+                AddTorrent::from_url(&magnet),
+                Some(AddTorrentOptions::default()),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("add torrent for preview: {e}"))?
+            .into_handle()
+            .ok_or_else(|| anyhow::anyhow!("torrent already managed"))?;
+
+        // Wait for metadata (torrent info) — not the full download.
+        // Timeout: metadata resolution depends on DHT / tracker availability.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            handle.wait_until_initialized(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout waiting for torrent metadata"))?
+        .map_err(|e| anyhow::anyhow!("torrent init failed: {e}"))?;
+
+        // Stream file_id 0 (first / only file in most dataset torrents)
+        let mut stream = handle.stream(0)
+            .map_err(|e| anyhow::anyhow!("create stream: {e}"))?;
+
+        let to_read = max_bytes.min(stream.len() as usize);
+        let mut buf = vec![0u8; to_read];
+        let mut total = 0usize;
+
+        // Read with a timeout per chunk to avoid hanging on dead torrents
+        while total < to_read {
+            let chunk_result = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                stream.read(&mut buf[total..]),
+            )
+            .await;
+
+            match chunk_result {
+                Ok(Ok(0)) => break,           // EOF
+                Ok(Ok(n)) => total += n,
+                Ok(Err(e)) => {
+                    warn!(info_hash, error = %e, bytes_read = total, "preview stream error");
+                    break;
+                }
+                Err(_) => {
+                    warn!(info_hash, bytes_read = total, "preview read timeout");
+                    break;
+                }
+            }
+        }
+
+        buf.truncate(total);
+        info!(info_hash, bytes = total, "preview downloaded");
+        Ok(buf)
     }
 }

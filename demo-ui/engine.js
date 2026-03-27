@@ -139,10 +139,12 @@ class GuixuEngine {
         description: r.description,
         source: r.source ? r.source.toLowerCase().replace(/\s/g,'') : 'p2p',
         sourceLabel: r.source || 'P2P',
+        dataType: r.data_type || 'tabular',
         schema: {
           columns: Array.from({ length: r.schema?.columns || 0 }, (_, i) => `col_${i}`),
           rows: r.schema?.rows || 0,
           size: formatBytes(r.schema?.size_bytes || 0),
+          sizeBytes: r.schema?.size_bytes || 0,
         },
         price: typeof r.price === 'object' ? r.price.amount : (r.price || 0),
         community: {

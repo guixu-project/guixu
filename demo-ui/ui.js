@@ -95,6 +95,53 @@ async function runPipeline() {
   $('btnStart').disabled = false;
 }
 
+// --- BT Download & Preview ---
+async function downloadDataset(idx) {
+  const d = engine.datasets[idx];
+  if (!d) return;
+  const btn = document.querySelector(`.result-card[data-idx="${idx}"] .btn-download`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Downloading...'; }
+  engine.log('[B]', `Downloading: ${d.title}`);
+  renderLog();
+  const result = await engine.btDownload(d);
+  if (btn) { btn.textContent = result.delivery === 'failed' ? '❌ Failed' : '✅ Done'; }
+  renderLog();
+}
+
+async function previewDataset(idx) {
+  const d = engine.datasets[idx];
+  if (!d) return;
+  const btn = document.querySelector(`.result-card[data-idx="${idx}"] .btn-preview`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Loading...'; }
+  engine.log('[P]', `Preview: ${d.title} (first pieces)`);
+  renderLog();
+  const data = await engine.callTool('dataset_bt_preview', { info_hash: d.cid, max_bytes: 65536 });
+  if (data && data.preview) {
+    showPreviewModal(d.title, d.dataType, data.preview);
+  } else {
+    engine.log('[!]', `Preview unavailable: ${engine._lastError || 'no data'}`);
+  }
+  if (btn) { btn.disabled = false; btn.textContent = '👁 Preview'; }
+  renderLog();
+}
+
+function showPreviewModal(title, dataType, previewText) {
+  let existing = document.getElementById('previewModal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'previewModal';
+  modal.className = 'preview-modal';
+  modal.innerHTML = `
+    <div class="preview-content">
+      <div class="preview-header">
+        <span>📋 ${title} <small>(${dataType})</small></span>
+        <button onclick="this.closest('.preview-modal').remove()">✕</button>
+      </div>
+      <pre class="preview-body">${previewText.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
 // --- Step state management ---
 function activateStep(id) {
   const el = $(id);
@@ -145,19 +192,28 @@ function renderSources(sources) {
 }
 
 function renderSearchResults(datasets) {
-  $('searchResults').innerHTML = datasets.map((d, i) => `
+  $('searchResults').innerHTML = datasets.map((d, i) => {
+    const typeIcons = { tabular: '📊', video: '🎬', image: '🖼️', audio: '🎵', text: '📄' };
+    const typeIcon = typeIcons[d.dataType] || '📊';
+    const isBt = d.source === 'bittorrent';
+    return `
     <div class="result-card" data-idx="${i}">
       <div class="result-title">
         <span class="result-source src-${d.source}">${d.sourceLabel}</span>
+        <span class="result-type" title="${d.dataType}">${typeIcon} ${d.dataType}</span>
         ${d.title}
       </div>
       <div class="result-meta">
         <span>${d.schema.columns.length > 0 ? d.schema.columns.length + ' cols · ' : ''}${d.schema.rows > 0 ? d.schema.rows.toLocaleString() + ' rows · ' : ''}${d.schema.size}</span>
         <span>${d.price === 0 ? 'Free' : '$' + d.price.toFixed(4)}</span>
-        <span>${d.source === 'bittorrent' ? (d.description || '') : d.community.reviews + ' reviews'}</span>
+        <span>${isBt ? (d.description || '') : d.community.reviews + ' reviews'}</span>
       </div>
-    </div>
-  `).join('');
+      <div class="result-actions">
+        ${isBt ? `<button class="btn-sm btn-preview" onclick="event.stopPropagation();previewDataset(${i})">👁 Preview</button>` : ''}
+        ${isBt ? `<button class="btn-sm btn-download" onclick="event.stopPropagation();downloadDataset(${i})">⬇ Download</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function renderEvalResults(results) {

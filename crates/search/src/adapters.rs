@@ -186,6 +186,7 @@ impl BitTorrentAdapter {
             license: License { spdx_id: "unknown".into(), commercial_use: false, derivative_allowed: false },
             provider: Did(format!("bt:{hash}")),
             source: DataSource::BitTorrent,
+            data_type: infer_data_type_from_title(name),
             created_at: created,
         })
     }
@@ -230,6 +231,7 @@ impl BitTorrentAdapter {
             license: License { spdx_id: "unknown".into(), commercial_use: false, derivative_allowed: false },
             provider: Did(format!("bt:{hash}")),
             source: DataSource::BitTorrent,
+            data_type: infer_data_type_from_title(title),
             created_at: created,
         })
     }
@@ -264,6 +266,7 @@ impl BitTorrentAdapter {
                 license: License { spdx_id: "unknown".into(), commercial_use: false, derivative_allowed: false },
                 provider: Did(format!("bt:{hash}")),
                 source: DataSource::BitTorrent,
+                data_type: infer_data_type_from_title(title),
                 created_at: chrono::Utc::now(),
             })
         }).collect())
@@ -455,6 +458,7 @@ impl LocalFileAdapter {
             license: License { spdx_id: "proprietary".into(), commercial_use: false, derivative_allowed: false },
             provider: Did("did:local:self".into()),
             source: DataSource::LocalFile,
+            data_type: DataType::from_ext(ext),
             created_at: chrono::Utc::now(),
         })
     }
@@ -505,4 +509,30 @@ impl LocalFileAdapter {
         let row_count = df.height() as u64;
         Ok((columns, row_count))
     }
+}
+
+/// Infer data type from a torrent/file title by scanning for known extensions.
+fn infer_data_type_from_title(title: &str) -> DataType {
+    let t = title.to_lowercase();
+    // Check for extension-like patterns
+    for ext in ["csv", "tsv", "parquet", "arrow", "xlsx", "xls"] {
+        if t.contains(ext) { return DataType::Tabular; }
+    }
+    for ext in ["mp4", "avi", "mkv", "mov", "webm"] {
+        if t.contains(ext) { return DataType::Video; }
+    }
+    for ext in ["png", "jpg", "jpeg", "webp", "tiff", "bmp"] {
+        if t.contains(ext) { return DataType::Image; }
+    }
+    for ext in ["mp3", "wav", "flac", "ogg", "aac"] {
+        if t.contains(ext) { return DataType::Audio; }
+    }
+    for ext in ["txt", "md", "jsonl", "json", "pdf", "epub"] {
+        if t.contains(ext) { return DataType::Text; }
+    }
+    // Keyword hints
+    if t.contains("dataset") || t.contains("data") || t.contains("database") {
+        return DataType::Tabular;
+    }
+    DataType::Tabular
 }

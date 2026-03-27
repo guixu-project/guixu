@@ -132,5 +132,17 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["info_hash"]
             }),
         },
+        ToolDefinition {
+            name: "dataset_bt_preview".into(),
+            description: "Download a partial preview of a BitTorrent dataset (first N bytes) without downloading the full file.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "info_hash": { "type": "string", "description": "BitTorrent info hash (hex)" },
+                    "max_bytes": { "type": "integer", "description": "Maximum bytes to preview (default 65536)", "default": 65536 }
+                },
+                "required": ["info_hash"]
+            }),
+        },
     ]
 }

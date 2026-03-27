@@ -63,6 +63,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
                 "title": r.result.title,
                 "description": r.result.description,
                 "source": r.result.source,
+                "data_type": r.result.data_type,
                 "price": r.result.price,
                 "schema": {
                     "columns": r.result.schema.columns.len(),

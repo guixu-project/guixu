@@ -142,6 +142,7 @@ pub struct SearchResult {
     pub license: License,
     pub provider: Did,
     pub source: DataSource,
+    pub data_type: DataType,
     pub created_at: DateTime<Utc>,
 }
 

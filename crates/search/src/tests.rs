@@ -87,6 +87,7 @@ fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> Sea
         },
         provider: Did(format!("did:key:{cid_suffix}")),
         source: DataSource::Kaggle,
+        data_type: DataType::Tabular,
         created_at: Utc::now(),
     }
 }

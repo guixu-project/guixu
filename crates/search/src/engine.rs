@@ -229,6 +229,7 @@ fn metadata_to_search_result(m: &DatasetMetadata) -> SearchResult {
         license: m.license.clone(),
         provider: m.provider.clone(),
         source: DataSource::P2p,
+        data_type: m.data_type.clone(),
         created_at: m.created_at,
     }
 }
