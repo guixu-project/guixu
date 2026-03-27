@@ -12,6 +12,10 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Natural language search query" },
+                    "task_type": {
+                        "type": "string",
+                        "description": "Optional task category used to filter and rank compatible dataset modalities"
+                    },
                     "filters": {
                         "type": "object",
                         "properties": {
@@ -124,6 +128,29 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "dataset_bt_download".into(),
             description: "Download a dataset from the BitTorrent network by info hash. Use dataset_search with source=bittorrent to find info hashes first.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "info_hash": { "type": "string", "description": "BitTorrent info hash (hex)" }
+                },
+                "required": ["info_hash"]
+            }),
+        },
+        ToolDefinition {
+            name: "dataset_bt_preview".into(),
+            description: "Download a partial preview of a BitTorrent dataset (first N bytes) without downloading the full file.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "info_hash": { "type": "string", "description": "BitTorrent info hash (hex)" },
+                    "max_bytes": { "type": "integer", "description": "Maximum bytes to preview (default 65536)", "default": 65536 }
+                },
+                "required": ["info_hash"]
+            }),
+        },
+        ToolDefinition {
+            name: "dataset_bt_stats".into(),
+            description: "Get download progress and speed for an active BitTorrent download.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

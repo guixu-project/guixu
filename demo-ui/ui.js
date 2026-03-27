@@ -95,6 +95,127 @@ async function runPipeline() {
   $('btnStart').disabled = false;
 }
 
+// --- BT Download & Preview ---
+async function downloadDataset(idx) {
+  const d = engine.datasets[idx];
+  if (!d) return;
+  const card = document.querySelector(`.result-card[data-idx="${idx}"]`);
+  const btn = card?.querySelector('.btn-download');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Starting...'; }
+
+  // Add progress bar to card
+  let progressEl = card?.querySelector('.download-progress');
+  if (!progressEl && card) {
+    progressEl = document.createElement('div');
+    progressEl.className = 'download-progress';
+    progressEl.innerHTML = `<div class="progress-bar"><div class="progress-fill"></div></div><span class="progress-text">connecting...</span>`;
+    card.appendChild(progressEl);
+  }
+
+  engine.log('[B]', `Downloading: ${d.title}`);
+  renderLog();
+
+  // Start download (non-blocking)
+  const result = await engine.callTool('dataset_bt_download', { info_hash: d.cid });
+  if (!result || result.status === 'failed') {
+    if (btn) btn.textContent = '❌ Failed';
+    if (progressEl) progressEl.querySelector('.progress-text').textContent = engine._lastError || 'failed';
+    renderLog();
+    return;
+  }
+
+  let consecutiveStatsErrors = 0;
+  let lastProgressAt = Date.now();
+  let lastProgressPct = 0;
+  const finishWithError = (message) => {
+    clearInterval(poll);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '❌ Error';
+    }
+    const text = progressEl?.querySelector('.progress-text');
+    if (text) text.textContent = message;
+    engine.log('[!]', `BT download failed: ${message}`);
+    renderLog();
+  };
+
+  // Poll stats until finished
+  const poll = setInterval(async () => {
+    const stats = await engine.callTool('dataset_bt_stats', { info_hash: d.cid });
+    if (!stats) {
+      consecutiveStatsErrors += 1;
+      if (consecutiveStatsErrors >= 3) {
+        finishWithError(engine._lastError || 'download status unavailable');
+      }
+      return;
+    }
+    consecutiveStatsErrors = 0;
+
+    const pct = parseFloat(stats.progress_pct) || 0;
+    const speed = stats.download_speed || '0 B/s';
+    const fill = progressEl?.querySelector('.progress-fill');
+    const text = progressEl?.querySelector('.progress-text');
+    if (fill) fill.style.width = pct + '%';
+    if (text) {
+      const state = stats.state ? ` · ${stats.state}` : '';
+      text.textContent = `${pct.toFixed(1)}% · ${speed}${stats.eta ? ' · ETA ' + stats.eta : ''}${state}`;
+    }
+
+    if (pct > lastProgressPct || speed !== '0 B/s') {
+      lastProgressPct = pct;
+      lastProgressAt = Date.now();
+    } else if (Date.now() - lastProgressAt > 45000) {
+      finishWithError('no peers or metadata found');
+      return;
+    }
+
+    if (stats.finished) {
+      clearInterval(poll);
+      if (btn) btn.textContent = '✅ Done';
+      if (text) text.textContent = `100% · ${formatBytes(stats.total_bytes)}`;
+      engine.log('[B]', `Download complete: ${d.title} (${formatBytes(stats.total_bytes)})`);
+      renderLog();
+    }
+    if (stats.error) {
+      finishWithError(stats.error);
+    }
+  }, 1500);
+}
+
+async function previewDataset(idx) {
+  const d = engine.datasets[idx];
+  if (!d) return;
+  const btn = document.querySelector(`.result-card[data-idx="${idx}"] .btn-preview`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Loading...'; }
+  engine.log('[P]', `Preview: ${d.title} (first pieces)`);
+  renderLog();
+  const data = await engine.callTool('dataset_bt_preview', { info_hash: d.cid, max_bytes: 65536 });
+  if (data && data.preview) {
+    showPreviewModal(d.title, d.dataType, data.preview);
+  } else {
+    engine.log('[!]', `Preview unavailable: ${engine._lastError || 'no data'}`);
+  }
+  if (btn) { btn.disabled = false; btn.textContent = '👁 Preview'; }
+  renderLog();
+}
+
+function showPreviewModal(title, dataType, previewText) {
+  let existing = document.getElementById('previewModal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'previewModal';
+  modal.className = 'preview-modal';
+  modal.innerHTML = `
+    <div class="preview-content">
+      <div class="preview-header">
+        <span>📋 ${title} <small>(${dataType})</small></span>
+        <button onclick="this.closest('.preview-modal').remove()">✕</button>
+      </div>
+      <pre class="preview-body">${previewText.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
 // --- Step state management ---
 function activateStep(id) {
   const el = $(id);
@@ -137,27 +258,37 @@ function resetUI() {
 
 // --- Renderers ---
 function renderSources(sources) {
-  const allSources = ['P2P DHT', 'Kaggle', 'HuggingFace', 'BitTorrent', 'IPFS', 'PostgreSQL', 'DuckDB'];
+  const allSources = ['P2P DHT', 'Kaggle', 'HuggingFace', 'BitTorrent', 'IPFS', 'PostgreSQL', 'DuckDB', 'Local File', 'Google Dataset Search', 'DataCite Commons'];
   $('sourceTags').innerHTML = allSources.map(s => {
-    const found = sources.some(src => s.toLowerCase().replace(/\s/g,'').includes(src));
+    const key = s.toLowerCase().replace(/\s/g,'');
+    const found = sources.some(src => key.includes(src) || src.includes(key));
     return `<span class="source-tag ${found ? 'found' : ''}">${s}${found ? ' +' : ''}</span>`;
   }).join('');
 }
 
 function renderSearchResults(datasets) {
-  $('searchResults').innerHTML = datasets.map((d, i) => `
+  $('searchResults').innerHTML = datasets.map((d, i) => {
+    const typeIcons = { tabular: '📊', video: '🎬', image: '🖼️', audio: '🎵', text: '📄' };
+    const typeIcon = typeIcons[d.dataType] || '📊';
+    const isBt = d.source === 'bittorrent';
+    return `
     <div class="result-card" data-idx="${i}">
       <div class="result-title">
         <span class="result-source src-${d.source}">${d.sourceLabel}</span>
+        <span class="result-type" title="${d.dataType}">${typeIcon} ${d.dataType}</span>
         ${d.title}
       </div>
       <div class="result-meta">
         <span>${d.schema.columns.length > 0 ? d.schema.columns.length + ' cols · ' : ''}${d.schema.rows > 0 ? d.schema.rows.toLocaleString() + ' rows · ' : ''}${d.schema.size}</span>
         <span>${d.price === 0 ? 'Free' : '$' + d.price.toFixed(4)}</span>
-        <span>${d.source === 'bittorrent' ? (d.description || '') : d.community.reviews + ' reviews'}</span>
+        <span>${isBt ? (d.description || '') : d.community.reviews + ' reviews'}</span>
       </div>
-    </div>
-  `).join('');
+      <div class="result-actions">
+        ${isBt ? `<button class="btn-sm btn-preview" onclick="event.stopPropagation();previewDataset(${i})">👁 Preview</button>` : ''}
+        ${isBt ? `<button class="btn-sm btn-download" onclick="event.stopPropagation();downloadDataset(${i})">⬇ Download</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function renderEvalResults(results) {

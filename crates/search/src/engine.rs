@@ -57,7 +57,22 @@ impl SearchEngine {
         signal_fetcher: &SignalFetcher,
         limit: usize,
     ) -> Result<SearchOutput> {
+        self.search_with_task_type(query, None, filters, local_metadata, signal_fetcher, limit)
+            .await
+    }
+
+    /// Search entry point with an optional task-type override supplied by the caller.
+    pub async fn search_with_task_type(
+        &self,
+        query: &str,
+        task_type: Option<&str>,
+        filters: &SearchFilters,
+        local_metadata: &[DatasetMetadata],
+        signal_fetcher: &SignalFetcher,
+        limit: usize,
+    ) -> Result<SearchOutput> {
         let profile = self.intent_parser.profile(query).await?;
+        let profile = profile_with_task_type(profile, task_type);
         self.search_with_profile(&profile, filters, local_metadata, signal_fetcher, limit)
             .await
     }
@@ -101,6 +116,13 @@ impl SearchEngine {
         // Deduplicate by CID
         let mut seen = HashSet::new();
         all.retain(|r| seen.insert(r.cid.0.clone()));
+
+        if let Some(expected_type) = strict_task_data_type(profile.task_type.as_deref()) {
+            let compatible_count = all.iter().filter(|r| r.data_type == expected_type).count();
+            if compatible_count > 0 {
+                all.retain(|r| r.data_type == expected_type);
+            }
+        }
 
         // Rank with community signal (TCV-lite for search ranking)
         let mut ranked: Vec<RankedResult> = all
@@ -533,9 +555,41 @@ fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &Pa
 
     let risk = signal.risk_penalty();
     let price_penalty = if result.price.is_free() { 0.0 } else { 5.0 };
+    let task_type_adjustment = match strict_task_data_type(intent.task_type.as_deref()) {
+        Some(expected_type) if result.data_type == expected_type => 20.0,
+        Some(_) => -40.0,
+        None => 0.0,
+    };
 
     // Weighted combination
-    0.30 * relevance + 0.25 * quality + 0.25 * community + 0.15 * 70.0 /* freshness placeholder */ - 0.05 * risk - price_penalty
+    0.30 * relevance
+        + 0.25 * quality
+        + 0.25 * community
+        + 0.15 * 70.0 /* freshness placeholder */
+        - 0.05 * risk
+        - price_penalty
+        + task_type_adjustment
+}
+
+fn profile_with_task_type(mut profile: QueryProfile, task_type: Option<&str>) -> QueryProfile {
+    if let Some(task_type) = task_type.map(str::trim).filter(|s| !s.is_empty()) {
+        profile.task_type = Some(task_type.to_string());
+    }
+    profile
+}
+
+fn strict_task_data_type(task_type: Option<&str>) -> Option<data_core::types::DataType> {
+    use data_core::types::DataType;
+
+    match task_type.map(|s| s.trim().to_lowercase()) {
+        Some(task_type) if matches!(
+            task_type.as_str(),
+            "time_series_prediction" | "forecasting" | "regression"
+        ) => Some(DataType::Tabular),
+        Some(task_type) if task_type == "nlp" => Some(DataType::Text),
+        Some(task_type) if task_type == "video_classification" => Some(DataType::Video),
+        _ => None,
+    }
 }
 
 fn compose_coarse_score(
@@ -1022,6 +1076,7 @@ fn metadata_to_search_result(m: &DatasetMetadata) -> SearchResult {
         license: m.license.clone(),
         provider: m.provider.clone(),
         source: DataSource::P2p,
+        data_type: m.data_type.clone(),
         created_at: m.created_at,
     }
 }

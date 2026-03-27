@@ -198,9 +198,9 @@ class GuixuEngine {
   }
 
   // JSON-RPC call to real MCP server (with timeout)
-  async rpc(method, params) {
+  async rpc(method, params, timeoutMs = 30000) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(RPC_URL, {
         method: 'POST',
@@ -220,7 +220,9 @@ class GuixuEngine {
   }
 
   async callTool(name, args) {
-    const result = await this.rpc('tools/call', { name, arguments: args });
+    const BT_TOOLS = ['dataset_bt_download', 'dataset_bt_preview'];
+    const timeoutMs = BT_TOOLS.includes(name) ? 120000 : 30000;
+    const result = await this.rpc('tools/call', { name, arguments: args }, timeoutMs);
     if (result && result.content && result.content[0]) {
       try { return JSON.parse(result.content[0].text); } catch { return result.content[0].text; }
     }
@@ -234,7 +236,12 @@ class GuixuEngine {
     const filters = {};
     if (sourceFilter) filters.source = sourceFilter;
     this._lastError = null;
-    const data = await this.callTool('dataset_search', { query, filters, limit: 10 });
+    const data = await this.callTool('dataset_search', {
+      query,
+      task_type: taskType,
+      filters,
+      limit: 10,
+    });
 
     // Response is { results: [...], errors: [...] } or legacy array
     const results = Array.isArray(data) ? data : (data?.results || []);
@@ -251,6 +258,7 @@ class GuixuEngine {
         description: r.description,
         source: r.source ? r.source.toLowerCase().replace(/\s/g,'') : 'p2p',
         sourceLabel: prettySourceName(r.source ? r.source.toLowerCase().replace(/\s/g,'') : 'p2p'),
+        dataType: r.data_type || 'tabular',
         schema: {
           columns: Array.from({ length: r.schema?.columns || 0 }, (_, i) => `col_${i}`),
           rows: r.schema?.rows || 0,
