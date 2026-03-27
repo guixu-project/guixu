@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 use tracing::debug;
 
-use crate::client::{BaseChainClient, BasescanTx};
+use crate::client::{BaseChainClient, BasescanTx, PaymentAmount, PaymentToken};
 
 /// A single buyer review extracted from on-chain transaction data.
 #[derive(Debug, Clone, Serialize)]
@@ -13,7 +13,7 @@ pub struct BuyerReview {
     pub rating: u8,
     pub comment: String,
     pub timestamp: u64,
-    pub value_eth: f64,
+    pub payment: PaymentAmount,
 }
 
 /// Aggregated review summary for a dataset listing.
@@ -34,12 +34,12 @@ pub struct ReviewSummary {
 ///   [1 byte: rating 1-5] [remaining: UTF-8 comment]
 ///
 /// Transactions without the extra bytes are purchases with no review.
+///
+/// Supports both ETH native payments and ERC-20 token payments (USDC/USDT).
 pub async fn fetch_buyer_reviews(
     client: &BaseChainClient,
     listing_id: &str,
 ) -> Result<Vec<BuyerReview>> {
-    // Get all txs to the contract
-    // We scan broadly since we don't know buyer addresses upfront
     let txs = client
         .get_transactions(&client.config.contract_address, 0, 99999999)
         .await?;
@@ -47,21 +47,34 @@ pub async fn fetch_buyer_reviews(
     let listing_id_hex = hex::encode(listing_id);
     let mut reviews = Vec::new();
 
+    // Build a map of tx_hash -> token transfers for ERC-20 payment detection
+    let token_txs = client
+        .get_contract_token_transfers(&client.config.contract_address)
+        .await?;
+    let token_payments: std::collections::HashMap<String, PaymentAmount> = token_txs
+        .iter()
+        .filter_map(|ttx| {
+            let token = client.config.identify_token(&ttx.contract_address)?;
+            let raw = ttx.value.parse::<u128>().ok()?;
+            Some((
+                ttx.hash.to_lowercase(),
+                PaymentAmount { token, amount: token.to_display_amount(raw) },
+            ))
+        })
+        .collect();
+
     for tx in &txs {
         if tx.is_error != "0" {
             continue;
         }
-        // Must be a purchase() call
         let fname = tx.function_name.as_deref().unwrap_or("");
         if !fname.contains("purchase") {
             continue;
         }
-        // Check if this tx is for our listing by looking for listing_id in input
         if !tx.input.contains(&listing_id_hex) {
             continue;
         }
-        // Try to extract review from trailing bytes
-        if let Some(review) = parse_review_from_input(&tx.input, listing_id, tx) {
+        if let Some(review) = parse_review_from_input(&tx.input, listing_id, tx, &token_payments) {
             reviews.push(review);
         }
     }
@@ -87,40 +100,31 @@ pub fn summarize_reviews(listing_id: &str, reviews: &[BuyerReview]) -> ReviewSum
 
 /// Parse review data from transaction input.
 ///
-/// ABI encoding of `purchase(string listingId)`:
-///   4 bytes selector + 32 bytes offset + 32 bytes length + padded string data
-///
-/// Our convention: any bytes after the ABI-encoded calldata boundary are the
-/// review payload: `[u8 rating][utf8 comment...]`
-///
-/// If the input exactly matches the standard ABI encoding length, there's no
-/// review — it's a plain purchase.
+/// Determines payment token: if the tx has a matching ERC-20 token transfer,
+/// uses that; otherwise falls back to native ETH value.
 pub(crate) fn parse_review_from_input(
     input_hex: &str,
     listing_id: &str,
     tx: &BasescanTx,
+    token_payments: &std::collections::HashMap<String, PaymentAmount>,
 ) -> Option<BuyerReview> {
     let input = input_hex.strip_prefix("0x").unwrap_or(input_hex);
     let bytes = hex::decode(input).ok()?;
 
-    // Minimum ABI-encoded purchase(string): 4 + 32 + 32 + 32 = 100 bytes
-    // (selector + offset + length + one 32-byte padded chunk)
     if bytes.len() < 100 {
         return None;
     }
 
-    // Calculate expected ABI length: 4 + 32 (offset) + 32 (length) + ceil32(string_len)
-    let str_len_offset = 4 + 32; // offset to the length field
+    let str_len_offset = 4 + 32;
     if bytes.len() < str_len_offset + 32 {
         return None;
     }
     let str_len = u256_to_usize(&bytes[str_len_offset..str_len_offset + 32])?;
-    let padded_str_len = (str_len + 31) / 32 * 32; // ceil to 32
+    let padded_str_len = (str_len + 31) / 32 * 32;
     let abi_end = 4 + 32 + 32 + padded_str_len;
 
-    // Extra bytes after ABI = review payload
     if bytes.len() <= abi_end {
-        return None; // no review attached
+        return None;
     }
 
     let review_bytes = &bytes[abi_end..];
@@ -136,7 +140,18 @@ pub(crate) fn parse_review_from_input(
     };
 
     let ts = tx.timestamp.parse::<u64>().unwrap_or(0);
-    let value_eth = tx.value_wei.parse::<u128>().unwrap_or(0) as f64 / 1e18;
+
+    // Determine payment: check for ERC-20 token transfer first, fallback to ETH
+    let payment = token_payments
+        .get(&tx.hash.to_lowercase())
+        .cloned()
+        .unwrap_or_else(|| {
+            let wei = tx.value_wei.parse::<u128>().unwrap_or(0);
+            PaymentAmount {
+                token: PaymentToken::ETH,
+                amount: PaymentToken::ETH.to_display_amount(wei),
+            }
+        });
 
     Some(BuyerReview {
         tx_hash: tx.hash.clone(),
@@ -145,7 +160,7 @@ pub(crate) fn parse_review_from_input(
         rating,
         comment,
         timestamp: ts,
-        value_eth,
+        payment,
     })
 }
 
@@ -153,7 +168,6 @@ fn u256_to_usize(bytes: &[u8]) -> Option<usize> {
     if bytes.len() < 32 {
         return None;
     }
-    // Only care about last 8 bytes (usize range)
     let val = u64::from_be_bytes(bytes[24..32].try_into().ok()?);
     Some(val as usize)
 }

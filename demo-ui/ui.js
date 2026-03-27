@@ -258,9 +258,10 @@ function resetUI() {
 
 // --- Renderers ---
 function renderSources(sources) {
-  const allSources = ['P2P DHT', 'Kaggle', 'HuggingFace', 'BitTorrent', 'IPFS', 'PostgreSQL', 'DuckDB'];
+  const allSources = ['P2P DHT', 'Kaggle', 'HuggingFace', 'BitTorrent', 'IPFS', 'PostgreSQL', 'DuckDB', 'Local File', 'Google Dataset Search', 'DataCite Commons'];
   $('sourceTags').innerHTML = allSources.map(s => {
-    const found = sources.some(src => s.toLowerCase().replace(/\s/g,'').includes(src));
+    const key = s.toLowerCase().replace(/\s/g,'');
+    const found = sources.some(src => key.includes(src) || src.includes(key));
     return `<span class="source-tag ${found ? 'found' : ''}">${s}${found ? ' +' : ''}</span>`;
   }).join('');
 }
