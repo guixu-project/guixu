@@ -1,5 +1,4 @@
 use anyhow::Result;
-use data_core::types::AccessMode;
 use serde_json::json;
 
 use crate::server::AppState;
@@ -15,12 +14,13 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("torrent engine not initialized — start node first"))?;
 
-    let path = engine.download(info_hash, AccessMode::Open, None).await?;
+    // Non-blocking: start download and return immediately.
+    // Frontend polls dataset_bt_stats for progress.
+    engine.start_download(info_hash).await?;
 
     Ok(serde_json::to_string_pretty(&json!({
         "info_hash": info_hash,
-        "downloaded_to": path.display().to_string(),
-        "status": "completed"
+        "status": "downloading"
     }))?)
 }
 
@@ -76,4 +76,20 @@ pub async fn handle_preview(args: serde_json::Value, state: &AppState) -> Result
         "bytes_read": bytes.len(),
         "is_text": String::from_utf8(bytes).is_ok(),
     }))?)
+}
+
+pub async fn handle_stats(args: serde_json::Value, state: &AppState) -> Result<String> {
+    let info_hash = args
+        .get("info_hash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing info_hash"))?;
+
+    let engine = state
+        .torrent_engine
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("torrent engine not initialized"))?;
+
+    let stats = engine.get_stats(info_hash)?;
+
+    Ok(serde_json::to_string_pretty(&stats)?)
 }

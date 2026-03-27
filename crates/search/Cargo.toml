@@ -17,3 +17,6 @@ polars = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 glob = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

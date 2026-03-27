@@ -144,5 +144,16 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["info_hash"]
             }),
         },
+        ToolDefinition {
+            name: "dataset_bt_stats".into(),
+            description: "Get download progress and speed for an active BitTorrent download.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "info_hash": { "type": "string", "description": "BitTorrent info hash (hex)" }
+                },
+                "required": ["info_hash"]
+            }),
+        },
     ]
 }

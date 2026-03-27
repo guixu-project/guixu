@@ -552,3 +552,31 @@ textarea:focus { outline: none; border-color: var(--accent); }
   margin: 0;
   flex: 1;
 }
+
+/* Download progress */
+.download-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--border-light);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--green);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.progress-text {
+  font-size: 9px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  min-width: 120px;
+}

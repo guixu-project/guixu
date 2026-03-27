@@ -20,3 +20,6 @@ zip = { version = "2", features = ["aes-crypto", "deflate"] }
 
 # Keccak-256 (Ethereum-compatible password hashing)
 sha3.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

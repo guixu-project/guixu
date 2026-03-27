@@ -95,7 +95,7 @@ pub fn summarize_reviews(listing_id: &str, reviews: &[BuyerReview]) -> ReviewSum
 ///
 /// If the input exactly matches the standard ABI encoding length, there's no
 /// review — it's a plain purchase.
-fn parse_review_from_input(
+pub(crate) fn parse_review_from_input(
     input_hex: &str,
     listing_id: &str,
     tx: &BasescanTx,

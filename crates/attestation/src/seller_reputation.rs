@@ -102,7 +102,7 @@ pub async fn fetch_seller_reputation(
     })
 }
 
-fn compute_tier(sales: u64, volume: f64, unique_buyers: u64) -> ReputationTier {
+pub(crate) fn compute_tier(sales: u64, volume: f64, unique_buyers: u64) -> ReputationTier {
     if sales == 0 {
         ReputationTier::Unknown
     } else if sales > 20 && volume >= 1.0 && unique_buyers >= 5 {

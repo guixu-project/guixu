@@ -75,7 +75,21 @@ impl TorrentEngine {
         Ok(())
     }
 
-    /// Download a dataset by magnet link or info hash.
+    /// Start downloading a torrent (non-blocking). Poll `get_stats` for progress.
+    pub async fn start_download(&self, info_hash: &str) -> Result<()> {
+        let magnet = format!("magnet:?xt=urn:btih:{info_hash}");
+        self.session
+            .add_torrent(
+                AddTorrent::from_url(&magnet),
+                Some(AddTorrentOptions::default()),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("start download: {e}"))?;
+        info!(info_hash, "download started");
+        Ok(())
+    }
+
+    /// Download a dataset by magnet link or info hash (blocking until complete).
     pub async fn download(
         &self,
         info_hash: &str,
@@ -165,5 +179,38 @@ impl TorrentEngine {
         buf.truncate(total);
         info!(info_hash, bytes = total, "preview downloaded");
         Ok(buf)
+    }
+
+    /// Query download stats for a torrent managed by this session.
+    pub fn get_stats(&self, info_hash: &str) -> Result<serde_json::Value> {
+        let id = librqbit::api::TorrentIdOrHash::parse(info_hash)
+            .map_err(|e| anyhow::anyhow!("bad info_hash: {e}"))?;
+        let handle = self.session.get(id)
+            .ok_or_else(|| anyhow::anyhow!("torrent not found in session"))?;
+
+        let stats = handle.stats();
+        let speed_str = stats.live.as_ref()
+            .map(|l| format!("{}", l.download_speed))
+            .unwrap_or_else(|| "0 B/s".into());
+        let eta = stats.live.as_ref()
+            .and_then(|l| l.time_remaining.as_ref())
+            .map(|t| format!("{t}"));
+
+        let pct = if stats.total_bytes > 0 {
+            (stats.progress_bytes as f64 / stats.total_bytes as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(serde_json::json!({
+            "state": format!("{}", stats.state),
+            "progress_bytes": stats.progress_bytes,
+            "total_bytes": stats.total_bytes,
+            "progress_pct": format!("{pct:.1}"),
+            "download_speed": speed_str,
+            "eta": eta,
+            "finished": stats.finished,
+            "error": stats.error,
+        }))
     }
 }

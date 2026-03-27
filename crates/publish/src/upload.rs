@@ -118,3 +118,59 @@ fn eth_to_wei(eth: &str) -> Result<String> {
     let trimmed = wei_str.trim_start_matches('0');
     Ok(if trimmed.is_empty() { "0" } else { trimmed }.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eth_to_wei_whole_number() {
+        assert_eq!(eth_to_wei("1").unwrap(), "1000000000000000000");
+    }
+
+    #[test]
+    fn eth_to_wei_fractional() {
+        assert_eq!(eth_to_wei("0.01").unwrap(), "10000000000000000");
+    }
+
+    #[test]
+    fn eth_to_wei_zero() {
+        assert_eq!(eth_to_wei("0").unwrap(), "0");
+    }
+
+    #[test]
+    fn eth_to_wei_small_amount() {
+        assert_eq!(eth_to_wei("0.001").unwrap(), "1000000000000000");
+    }
+
+    #[test]
+    fn eth_to_wei_invalid_format() {
+        assert!(eth_to_wei("1.2.3").is_err());
+    }
+
+    #[test]
+    fn keccak256_matches_ethers() {
+        // ethers.keccak256(ethers.toUtf8Bytes("hello")) =
+        // 0x1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8
+        let hash = keccak256_hex("hello");
+        assert_eq!(
+            hash,
+            "0x1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8"
+        );
+    }
+
+    #[test]
+    fn listing_request_serializes() {
+        let req = ListingRequest {
+            title: "Test".into(),
+            description: "Desc".into(),
+            price_eth: "0.01".into(),
+            password: "pw".into(),
+            seller_address: "0xabc".into(),
+            contract_address: "0xdef".into(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["title"], "Test");
+        assert_eq!(json["price_eth"], "0.01");
+    }
+}

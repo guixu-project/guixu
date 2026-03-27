@@ -147,7 +147,7 @@ pub struct SearchResult {
 }
 
 /// Where a dataset was discovered.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DataSource {
     P2p,
@@ -159,6 +159,8 @@ pub enum DataSource {
     PostgreSql,
     DuckDb,
     LocalFile,
+    GoogleDatasetSearch,
+    DataCiteCommons,
 }
 
 /// Payment protocol used for a transaction.

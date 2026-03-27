@@ -15,3 +15,6 @@ tokio.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 hex.workspace = true
+
+[dev-dependencies]
+hex.workspace = true

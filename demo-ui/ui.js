@@ -99,13 +99,55 @@ async function runPipeline() {
 async function downloadDataset(idx) {
   const d = engine.datasets[idx];
   if (!d) return;
-  const btn = document.querySelector(`.result-card[data-idx="${idx}"] .btn-download`);
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Downloading...'; }
+  const card = document.querySelector(`.result-card[data-idx="${idx}"]`);
+  const btn = card?.querySelector('.btn-download');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Starting...'; }
+
+  // Add progress bar to card
+  let progressEl = card?.querySelector('.download-progress');
+  if (!progressEl && card) {
+    progressEl = document.createElement('div');
+    progressEl.className = 'download-progress';
+    progressEl.innerHTML = `<div class="progress-bar"><div class="progress-fill"></div></div><span class="progress-text">connecting...</span>`;
+    card.appendChild(progressEl);
+  }
+
   engine.log('[B]', `Downloading: ${d.title}`);
   renderLog();
-  const result = await engine.btDownload(d);
-  if (btn) { btn.textContent = result.delivery === 'failed' ? '❌ Failed' : '✅ Done'; }
-  renderLog();
+
+  // Start download (non-blocking)
+  const result = await engine.callTool('dataset_bt_download', { info_hash: d.cid });
+  if (!result || result.status === 'failed') {
+    if (btn) btn.textContent = '❌ Failed';
+    if (progressEl) progressEl.querySelector('.progress-text').textContent = engine._lastError || 'failed';
+    renderLog();
+    return;
+  }
+
+  // Poll stats until finished
+  const poll = setInterval(async () => {
+    const stats = await engine.callTool('dataset_bt_stats', { info_hash: d.cid });
+    if (!stats) return;
+
+    const pct = parseFloat(stats.progress_pct) || 0;
+    const fill = progressEl?.querySelector('.progress-fill');
+    const text = progressEl?.querySelector('.progress-text');
+    if (fill) fill.style.width = pct + '%';
+    if (text) text.textContent = `${pct.toFixed(1)}% · ${stats.download_speed || '0 B/s'}${stats.eta ? ' · ETA ' + stats.eta : ''}`;
+
+    if (stats.finished) {
+      clearInterval(poll);
+      if (btn) btn.textContent = '✅ Done';
+      if (text) text.textContent = `100% · ${formatBytes(stats.total_bytes)}`;
+      engine.log('[B]', `Download complete: ${d.title} (${formatBytes(stats.total_bytes)})`);
+      renderLog();
+    }
+    if (stats.error) {
+      clearInterval(poll);
+      if (btn) btn.textContent = '❌ Error';
+      if (text) text.textContent = stats.error;
+    }
+  }, 1500);
 }
 
 async function previewDataset(idx) {

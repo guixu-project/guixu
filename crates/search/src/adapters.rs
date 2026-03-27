@@ -348,6 +348,164 @@ impl ExternalAdapter for DuckDbAdapter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Google Dataset Search — scrapes the public JSON-LD endpoint
+// ---------------------------------------------------------------------------
+
+pub struct GoogleDatasetSearchAdapter {
+    client: reqwest::Client,
+}
+
+impl Default for GoogleDatasetSearchAdapter {
+    fn default() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for GoogleDatasetSearchAdapter {
+    fn name(&self) -> &str { "google_dataset_search" }
+    fn source_type(&self) -> DataSource { DataSource::GoogleDatasetSearch }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let url = "https://datasetsearch.research.google.com/api/search";
+        let resp = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.client.get(url).query(&[("query", query)]).send(),
+        )
+        .await
+        .map_err(|_| anyhow!("google dataset search: timeout"))??
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+
+        let empty = vec![];
+        let items = resp.get("results")
+            .or_else(|| resp.get("datasets"))
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+
+        Ok(items.iter().take(limit).filter_map(|item| {
+            let title = item.get("title").and_then(|v| v.as_str())?;
+            let desc = item.get("description").and_then(|v| v.as_str()).map(String::from);
+            let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let cid_hash = {
+                use sha2::Digest;
+                let mut h = sha2::Sha256::new();
+                h.update(format!("gds:{title}:{url}").as_bytes());
+                hex::encode(h.finalize())
+            };
+
+            Some(SearchResult {
+                cid: DatasetCid(cid_hash),
+                title: title.to_string(),
+                description: desc,
+                schema: DatasetSchema { columns: vec![], row_count: 0, size_bytes: 0 },
+                quality: None,
+                price: Price::free(),
+                license: License { spdx_id: "unknown".into(), commercial_use: false, derivative_allowed: false },
+                provider: Did(format!("gds:{url}")),
+                source: DataSource::GoogleDatasetSearch,
+                data_type: infer_data_type_from_title(title),
+                created_at: chrono::Utc::now(),
+            })
+        }).collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DataCite Commons — uses the public DataCite REST API
+// ---------------------------------------------------------------------------
+
+pub struct DataCiteCommonsAdapter {
+    client: reqwest::Client,
+}
+
+impl Default for DataCiteCommonsAdapter {
+    fn default() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for DataCiteCommonsAdapter {
+    fn name(&self) -> &str { "datacite_commons" }
+    fn source_type(&self) -> DataSource { DataSource::DataCiteCommons }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let page_size = limit.min(25).to_string();
+        let resp = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.client
+                .get("https://api.datacite.org/dois")
+                .query(&[
+                    ("query", query),
+                    ("resource-type-id", "dataset"),
+                    ("page[size]", &page_size),
+                ])
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow!("datacite: timeout"))??
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+
+        let empty = vec![];
+        let items = resp.get("data")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+
+        Ok(items.iter().take(limit).filter_map(|item| {
+            let attrs = item.get("attributes")?;
+            let doi = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let title = attrs.get("titles")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|t| t.get("title"))
+                .and_then(|v| v.as_str())?;
+            let desc = attrs.get("descriptions")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|d| d.get("description"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let year = attrs.get("publicationYear").and_then(|v| v.as_u64()).unwrap_or(0);
+            let created = chrono::DateTime::parse_from_rfc3339(
+                attrs.get("registered").and_then(|v| v.as_str()).unwrap_or(""),
+            )
+            .map(|d| d.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now());
+
+            Some(SearchResult {
+                cid: DatasetCid(doi.to_string()),
+                title: title.to_string(),
+                description: desc.map(|d| if year > 0 { format!("[{year}] {d}") } else { d }),
+                schema: DatasetSchema { columns: vec![], row_count: 0, size_bytes: 0 },
+                quality: None,
+                price: Price::free(),
+                license: License { spdx_id: "unknown".into(), commercial_use: false, derivative_allowed: false },
+                provider: Did(format!("doi:{doi}")),
+                source: DataSource::DataCiteCommons,
+                data_type: infer_data_type_from_title(title),
+                created_at: created,
+            })
+        }).collect())
+    }
+}
+
 /// Create all default adapters.
 pub fn default_adapters() -> Vec<Box<dyn ExternalAdapter>> {
     vec![
@@ -358,6 +516,8 @@ pub fn default_adapters() -> Vec<Box<dyn ExternalAdapter>> {
         Box::new(PostgreSqlAdapter::default()),
         Box::new(DuckDbAdapter::default()),
         Box::new(LocalFileAdapter::default()),
+        Box::new(GoogleDatasetSearchAdapter::default()),
+        Box::new(DataCiteCommonsAdapter::default()),
     ]
 }
 
@@ -511,28 +671,44 @@ impl LocalFileAdapter {
     }
 }
 
-/// Infer data type from a torrent/file title by scanning for known extensions.
-fn infer_data_type_from_title(title: &str) -> DataType {
+/// Infer data type from a torrent/file title by scanning for known extensions
+/// and content keywords.
+pub(crate) fn infer_data_type_from_title(title: &str) -> DataType {
     let t = title.to_lowercase();
-    // Check for extension-like patterns
-    for ext in ["csv", "tsv", "parquet", "arrow", "xlsx", "xls"] {
+    // Tabular data extensions
+    for ext in [".csv", ".tsv", ".parquet", ".arrow", ".xlsx", ".xls"] {
         if t.contains(ext) { return DataType::Tabular; }
     }
-    for ext in ["mp4", "avi", "mkv", "mov", "webm"] {
-        if t.contains(ext) { return DataType::Video; }
+    // Video extensions + encoding hints
+    for kw in [".mp4", ".avi", ".mkv", ".mov", ".webm", ".ts",
+               "x264", "x265", "hevc", "h264", "h265", "avc",
+               "1080p", "720p", "2160p", "4k", "bluray", "bdrip",
+               "webrip", "web-dl", "hdtv", "dvdrip", "remux"] {
+        if t.contains(kw) { return DataType::Video; }
     }
-    for ext in ["png", "jpg", "jpeg", "webp", "tiff", "bmp"] {
-        if t.contains(ext) { return DataType::Image; }
+    // Image
+    for kw in [".png", ".jpg", ".jpeg", ".webp", ".tiff", ".bmp", ".raw",
+               "imagenet", "coco dataset", "photos"] {
+        if t.contains(kw) { return DataType::Image; }
     }
-    for ext in ["mp3", "wav", "flac", "ogg", "aac"] {
-        if t.contains(ext) { return DataType::Audio; }
+    // Audio
+    for kw in [".mp3", ".wav", ".flac", ".ogg", ".aac", ".m4a",
+               "audiobook", "podcast", "lossless"] {
+        if t.contains(kw) { return DataType::Audio; }
     }
-    for ext in ["txt", "md", "jsonl", "json", "pdf", "epub"] {
-        if t.contains(ext) { return DataType::Text; }
+    // Text
+    for kw in [".txt", ".md", ".jsonl", ".json", ".pdf", ".epub",
+               ".doc", ".docx", ".ndjson"] {
+        if t.contains(kw) { return DataType::Text; }
     }
-    // Keyword hints
-    if t.contains("dataset") || t.contains("data") || t.contains("database") {
+    // Tabular keyword hints
+    if t.contains("dataset") || t.contains("database") {
         return DataType::Tabular;
+    }
+    // Season/episode patterns → video
+    if t.contains(" s0") || t.contains(" s1") || t.contains(" s2")
+        || t.contains("season") || t.contains("episode") {
+        return DataType::Video;
     }
     DataType::Tabular
 }
