@@ -19,11 +19,10 @@ fn dump_json<T: Serialize>(label: &str, value: &T) {
 
 fn dump_profile_fields(profile: &QueryProfile) {
     println!(
-        "profile.fields: task_type={:?}, task_description={:?}, target_entity={:?}, quality_hint={:?}, keywords={:?}, user_profile={:?}",
+        "profile.fields: task_type={:?}, task_description={:?}, target_entity={:?}, keywords={:?}, user_profile={:?}",
         profile.task_type,
         profile.task_description,
         profile.target_entity,
-        profile.quality_hint,
         profile.keywords,
         profile.user_profile
     );
@@ -157,40 +156,19 @@ fn make_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
 }
 
 #[tokio::test]
-async fn intent_parser_profiles_raw_query_and_keywords() {
+async fn intent_parser_requires_llm_api_configuration() {
     let parser = IntentParser::new(IntentParserConfig {
         api_key: None,
         ..IntentParserConfig::default()
     });
     let query = "Build a high-quality classifier to detect cats";
-    let profile = parser.profile(query).await.unwrap();
+    let error = parser.profile(query).await.unwrap_err();
 
-    dump_json("profile", &profile);
-    dump_profile_fields(&profile);
-
-    assert_eq!(profile.raw_query, query);
-    assert_eq!(profile.task_type.as_deref(), Some("classification"));
-    assert_eq!(
-        profile.task_description.as_deref(),
-        Some(
-            "Perform a classification task focused on cats with a high-quality requirement based on the user request: Build a high-quality classifier to detect cats"
-        )
-    );
-    assert_eq!(profile.target_entity.as_deref(), Some("cats"));
-    assert_eq!(profile.quality_hint.as_deref(), Some("high-quality"));
-    assert_eq!(
-        profile.keywords,
-        vec!["build", "high-quality", "classifier", "detect", "cats"]
-    );
-    assert_eq!(
-        profile.user_profile.cpu.architecture,
-        std::env::consts::ARCH
-    );
-    assert!(profile.user_profile.cpu.logical_cores >= 1);
+    assert!(error.to_string().contains("missing DEEPSEEK_API_KEY"));
 }
 
 #[tokio::test]
-async fn intent_parser_trait_returns_same_profile_as_inherent_method() {
+async fn intent_parser_trait_propagates_missing_api_key_error() {
     let parser = IntentParser::new(IntentParserConfig {
         api_key: None,
         ..IntentParserConfig::default()
@@ -198,15 +176,16 @@ async fn intent_parser_trait_returns_same_profile_as_inherent_method() {
     let profiler: &dyn QueryProfiler = &parser;
     let query = "Build a high-quality classifier to detect cats";
 
-    let via_inherent = parser.profile(query).await.unwrap();
-    let via_trait = profiler.profile(query).await.unwrap();
+    let via_inherent = parser.profile(query).await.unwrap_err();
+    let via_trait = profiler.profile(query).await.unwrap_err();
 
-    assert_eq!(via_inherent, via_trait);
+    assert_eq!(via_inherent.to_string(), via_trait.to_string());
+    assert!(via_trait.to_string().contains("missing DEEPSEEK_API_KEY"));
 }
 
 #[tokio::test]
 async fn intent_parser_uses_deepseek_when_configured() {
-    let query = "check whether little Wu is in the image taken from monitor";
+    let query = "check whether Caesar is in the image taken from monitor";
     let parser = IntentParser::new(IntentParserConfig {
         api_key: Some("test-key".into()),
         api_base: "https://api.deepseek.com".into(),
@@ -229,7 +208,7 @@ async fn intent_parser_uses_deepseek_when_configured() {
             query,
             &user_profile,
             &[
-                "The user has a cat named little Wu.".to_string(),
+                "The user has a cat named Caesar.".to_string(),
                 "The user prefers calm spaces more than loud ones.".to_string(),
             ],
         )
@@ -238,7 +217,7 @@ async fn intent_parser_uses_deepseek_when_configured() {
         .profile_from_deepseek_content(
             query,
             &user_profile,
-            r#"{"task_type":"classification","task_description":"Detect whether cats are present in input images with high-quality accuracy.","target_entity":"cats","quality_hint":"high-quality","keywords":["cats","classifier","vision"]}"#,
+            r#"{"task_type":"classification","task_description":"Detect whether cats are present in input images with high-quality accuracy.","target_entity":"cats","keywords":["cats","classifier","vision"]}"#,
         )
         .unwrap();
 
@@ -264,7 +243,7 @@ async fn intent_parser_uses_deepseek_when_configured() {
     assert!(request_body["messages"][1]["content"]
         .as_str()
         .unwrap()
-        .contains("little Wu"));
+        .contains("Caesar"));
     assert!(request_body["messages"][1]["content"]
         .as_str()
         .unwrap()
@@ -275,7 +254,6 @@ async fn intent_parser_uses_deepseek_when_configured() {
         Some("Detect whether cats are present in input images with high-quality accuracy.")
     );
     assert_eq!(profile.target_entity.as_deref(), Some("cats"));
-    assert_eq!(profile.quality_hint.as_deref(), Some("high-quality"));
     assert_eq!(profile.keywords, vec!["cats", "classifier", "vision"]);
     assert_eq!(profile.user_profile, user_profile);
 }
@@ -283,9 +261,9 @@ async fn intent_parser_uses_deepseek_when_configured() {
 #[test]
 fn memory_search_prefers_entries_matching_named_entities_and_terms() {
     let matches = retrieve_related_memories_for_test(
-        "Plan a calm weekend around little Wu with small gatherings",
+        "Plan a calm weekend around \"Caesar\" with small gatherings",
         &[
-            "The user has a cat named little Wu.",
+            "The user has a cat named Caesar.",
             "The user prefers small gatherings to crowded events.",
             "The user likes calm spaces more than loud energetic ones.",
             "The user enjoys cycling on cool mornings.",
@@ -296,7 +274,7 @@ fn memory_search_prefers_entries_matching_named_entities_and_terms() {
     dump_json("memory.matches", &matches);
 
     assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0], "The user has a cat named little Wu.");
+    assert_eq!(matches[0], "The user has a cat named Caesar.");
 }
 
 #[tokio::test]
@@ -324,7 +302,6 @@ async fn search_with_profile_matches_local_metadata() {
                 .into(),
         ),
         target_entity: Some("cats".into()),
-        quality_hint: Some("high-quality".into()),
         keywords: vec![
             "build".into(),
             "high-quality".into(),
@@ -379,7 +356,6 @@ async fn search_with_profile_deduplicates_local_and_external_results_by_cid() {
                 .into(),
         ),
         target_entity: Some("cats".into()),
-        quality_hint: Some("high-quality".into()),
         keywords: vec!["cats".into(), "classifier".into()],
         user_profile: UserProfile::default(),
     };
@@ -407,7 +383,7 @@ async fn search_with_profile_deduplicates_local_and_external_results_by_cid() {
 }
 
 #[tokio::test]
-async fn search_wrapper_preserves_existing_behaviour_by_profiling_then_searching() {
+async fn search_wrapper_propagates_intent_parser_error_without_api_key() {
     let engine = make_engine(vec![]);
     let local_metadata = vec![make_metadata(
         "cats",
@@ -416,26 +392,7 @@ async fn search_wrapper_preserves_existing_behaviour_by_profiling_then_searching
         &["cats", "classification", "images"],
     )];
     let filters = SearchFilters::default();
-    let profile = QueryProfile {
-        raw_query: "Build a high-quality classifier to detect cats".into(),
-        task_type: Some("classification".into()),
-        task_description: Some(
-            "Perform a classification task focused on cats with a high-quality requirement based on the user request: Build a high-quality classifier to detect cats"
-                .into(),
-        ),
-        target_entity: Some("cats".into()),
-        quality_hint: Some("high-quality".into()),
-        keywords: vec![
-            "build".into(),
-            "high-quality".into(),
-            "classifier".into(),
-            "detect".into(),
-            "cats".into(),
-        ],
-        user_profile: UserProfile::default(),
-    };
-
-    let via_wrapper = engine
+    let error = engine
         .search(
             "Build a high-quality classifier to detect cats",
             &filters,
@@ -444,26 +401,9 @@ async fn search_wrapper_preserves_existing_behaviour_by_profiling_then_searching
             10,
         )
         .await
-        .unwrap();
-    let via_profile = engine
-        .search_with_profile(
-            &profile,
-            &filters,
-            &local_metadata,
-            &neutral_signal_fetcher(),
-            10,
-        )
-        .await
-        .unwrap();
+        .unwrap_err();
 
-    dump_json("wrapper.results", &via_wrapper.results);
-    dump_json("profile.results", &via_profile.results);
-
-    assert_eq!(via_wrapper.results.len(), via_profile.results.len());
-    assert_eq!(
-        via_wrapper.results[0].result.cid.0,
-        via_profile.results[0].result.cid.0
-    );
+    assert!(error.to_string().contains("missing DEEPSEEK_API_KEY"));
 }
 
 #[tokio::test]

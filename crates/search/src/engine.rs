@@ -187,8 +187,23 @@ impl SearchEngine {
     ) -> (Vec<SearchResult>, Vec<String>) {
         let mut results = vec![];
         let mut errors = vec![];
+        let external_query = {
+            let mut seen = std::collections::HashSet::new();
+            let keywords: Vec<&str> = intent
+                .keywords
+                .iter()
+                .map(|kw| kw.trim())
+                .filter(|kw| !kw.is_empty())
+                .filter(|kw| seen.insert(kw.to_lowercase()))
+                .collect();
+            if keywords.is_empty() {
+                intent.raw_query.clone()
+            } else {
+                keywords.join(" ")
+            }
+        };
         for adapter in &self.adapters {
-            match adapter.search(&intent.raw_query, limit).await {
+            match adapter.search(&external_query, limit).await {
                 Ok(mut r) => results.append(&mut r),
                 Err(e) => {
                     warn!(adapter = adapter.name(), error = %e, "adapter search failed");

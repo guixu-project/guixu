@@ -4,7 +4,7 @@ This file contains synthetic long-term user memories.
 
 ## Memory Entries
 
-- The user has a cat named little Wu.
+- The user has a cat named Caesar.
 
 - The user prefers to be seen as dependable rather than flashy.
 - The user usually thinks before speaking in unfamiliar settings.
