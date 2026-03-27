@@ -20,10 +20,40 @@ pub struct QueryProfile {
     pub target_entity: Option<String>,
     pub keywords: Vec<String>,
     #[serde(default)]
+    pub data_standard: DataStandard,
+    #[serde(default)]
     pub user_profile: UserProfile,
 }
 
-/// Local hardware profile captured alongside the user's query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataStandard {
+    pub sample_unit: String,
+    #[serde(default)]
+    pub metadata_fields: Vec<MetadataField>,
+    #[serde(default)]
+    pub canonical_columns: Vec<String>,
+    #[serde(default)]
+    pub extra_columns: Vec<String>,
+}
+
+impl Default for DataStandard {
+    fn default() -> Self {
+        Self {
+            sample_unit: String::new(),
+            metadata_fields: default_metadata_fields(),
+            canonical_columns: default_canonical_columns(),
+            extra_columns: default_extra_columns(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataField {
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserProfile {
     pub cpu: CpuProfile,
@@ -211,6 +241,7 @@ impl IntentParser {
                 .or_else(|| Some(fallback_task_description(query))),
             target_entity: normalize_optional(llm_profile.target_entity),
             keywords: normalize_keywords(llm_profile.keywords),
+            data_standard: normalize_data_standard(llm_profile.data_standard),
             user_profile: user_profile.clone(),
         })
     }
@@ -259,7 +290,13 @@ Use this exact json schema:
   "task_type": "string or null",
   "task_description": "string or null",
   "target_entity": "string or null",
-  "keywords": ["lowercase keyword"]
+  "keywords": ["lowercase keyword"],
+  "data_standard": {
+    "sample_unit": "string",
+    "metadata_fields": [{"name": "string", "value": "string"}],
+    "canonical_columns": ["string"],
+    "extra_columns": ["string"]
+  }
 }
 
 Rules:
@@ -278,6 +315,14 @@ Rules:
 - After resolving private entities to public categories via memories, the private name (e.g. "caesar") must NOT appear in keywords.
 - Maximum 5 keywords. Fewer is better. If one keyword suffices, use one.
 - When in doubt about whether to include a keyword, leave it out.
+- data_standard is for dataset schema normalization only, not for repeating task semantics already covered elsewhere.
+- data_standard.sample_unit should use broad units such as image, video, text, tabular, or audio.
+- data_standard.metadata_fields must always include exactly these fields: min_sample_num, resolution.
+- data_standard.canonical_columns must always include exactly these fields: sample_id, label.
+- data_standard.extra_columns must always include exactly these fields: timestamp.
+- metadata_fields values may be empty strings when the query does not provide the information.
+- canonical_columns and extra_columns must be string arrays, not objects.
+- If you do not have enough information for data_standard, leave sample_unit as an empty string and leave metadata field values as empty strings.
 Examples:
   Query: "write an image classifier that checks whether my cat is in the photo taken by my house monitor"
   Good keywords: ["cat"]
@@ -333,6 +378,8 @@ struct LlmIntentProfile {
     target_entity: Option<String>,
     #[serde(default)]
     keywords: Vec<String>,
+    #[serde(default)]
+    data_standard: DataStandard,
 }
 
 fn build_user_prompt(
@@ -369,6 +416,54 @@ fn normalize_keywords(keywords: Vec<String>) -> Vec<String> {
         }
     }
     normalized
+}
+
+fn normalize_data_standard(data_standard: DataStandard) -> DataStandard {
+    let metadata_values = data_standard
+        .metadata_fields
+        .into_iter()
+        .map(|field| (field.name.trim().to_lowercase(), field.value.trim().to_string()))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    DataStandard {
+        sample_unit: data_standard.sample_unit.trim().to_string(),
+        metadata_fields: vec![
+            MetadataField {
+                name: "min_sample_num".to_string(),
+                value: metadata_values
+                    .get("min_sample_num")
+                    .cloned()
+                    .unwrap_or_default(),
+            },
+            MetadataField {
+                name: "resolution".to_string(),
+                value: metadata_values.get("resolution").cloned().unwrap_or_default(),
+            },
+        ],
+        canonical_columns: default_canonical_columns(),
+        extra_columns: default_extra_columns(),
+    }
+}
+
+fn default_metadata_fields() -> Vec<MetadataField> {
+    vec![
+        MetadataField {
+            name: "min_sample_num".to_string(),
+            value: String::new(),
+        },
+        MetadataField {
+            name: "resolution".to_string(),
+            value: String::new(),
+        },
+    ]
+}
+
+fn default_canonical_columns() -> Vec<String> {
+    vec!["sample_id".to_string(), "label".to_string()]
+}
+
+fn default_extra_columns() -> Vec<String> {
+    vec!["timestamp".to_string()]
 }
 
 fn normalize_keyword(value: impl AsRef<str>) -> String {
