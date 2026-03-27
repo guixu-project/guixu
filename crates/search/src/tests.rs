@@ -6,7 +6,10 @@ use serde::Serialize;
 
 use crate::adapters::{self, ExternalAdapter};
 use crate::engine::{SearchEngine, SearchFilters, SignalFetcher};
-use crate::intent::{IntentParser, QueryProfile, QueryProfiler};
+use crate::intent::{
+    retrieve_related_memories_for_test, IntentParser, IntentParserConfig, QueryProfile,
+    QueryProfiler, UserProfile,
+};
 use crate::vector_index::VectorIndex;
 
 fn dump_json<T: Serialize>(label: &str, value: &T) {
@@ -16,8 +19,13 @@ fn dump_json<T: Serialize>(label: &str, value: &T) {
 
 fn dump_profile_fields(profile: &QueryProfile) {
     println!(
-        "profile.fields: task_type={:?}, target_entity={:?}, quality_hint={:?}, keywords={:?}",
-        profile.task_type, profile.target_entity, profile.quality_hint, profile.keywords
+        "profile.fields: task_type={:?}, task_description={:?}, target_entity={:?}, quality_hint={:?}, keywords={:?}, user_profile={:?}",
+        profile.task_type,
+        profile.task_description,
+        profile.target_entity,
+        profile.quality_hint,
+        profile.keywords,
+        profile.user_profile
     );
 }
 
@@ -138,48 +146,157 @@ impl ExternalAdapter for StubAdapter {
 }
 
 fn make_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
-    SearchEngine::new(VectorIndex, IntentParser, adapters)
+    SearchEngine::new(
+        VectorIndex,
+        IntentParser::new(IntentParserConfig {
+            api_key: None,
+            ..IntentParserConfig::default()
+        }),
+        adapters,
+    )
 }
 
 #[tokio::test]
 async fn intent_parser_profiles_raw_query_and_keywords() {
-    let parser = IntentParser;
-    let profile = parser
-        .profile("Build a high-quality classifier to detect cats")
-        .await
-        .unwrap();
+    let parser = IntentParser::new(IntentParserConfig {
+        api_key: None,
+        ..IntentParserConfig::default()
+    });
+    let query = "Build a high-quality classifier to detect cats";
+    let profile = parser.profile(query).await.unwrap();
 
     dump_json("profile", &profile);
     dump_profile_fields(&profile);
 
-    assert_eq!(
-        profile.raw_query,
-        "Build a high-quality classifier to detect cats"
-    );
+    assert_eq!(profile.raw_query, query);
     assert_eq!(profile.task_type.as_deref(), Some("classification"));
+    assert_eq!(
+        profile.task_description.as_deref(),
+        Some(
+            "Perform a classification task focused on cats with a high-quality requirement based on the user request: Build a high-quality classifier to detect cats"
+        )
+    );
     assert_eq!(profile.target_entity.as_deref(), Some("cats"));
     assert_eq!(profile.quality_hint.as_deref(), Some("high-quality"));
     assert_eq!(
         profile.keywords,
         vec!["build", "high-quality", "classifier", "detect", "cats"]
     );
+    assert_eq!(
+        profile.user_profile.cpu.architecture,
+        std::env::consts::ARCH
+    );
+    assert!(profile.user_profile.cpu.logical_cores >= 1);
 }
 
 #[tokio::test]
 async fn intent_parser_trait_returns_same_profile_as_inherent_method() {
-    let parser = IntentParser;
+    let parser = IntentParser::new(IntentParserConfig {
+        api_key: None,
+        ..IntentParserConfig::default()
+    });
     let profiler: &dyn QueryProfiler = &parser;
+    let query = "Build a high-quality classifier to detect cats";
 
-    let via_inherent = parser
-        .profile("Build a high-quality classifier to detect cats")
-        .await
-        .unwrap();
-    let via_trait = profiler
-        .profile("Build a high-quality classifier to detect cats")
-        .await
-        .unwrap();
+    let via_inherent = parser.profile(query).await.unwrap();
+    let via_trait = profiler.profile(query).await.unwrap();
 
     assert_eq!(via_inherent, via_trait);
+}
+
+#[tokio::test]
+async fn intent_parser_uses_deepseek_when_configured() {
+    let query = "check whether little Wu is in the image taken from monitor";
+    let parser = IntentParser::new(IntentParserConfig {
+        api_key: Some("test-key".into()),
+        api_base: "https://api.deepseek.com".into(),
+        model: "deepseek-chat".into(),
+        timeout: std::time::Duration::from_secs(5),
+    });
+    let user_profile = UserProfile {
+        cpu: crate::intent::CpuProfile {
+            architecture: "x86_64".into(),
+            logical_cores: 8,
+            model: Some("Test CPU".into()),
+        },
+        gpus: vec![crate::intent::GpuProfile {
+            vendor: Some("NVIDIA".into()),
+            model: "RTX 4090".into(),
+        }],
+    };
+    let request_body = parser
+        .build_deepseek_request_json(
+            query,
+            &user_profile,
+            &[
+                "The user has a cat named little Wu.".to_string(),
+                "The user prefers calm spaces more than loud ones.".to_string(),
+            ],
+        )
+        .unwrap();
+    let profile = parser
+        .profile_from_deepseek_content(
+            query,
+            &user_profile,
+            r#"{"task_type":"classification","task_description":"Detect whether cats are present in input images with high-quality accuracy.","target_entity":"cats","quality_hint":"high-quality","keywords":["cats","classifier","vision"]}"#,
+        )
+        .unwrap();
+
+    dump_json("deepseek.request", &request_body);
+    dump_json("deepseek.profile", &profile);
+
+    assert_eq!(request_body["model"], "deepseek-chat");
+    assert_eq!(request_body["response_format"]["type"], "json_object");
+    assert_eq!(request_body["messages"][0]["role"], "system");
+    assert_eq!(request_body["messages"][1]["role"], "user");
+    assert!(request_body["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .contains(query));
+    assert!(request_body["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Relevant user memories"));
+    assert!(request_body["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("\"task_description\""));
+    assert!(request_body["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("little Wu"));
+    assert!(request_body["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("RTX 4090"));
+    assert_eq!(profile.task_type.as_deref(), Some("classification"));
+    assert_eq!(
+        profile.task_description.as_deref(),
+        Some("Detect whether cats are present in input images with high-quality accuracy.")
+    );
+    assert_eq!(profile.target_entity.as_deref(), Some("cats"));
+    assert_eq!(profile.quality_hint.as_deref(), Some("high-quality"));
+    assert_eq!(profile.keywords, vec!["cats", "classifier", "vision"]);
+    assert_eq!(profile.user_profile, user_profile);
+}
+
+#[test]
+fn memory_search_prefers_entries_matching_named_entities_and_terms() {
+    let matches = retrieve_related_memories_for_test(
+        "Plan a calm weekend around little Wu with small gatherings",
+        &[
+            "The user has a cat named little Wu.",
+            "The user prefers small gatherings to crowded events.",
+            "The user likes calm spaces more than loud energetic ones.",
+            "The user enjoys cycling on cool mornings.",
+        ],
+        3,
+    );
+
+    dump_json("memory.matches", &matches);
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0], "The user has a cat named little Wu.");
 }
 
 #[tokio::test]
@@ -202,6 +319,10 @@ async fn search_with_profile_matches_local_metadata() {
     let profile = QueryProfile {
         raw_query: "Build a high-quality classifier to detect cats".into(),
         task_type: Some("classification".into()),
+        task_description: Some(
+            "Perform a classification task focused on cats with a high-quality requirement based on the user request: Build a high-quality classifier to detect cats"
+                .into(),
+        ),
         target_entity: Some("cats".into()),
         quality_hint: Some("high-quality".into()),
         keywords: vec![
@@ -211,6 +332,7 @@ async fn search_with_profile_matches_local_metadata() {
             "detect".into(),
             "cats".into(),
         ],
+        user_profile: UserProfile::default(),
     };
 
     let output = engine
@@ -252,9 +374,14 @@ async fn search_with_profile_deduplicates_local_and_external_results_by_cid() {
     let profile = QueryProfile {
         raw_query: "Build a high-quality classifier to detect cats".into(),
         task_type: Some("classification".into()),
+        task_description: Some(
+            "Perform a classification task focused on cats with a high-quality requirement based on the user request: Build a high-quality classifier to detect cats"
+                .into(),
+        ),
         target_entity: Some("cats".into()),
         quality_hint: Some("high-quality".into()),
         keywords: vec!["cats".into(), "classifier".into()],
+        user_profile: UserProfile::default(),
     };
 
     let output = engine
@@ -292,6 +419,10 @@ async fn search_wrapper_preserves_existing_behaviour_by_profiling_then_searching
     let profile = QueryProfile {
         raw_query: "Build a high-quality classifier to detect cats".into(),
         task_type: Some("classification".into()),
+        task_description: Some(
+            "Perform a classification task focused on cats with a high-quality requirement based on the user request: Build a high-quality classifier to detect cats"
+                .into(),
+        ),
         target_entity: Some("cats".into()),
         quality_hint: Some("high-quality".into()),
         keywords: vec![
@@ -301,6 +432,7 @@ async fn search_wrapper_preserves_existing_behaviour_by_profiling_then_searching
             "detect".into(),
             "cats".into(),
         ],
+        user_profile: UserProfile::default(),
     };
 
     let via_wrapper = engine
