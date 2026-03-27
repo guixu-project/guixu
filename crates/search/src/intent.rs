@@ -79,7 +79,7 @@ impl Default for IntentParserConfig {
 impl IntentParserConfig {
     pub fn from_env() -> Self {
         Self {
-            api_key: Some("sk-8b58aea39507415baaf04bfce535b301".to_string()),
+            api_key: load_setting_env_value("DEEPSEEK_API_KEY"),
             api_base: "https://api.deepseek.com".to_string(),
             model: std::env::var("DEEPSEEK_MODEL")
                 .ok()
@@ -382,6 +382,27 @@ fn fallback_task_description(query: &str) -> String {
     query.trim().to_string()
 }
 
+fn load_setting_env_value(key: &str) -> Option<String> {
+    let path = resolve_setting_env_path()?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    contents.lines().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return None;
+        }
+        let (name, value) = line.split_once('=')?;
+        if name.trim() != key {
+            return None;
+        }
+        let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
+}
+
 fn collect_intent_context(query: &str, include_memories: bool) -> (UserProfile, Vec<String>) {
     let user_profile = collect_user_profile();
     let related_memories = if include_memories {
@@ -430,6 +451,25 @@ fn resolve_memory_path() -> Option<PathBuf> {
     {
         if let Some(path) = find_memory_path_from_base(&base) {
             return Some(path);
+        }
+    }
+
+    None
+}
+
+fn resolve_setting_env_path() -> Option<PathBuf> {
+    for base in [
+        std::env::current_dir().ok(),
+        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR"))),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for ancestor in base.ancestors() {
+            let candidate = ancestor.join("local").join("setting.env");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
 
@@ -644,7 +684,7 @@ fn looks_like_named_entity_token(token: &str, index: usize, surface_tokens: &[St
     true
 }
 
-fn maybe_entity_prefix<'a>(index: usize, surface_tokens: &'a [String]) -> Option<&'a str> {
+fn maybe_entity_prefix(index: usize, surface_tokens: &[String]) -> Option<&str> {
     let previous = surface_tokens.get(index.checked_sub(1)?)?;
     let normalized = normalize_keyword(previous);
     if normalized.len() <= 2 || is_stop_word(&normalized) {
