@@ -38,7 +38,11 @@ impl SearchEngine {
         intent_parser: IntentParser,
         adapters: Vec<Box<dyn ExternalAdapter>>,
     ) -> Self {
-        Self { vector_index, intent_parser, adapters }
+        Self {
+            vector_index,
+            intent_parser,
+            adapters,
+        }
     }
 
     /// Main search entry point — called by MCP tool `dataset_search`.
@@ -86,7 +90,11 @@ impl SearchEngine {
             all.retain(|r| r.price.amount <= max_price);
         }
         if let Some(ref src) = filters.source {
-            all.retain(|r| format!("{:?}", r.source).to_lowercase().contains(&src.to_lowercase()));
+            all.retain(|r| {
+                format!("{:?}", r.source)
+                    .to_lowercase()
+                    .contains(&src.to_lowercase())
+            });
         }
 
         // Deduplicate by CID
@@ -99,14 +107,25 @@ impl SearchEngine {
             .map(|r| {
                 let signal = signal_fetcher(&r.cid.0);
                 let score = rank_with_signal(&r, &signal, profile);
-                RankedResult { result: r, rank_score: score, signal }
+                RankedResult {
+                    result: r,
+                    rank_score: score,
+                    signal,
+                }
             })
             .collect();
 
-        ranked.sort_by(|a, b| b.rank_score.partial_cmp(&a.rank_score).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.sort_by(|a, b| {
+            b.rank_score
+                .partial_cmp(&a.rank_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         ranked.truncate(limit);
 
-        Ok(SearchOutput { results: ranked, errors })
+        Ok(SearchOutput {
+            results: ranked,
+            errors,
+        })
     }
 
     /// Search local P2P metadata store.
@@ -128,8 +147,7 @@ impl SearchEngine {
                 let all_text = format!("{title} {desc} {tags_str}");
 
                 // Match if query substring or any keyword matches
-                all_text.contains(&query_lower)
-                    || keywords.iter().any(|kw| all_text.contains(kw))
+                all_text.contains(&query_lower) || keywords.iter().any(|kw| all_text.contains(kw))
             })
             .map(|m| metadata_to_search_result(m))
             .collect();
@@ -146,8 +164,23 @@ impl SearchEngine {
     ) -> (Vec<SearchResult>, Vec<String>) {
         let mut results = vec![];
         let mut errors = vec![];
+        let external_query = {
+            let mut seen = std::collections::HashSet::new();
+            let keywords: Vec<&str> = intent
+                .keywords
+                .iter()
+                .map(|kw| kw.trim())
+                .filter(|kw| !kw.is_empty())
+                .filter(|kw| seen.insert(kw.to_lowercase()))
+                .collect();
+            if keywords.is_empty() {
+                intent.raw_query.clone()
+            } else {
+                keywords.join(" ")
+            }
+        };
         for adapter in &self.adapters {
-            match adapter.search(&intent.raw_query, limit).await {
+            match adapter.search(&external_query, limit).await {
                 Ok(mut r) => results.append(&mut r),
                 Err(e) => {
                     warn!(adapter = adapter.name(), error = %e, "adapter search failed");

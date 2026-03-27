@@ -6,7 +6,6 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 
 /// Structured query profile produced before discovery.
 ///
@@ -19,7 +18,6 @@ pub struct QueryProfile {
     #[serde(default)]
     pub task_description: Option<String>,
     pub target_entity: Option<String>,
-    pub quality_hint: Option<String>,
     pub keywords: Vec<String>,
     #[serde(default)]
     pub user_profile: UserProfile,
@@ -112,28 +110,31 @@ impl IntentParser {
 
     /// Produce a structured query profile from raw user input.
     pub async fn profile(&self, query: &str) -> Result<QueryProfile> {
-        let query_owned = query.to_string();
-        let should_load_memories = self.config.api_key.is_some();
-        let (user_profile, related_memories) = tokio::task::spawn_blocking(move || {
-            collect_intent_context(&query_owned, should_load_memories)
-        })
-        .await
-        .unwrap_or_else(|_| (UserProfile::default(), Vec::new()));
-
-        if self.config.api_key.is_some() {
-            eprintln!("calling DeepSeek API for intent parsing");
-            match self
-                .profile_with_deepseek(query, &user_profile, &related_memories)
-                .await
-            {
-                Ok(profile) => return Ok(profile),
-                Err(error) => {
-                    warn!(error = %error, "deepseek intent parsing failed; falling back to rules");
-                }
-            }
+        if self
+            .config
+            .api_key
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return Err(anyhow!("missing DEEPSEEK_API_KEY"));
         }
 
-        Ok(rule_based_profile(query, user_profile))
+        let query_owned = query.to_string();
+        let (user_profile, related_memories) =
+            tokio::task::spawn_blocking(move || collect_intent_context(&query_owned, true))
+                .await
+                .unwrap_or_else(|_| (UserProfile::default(), Vec::new()));
+
+        eprintln!("calling DeepSeek API for intent parsing");
+        let profile = self
+            .profile_with_deepseek(query, &user_profile, &related_memories)
+            .await?;
+        eprintln!(
+            "intent profile:\n{}",
+            serde_json::to_string_pretty(&profile)?
+        );
+        Ok(profile)
     }
 
     /// Parse a natural language query into structured intent.
@@ -209,7 +210,6 @@ impl IntentParser {
             task_description: normalize_optional(llm_profile.task_description)
                 .or_else(|| Some(fallback_task_description(query))),
             target_entity: normalize_optional(llm_profile.target_entity),
-            quality_hint: normalize_optional(llm_profile.quality_hint),
             keywords: normalize_keywords(llm_profile.keywords),
             user_profile: user_profile.clone(),
         })
@@ -259,7 +259,6 @@ Use this exact json schema:
   "task_type": "string or null",
   "task_description": "string or null",
   "target_entity": "string or null",
-  "quality_hint": "string or null",
   "keywords": ["lowercase keyword"]
 }
 
@@ -267,9 +266,26 @@ Rules:
 - First infer the user's likely task description from the natural-language query and any relevant user memories.
 - task_type must be a concise task label such as classification, forecasting, detection, ranking, retrieval, segmentation, generation, summarization, or evaluation.
 - task_description must be a detailed natural-language description of what the user is trying to accomplish with the data.
-- target_entity must be the main subject or object of the requested dataset, kept short.
-- quality_hint should only capture explicit quality, latency, cost, or scale constraints from the query.
-- keywords must be lowercase, deduplicated, and useful for dataset retrieval.
+- target_entity must be the main subject or object of the requested dataset, kept short, and should prefer the generic publicly searchable category over a private instance name when the memories make that category clear.
+- If the query names a private entity such as a pet or person, resolve it to the relevant dataset-search target when possible, for example a named cat should produce target_entity "cat" rather than the pet's name.
+- keywords must be extracted only from the original query text or from relevant user memories that are clearly linked to the query by named-entity matches, do not invent keywords
+- keywords must answer ONE question: "What terms would I type into Kaggle / HuggingFace search bar to find the dataset I need?"
+- Only include terms that describe the CONTENT of the desired dataset (objects, domains, sensor types, data modalities).
+- EXCLUDE all of the following — they never help find datasets:
+  • task/model words: classifier, classification, detection, segmentation, model, network, train, predict
+  • generic media words: image, photo, picture, video, frame (unless the query is specifically about a dataset OF photos/videos as subject matter)
+  • action/intent words: write, build, create, check, detect, identify, recognize
+- After resolving private entities to public categories via memories, the private name (e.g. "caesar") must NOT appear in keywords.
+- Maximum 5 keywords. Fewer is better. If one keyword suffices, use one.
+- When in doubt about whether to include a keyword, leave it out.
+Examples:
+  Query: "write an image classifier that checks whether my cat is in the photo taken by my house monitor"
+  Good keywords: ["cat"]
+  Bad keywords: ["image", "classifier", "cat", "photo", "house", "monitor"]
+
+  Query: "build a model to detect lung nodules in chest CT scans"
+  Good keywords: ["lung nodule", "chest ct"]
+  Bad keywords: ["detect", "model", "build", "scan"]
 - If a field is unknown, use null for scalars and [] for keywords.
 - The provided hardware profile and user memories are context only; do not copy them verbatim into the json output."#;
 
@@ -315,7 +331,6 @@ struct LlmIntentProfile {
     task_type: Option<String>,
     task_description: Option<String>,
     target_entity: Option<String>,
-    quality_hint: Option<String>,
     #[serde(default)]
     keywords: Vec<String>,
 }
@@ -333,64 +348,6 @@ fn build_user_prompt(
          Relevant user memories:\n{memories_section}\n\n\
          Hardware profile:\n{hardware_json}\n"
     ))
-}
-
-fn rule_based_profile(query: &str, user_profile: UserProfile) -> QueryProfile {
-    let query_lower = query.to_lowercase();
-    let keywords: Vec<String> = query
-        .split_whitespace()
-        .map(normalize_keyword)
-        .filter(|s| s.len() > 1)
-        .filter(|s| {
-            !matches!(
-                s.as_str(),
-                "to" | "for" | "the" | "and" | "of" | "in" | "on"
-            )
-        })
-        .collect();
-
-    let task_type = if query_lower.contains("classifier") || query_lower.contains("classification")
-    {
-        Some("classification".to_string())
-    } else if query_lower.contains("forecast") || query_lower.contains("prediction") {
-        Some("forecasting".to_string())
-    } else {
-        None
-    };
-
-    let quality_hint = if query_lower.contains("high-quality") {
-        Some("high-quality".to_string())
-    } else if query_lower.contains("low-latency") {
-        Some("low-latency".to_string())
-    } else {
-        None
-    };
-
-    let target_entity = if let Some((_, tail)) = query_lower.split_once("detect ") {
-        tail.split_whitespace()
-            .next()
-            .map(normalize_keyword)
-            .filter(|s| !s.is_empty())
-    } else {
-        None
-    };
-
-    let task_description = Some(derive_task_description(
-        query,
-        task_type.as_deref(),
-        target_entity.as_deref(),
-        quality_hint.as_deref(),
-    ));
-
-    QueryProfile {
-        raw_query: query.to_string(),
-        task_type,
-        task_description,
-        target_entity,
-        quality_hint,
-        keywords,
-        user_profile,
-    }
 }
 
 fn normalize_optional(value: Option<String>) -> Option<String> {
@@ -419,35 +376,6 @@ fn normalize_keyword(value: impl AsRef<str>) -> String {
         .as_ref()
         .trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
         .to_lowercase()
-}
-
-fn derive_task_description(
-    query: &str,
-    task_type: Option<&str>,
-    target_entity: Option<&str>,
-    quality_hint: Option<&str>,
-) -> String {
-    let Some(task_type) = task_type else {
-        return fallback_task_description(query);
-    };
-
-    let mut parts = Vec::new();
-    parts.push(match task_type {
-        "classification" => "Perform a classification task".to_string(),
-        "forecasting" => "Perform a forecasting task".to_string(),
-        other => format!("Perform a {other} task"),
-    });
-
-    if let Some(target_entity) = target_entity {
-        parts.push(format!("focused on {target_entity}"));
-    }
-
-    if let Some(quality_hint) = quality_hint {
-        parts.push(format!("with a {quality_hint} requirement"));
-    }
-
-    parts.push(format!("based on the user request: {query}"));
-    parts.join(" ")
 }
 
 fn fallback_task_description(query: &str) -> String {
