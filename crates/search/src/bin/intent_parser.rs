@@ -28,6 +28,5 @@ async fn main() -> Result<()> {
     let parser = IntentParser::default();
     let profile = parser.profile(&query).await?;
 
-    println!("{}", serde_json::to_string_pretty(&profile)?);
     Ok(())
 }

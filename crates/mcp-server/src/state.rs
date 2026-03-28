@@ -49,7 +49,7 @@ impl AppState {
         payment: &PaymentConfig,
     ) -> Self {
         let vector_index = VectorIndex;
-        let intent_parser = IntentParser;
+        let intent_parser = IntentParser::default();
         let adapters = default_adapters();
         let search_engine = SearchEngine::new(vector_index, intent_parser, adapters);
 

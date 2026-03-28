@@ -6,7 +6,6 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 
 /// Structured query profile produced before discovery.
 ///
@@ -19,13 +18,42 @@ pub struct QueryProfile {
     #[serde(default)]
     pub task_description: Option<String>,
     pub target_entity: Option<String>,
-    pub quality_hint: Option<String>,
     pub keywords: Vec<String>,
+    #[serde(default)]
+    pub data_standard: DataStandard,
     #[serde(default)]
     pub user_profile: UserProfile,
 }
 
-/// Local hardware profile captured alongside the user's query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataStandard {
+    pub sample_unit: String,
+    #[serde(default)]
+    pub metadata_fields: Vec<MetadataField>,
+    #[serde(default)]
+    pub canonical_columns: Vec<String>,
+    #[serde(default)]
+    pub extra_columns: Vec<String>,
+}
+
+impl Default for DataStandard {
+    fn default() -> Self {
+        Self {
+            sample_unit: String::new(),
+            metadata_fields: default_metadata_fields(),
+            canonical_columns: default_canonical_columns(),
+            extra_columns: default_extra_columns(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataField {
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserProfile {
     pub cpu: CpuProfile,
@@ -81,7 +109,7 @@ impl Default for IntentParserConfig {
 impl IntentParserConfig {
     pub fn from_env() -> Self {
         Self {
-            api_key: Some("sk-8b58aea39507415baaf04bfce535b301".to_string()),
+            api_key: load_setting_env_value("DEEPSEEK_API_KEY"),
             api_base: "https://api.deepseek.com".to_string(),
             model: std::env::var("DEEPSEEK_MODEL")
                 .ok()
@@ -112,28 +140,31 @@ impl IntentParser {
 
     /// Produce a structured query profile from raw user input.
     pub async fn profile(&self, query: &str) -> Result<QueryProfile> {
-        let query_owned = query.to_string();
-        let should_load_memories = self.config.api_key.is_some();
-        let (user_profile, related_memories) = tokio::task::spawn_blocking(move || {
-            collect_intent_context(&query_owned, should_load_memories)
-        })
-        .await
-        .unwrap_or_else(|_| (UserProfile::default(), Vec::new()));
-
-        if self.config.api_key.is_some() {
-            eprintln!("calling DeepSeek API for intent parsing");
-            match self
-                .profile_with_deepseek(query, &user_profile, &related_memories)
-                .await
-            {
-                Ok(profile) => return Ok(profile),
-                Err(error) => {
-                    warn!(error = %error, "deepseek intent parsing failed; falling back to rules");
-                }
-            }
+        if self
+            .config
+            .api_key
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return Err(anyhow!("missing DEEPSEEK_API_KEY"));
         }
 
-        Ok(rule_based_profile(query, user_profile))
+        let query_owned = query.to_string();
+        let (user_profile, related_memories) =
+            tokio::task::spawn_blocking(move || collect_intent_context(&query_owned, true))
+                .await
+                .unwrap_or_else(|_| (UserProfile::default(), Vec::new()));
+
+        eprintln!("calling DeepSeek API for intent parsing");
+        let profile = self
+            .profile_with_deepseek(query, &user_profile, &related_memories)
+            .await?;
+        eprintln!(
+            "intent profile:\n{}",
+            serde_json::to_string_pretty(&profile)?
+        );
+        Ok(profile)
     }
 
     /// Parse a natural language query into structured intent.
@@ -209,8 +240,8 @@ impl IntentParser {
             task_description: normalize_optional(llm_profile.task_description)
                 .or_else(|| Some(fallback_task_description(query))),
             target_entity: normalize_optional(llm_profile.target_entity),
-            quality_hint: normalize_optional(llm_profile.quality_hint),
             keywords: normalize_keywords(llm_profile.keywords),
+            data_standard: normalize_data_standard(llm_profile.data_standard),
             user_profile: user_profile.clone(),
         })
     }
@@ -259,17 +290,47 @@ Use this exact json schema:
   "task_type": "string or null",
   "task_description": "string or null",
   "target_entity": "string or null",
-  "quality_hint": "string or null",
-  "keywords": ["lowercase keyword"]
+  "keywords": ["lowercase keyword"],
+  "data_standard": {
+    "sample_unit": "string",
+    "metadata_fields": [{"name": "string", "value": "string"}],
+    "canonical_columns": ["string"],
+    "extra_columns": ["string"]
+  }
 }
 
 Rules:
 - First infer the user's likely task description from the natural-language query and any relevant user memories.
 - task_type must be a concise task label such as classification, forecasting, detection, ranking, retrieval, segmentation, generation, summarization, or evaluation.
 - task_description must be a detailed natural-language description of what the user is trying to accomplish with the data.
-- target_entity must be the main subject or object of the requested dataset, kept short.
-- quality_hint should only capture explicit quality, latency, cost, or scale constraints from the query.
-- keywords must be lowercase, deduplicated, and useful for dataset retrieval.
+- target_entity must be the main subject or object of the requested dataset, kept short, and should prefer the generic publicly searchable category over a private instance name when the memories make that category clear.
+- If the query names a private entity such as a pet or person, resolve it to the relevant dataset-search target when possible, for example a named cat should produce target_entity "cat" rather than the pet's name.
+- keywords must be extracted only from the original query text or from relevant user memories that are clearly linked to the query by named-entity matches, do not invent keywords
+- keywords must answer ONE question: "What terms would I type into Kaggle / HuggingFace search bar to find the dataset I need?"
+- Only include terms that describe the CONTENT of the desired dataset (objects, domains, sensor types, data modalities).
+- EXCLUDE all of the following — they never help find datasets:
+  • task/model words: classifier, classification, detection, segmentation, model, network, train, predict
+  • generic media words: image, photo, picture, video, frame (unless the query is specifically about a dataset OF photos/videos as subject matter)
+  • action/intent words: write, build, create, check, detect, identify, recognize
+- After resolving private entities to public categories via memories, the private name (e.g. "caesar") must NOT appear in keywords.
+- Maximum 5 keywords. Fewer is better. If one keyword suffices, use one.
+- When in doubt about whether to include a keyword, leave it out.
+- data_standard is for dataset schema normalization only, not for repeating task semantics already covered elsewhere.
+- data_standard.sample_unit should use broad units such as image, video, text, tabular, or audio.
+- data_standard.metadata_fields must always include exactly these fields: min_sample_num, resolution.
+- data_standard.canonical_columns must always include exactly these fields: sample_id, label.
+- data_standard.extra_columns must always include exactly these fields: timestamp.
+- metadata_fields values may be empty strings when the query does not provide the information.
+- canonical_columns and extra_columns must be string arrays, not objects.
+- If you do not have enough information for data_standard, leave sample_unit as an empty string and leave metadata field values as empty strings.
+Examples:
+  Query: "write an image classifier that checks whether my cat is in the photo taken by my house monitor"
+  Good keywords: ["cat"]
+  Bad keywords: ["image", "classifier", "cat", "photo", "house", "monitor"]
+
+  Query: "build a model to detect lung nodules in chest CT scans"
+  Good keywords: ["lung nodule", "chest ct"]
+  Bad keywords: ["detect", "model", "build", "scan"]
 - If a field is unknown, use null for scalars and [] for keywords.
 - The provided hardware profile and user memories are context only; do not copy them verbatim into the json output."#;
 
@@ -315,9 +376,10 @@ struct LlmIntentProfile {
     task_type: Option<String>,
     task_description: Option<String>,
     target_entity: Option<String>,
-    quality_hint: Option<String>,
     #[serde(default)]
     keywords: Vec<String>,
+    #[serde(default)]
+    data_standard: DataStandard,
 }
 
 fn build_user_prompt(
@@ -333,64 +395,6 @@ fn build_user_prompt(
          Relevant user memories:\n{memories_section}\n\n\
          Hardware profile:\n{hardware_json}\n"
     ))
-}
-
-fn rule_based_profile(query: &str, user_profile: UserProfile) -> QueryProfile {
-    let query_lower = query.to_lowercase();
-    let keywords: Vec<String> = query
-        .split_whitespace()
-        .map(normalize_keyword)
-        .filter(|s| s.len() > 1)
-        .filter(|s| {
-            !matches!(
-                s.as_str(),
-                "to" | "for" | "the" | "and" | "of" | "in" | "on"
-            )
-        })
-        .collect();
-
-    let task_type = if query_lower.contains("classifier") || query_lower.contains("classification")
-    {
-        Some("classification".to_string())
-    } else if query_lower.contains("forecast") || query_lower.contains("prediction") {
-        Some("forecasting".to_string())
-    } else {
-        None
-    };
-
-    let quality_hint = if query_lower.contains("high-quality") {
-        Some("high-quality".to_string())
-    } else if query_lower.contains("low-latency") {
-        Some("low-latency".to_string())
-    } else {
-        None
-    };
-
-    let target_entity = if let Some((_, tail)) = query_lower.split_once("detect ") {
-        tail.split_whitespace()
-            .next()
-            .map(normalize_keyword)
-            .filter(|s| !s.is_empty())
-    } else {
-        None
-    };
-
-    let task_description = Some(derive_task_description(
-        query,
-        task_type.as_deref(),
-        target_entity.as_deref(),
-        quality_hint.as_deref(),
-    ));
-
-    QueryProfile {
-        raw_query: query.to_string(),
-        task_type,
-        task_description,
-        target_entity,
-        quality_hint,
-        keywords,
-        user_profile,
-    }
 }
 
 fn normalize_optional(value: Option<String>) -> Option<String> {
@@ -414,6 +418,54 @@ fn normalize_keywords(keywords: Vec<String>) -> Vec<String> {
     normalized
 }
 
+fn normalize_data_standard(data_standard: DataStandard) -> DataStandard {
+    let metadata_values = data_standard
+        .metadata_fields
+        .into_iter()
+        .map(|field| (field.name.trim().to_lowercase(), field.value.trim().to_string()))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    DataStandard {
+        sample_unit: data_standard.sample_unit.trim().to_string(),
+        metadata_fields: vec![
+            MetadataField {
+                name: "min_sample_num".to_string(),
+                value: metadata_values
+                    .get("min_sample_num")
+                    .cloned()
+                    .unwrap_or_default(),
+            },
+            MetadataField {
+                name: "resolution".to_string(),
+                value: metadata_values.get("resolution").cloned().unwrap_or_default(),
+            },
+        ],
+        canonical_columns: default_canonical_columns(),
+        extra_columns: default_extra_columns(),
+    }
+}
+
+fn default_metadata_fields() -> Vec<MetadataField> {
+    vec![
+        MetadataField {
+            name: "min_sample_num".to_string(),
+            value: String::new(),
+        },
+        MetadataField {
+            name: "resolution".to_string(),
+            value: String::new(),
+        },
+    ]
+}
+
+fn default_canonical_columns() -> Vec<String> {
+    vec!["sample_id".to_string(), "label".to_string()]
+}
+
+fn default_extra_columns() -> Vec<String> {
+    vec!["timestamp".to_string()]
+}
+
 fn normalize_keyword(value: impl AsRef<str>) -> String {
     value
         .as_ref()
@@ -421,37 +473,29 @@ fn normalize_keyword(value: impl AsRef<str>) -> String {
         .to_lowercase()
 }
 
-fn derive_task_description(
-    query: &str,
-    task_type: Option<&str>,
-    target_entity: Option<&str>,
-    quality_hint: Option<&str>,
-) -> String {
-    let Some(task_type) = task_type else {
-        return fallback_task_description(query);
-    };
-
-    let mut parts = Vec::new();
-    parts.push(match task_type {
-        "classification" => "Perform a classification task".to_string(),
-        "forecasting" => "Perform a forecasting task".to_string(),
-        other => format!("Perform a {other} task"),
-    });
-
-    if let Some(target_entity) = target_entity {
-        parts.push(format!("focused on {target_entity}"));
-    }
-
-    if let Some(quality_hint) = quality_hint {
-        parts.push(format!("with a {quality_hint} requirement"));
-    }
-
-    parts.push(format!("based on the user request: {query}"));
-    parts.join(" ")
-}
-
 fn fallback_task_description(query: &str) -> String {
     query.trim().to_string()
+}
+
+fn load_setting_env_value(key: &str) -> Option<String> {
+    let path = resolve_setting_env_path()?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    contents.lines().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return None;
+        }
+        let (name, value) = line.split_once('=')?;
+        if name.trim() != key {
+            return None;
+        }
+        let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
 }
 
 fn collect_intent_context(query: &str, include_memories: bool) -> (UserProfile, Vec<String>) {
@@ -502,6 +546,25 @@ fn resolve_memory_path() -> Option<PathBuf> {
     {
         if let Some(path) = find_memory_path_from_base(&base) {
             return Some(path);
+        }
+    }
+
+    None
+}
+
+fn resolve_setting_env_path() -> Option<PathBuf> {
+    for base in [
+        std::env::current_dir().ok(),
+        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR"))),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for ancestor in base.ancestors() {
+            let candidate = ancestor.join("local").join("setting.env");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
 
@@ -716,7 +779,7 @@ fn looks_like_named_entity_token(token: &str, index: usize, surface_tokens: &[St
     true
 }
 
-fn maybe_entity_prefix<'a>(index: usize, surface_tokens: &'a [String]) -> Option<&'a str> {
+fn maybe_entity_prefix(index: usize, surface_tokens: &[String]) -> Option<&str> {
     let previous = surface_tokens.get(index.checked_sub(1)?)?;
     let normalized = normalize_keyword(previous);
     if normalized.len() <= 2 || is_stop_word(&normalized) {
