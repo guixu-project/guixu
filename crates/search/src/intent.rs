@@ -98,6 +98,7 @@ pub struct IntentParserConfig {
     pub api_base: String,
     pub model: String,
     pub timeout: Duration,
+    pub proxy_url: String,
 }
 
 impl Default for IntentParserConfig {
@@ -117,6 +118,8 @@ impl IntentParserConfig {
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "deepseek-chat".to_string()),
             timeout: Duration::from_secs(15),
+            proxy_url: std::env::var("GUIXU_DEEPSEEK_PROXY_URL")
+                .unwrap_or_else(|_| "https://www.guixu.org/api/search/deepseek".into()),
         }
     }
 }
@@ -140,15 +143,12 @@ impl IntentParser {
 
     /// Produce a structured query profile from raw user input.
     pub async fn profile(&self, query: &str) -> Result<QueryProfile> {
-        if self
+        let has_key = self
             .config
             .api_key
             .as_deref()
             .filter(|value| !value.is_empty())
-            .is_none()
-        {
-            return Err(anyhow!("missing DEEPSEEK_API_KEY"));
-        }
+            .is_some();
 
         let query_owned = query.to_string();
         let (user_profile, related_memories) =
@@ -156,15 +156,21 @@ impl IntentParser {
                 .await
                 .unwrap_or_else(|_| (UserProfile::default(), Vec::new()));
 
-        eprintln!("calling DeepSeek API for intent parsing");
-        let profile = self
-            .profile_with_deepseek(query, &user_profile, &related_memories)
-            .await?;
-        eprintln!(
-            "intent profile:\n{}",
-            serde_json::to_string_pretty(&profile)?
-        );
-        Ok(profile)
+        if has_key {
+            eprintln!("calling DeepSeek API for intent parsing");
+            let profile = self
+                .profile_with_deepseek(query, &user_profile, &related_memories)
+                .await?;
+            eprintln!(
+                "intent profile:\n{}",
+                serde_json::to_string_pretty(&profile)?
+            );
+            Ok(profile)
+        } else {
+            eprintln!("no DEEPSEEK_API_KEY, using guixu.org proxy for intent parsing");
+            self.profile_via_proxy(query, &user_profile, &related_memories)
+                .await
+        }
     }
 
     /// Parse a natural language query into structured intent.
@@ -272,6 +278,40 @@ impl IntentParser {
             max_tokens: 256,
             stream: false,
         })
+    }
+
+    async fn profile_via_proxy(
+        &self,
+        query: &str,
+        user_profile: &UserProfile,
+        related_memories: &[String],
+    ) -> Result<QueryProfile> {
+        let request = self.build_deepseek_request(query, user_profile, related_memories)?;
+        let response = tokio::time::timeout(
+            self.config.timeout,
+            self.client
+                .post(&self.config.proxy_url)
+                .json(&request)
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow!("deepseek proxy: timeout"))?
+        .context("send DeepSeek proxy request")?
+        .error_for_status()
+        .context("DeepSeek proxy returned error status")?
+        .json::<DeepSeekChatResponse>()
+        .await
+        .context("parse DeepSeek proxy response")?;
+
+        let content = response
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|choice| choice.message.content)
+            .map(|content| content.trim().to_string())
+            .filter(|content| !content.is_empty())
+            .ok_or_else(|| anyhow!("DeepSeek proxy returned an empty intent payload"))?;
+        self.profile_from_deepseek_content(query, user_profile, &content)
     }
 }
 

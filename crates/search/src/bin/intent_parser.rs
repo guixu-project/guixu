@@ -26,7 +26,7 @@ fn read_query() -> Result<String> {
 async fn main() -> Result<()> {
     let query = read_query()?;
     let parser = IntentParser::default();
-    let profile = parser.profile(&query).await?;
+    let _profile = parser.profile(&query).await?;
 
     Ok(())
 }

@@ -75,14 +75,17 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
                 "cid": r.result.cid.0,
                 "title": r.result.title,
                 "description": r.result.description,
+                "tags": r.result.tags,
                 "source": r.result.source,
                 "data_type": r.result.data_type,
                 "price": r.result.price,
                 "schema": {
-                    "columns": r.result.schema.columns.len(),
-                    "rows": r.result.schema.row_count,
+                    "columns": r.result.schema.columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>(),
+                    "column_count": r.result.schema.columns.len(),
+                    "row_count": r.result.schema.row_count,
                     "size_bytes": r.result.schema.size_bytes,
                 },
+                "market": r.result.market,
                 "rank_score": format!("{:.1}", r.rank_score),
                 "community": {
                     "total_reviews": r.signal.total_reviews,
@@ -94,10 +97,20 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         })
         .collect();
 
-    let response = json!({
+    let mut response = json!({
         "results": output,
         "errors": search_output.errors,
     });
+
+    if let Some(profile) = &search_output.profile {
+        response["intent"] = json!({
+            "task_type": profile.task_type,
+            "task_description": profile.task_description,
+            "target_entity": profile.target_entity,
+            "keywords": profile.keywords,
+            "data_standard": profile.data_standard,
+        });
+    }
 
     Ok(serde_json::to_string_pretty(&response)?)
 }
