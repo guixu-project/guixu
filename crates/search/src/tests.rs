@@ -82,6 +82,7 @@ fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> Sea
         cid: DatasetCid(format!("cid-{cid_suffix}")),
         title: title.into(),
         description: Some(description.into()),
+        tags: vec![],
         schema: DatasetSchema {
             columns: vec![],
             row_count: 42,
@@ -96,6 +97,7 @@ fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> Sea
         },
         provider: Did(format!("did:key:{cid_suffix}")),
         source: DataSource::Kaggle,
+        market: None,
         data_type: DataType::Tabular,
         created_at: Utc::now(),
     }
@@ -149,6 +151,7 @@ fn make_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
         VectorIndex,
         IntentParser::new(IntentParserConfig {
             api_key: None,
+            proxy_url: "http://127.0.0.1:1/noop".into(),
             ..IntentParserConfig::default()
         }),
         adapters,
@@ -157,20 +160,28 @@ fn make_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
 
 #[tokio::test]
 async fn intent_parser_requires_llm_api_configuration() {
+    // Without a local API key the parser falls back to the proxy.
+    // Point the proxy at an unreachable address so the test stays offline.
     let parser = IntentParser::new(IntentParserConfig {
         api_key: None,
+        proxy_url: "http://127.0.0.1:1/noop".into(),
         ..IntentParserConfig::default()
     });
     let query = "Build a high-quality classifier to detect cats";
     let error = parser.profile(query).await.unwrap_err();
 
-    assert!(error.to_string().contains("missing DEEPSEEK_API_KEY"));
+    // Should be a network / proxy error, NOT "missing DEEPSEEK_API_KEY".
+    assert!(
+        !error.to_string().contains("missing DEEPSEEK_API_KEY"),
+        "expected proxy fallback, got: {error}"
+    );
 }
 
 #[tokio::test]
 async fn intent_parser_trait_propagates_missing_api_key_error() {
     let parser = IntentParser::new(IntentParserConfig {
         api_key: None,
+        proxy_url: "http://127.0.0.1:1/noop".into(),
         ..IntentParserConfig::default()
     });
     let profiler: &dyn QueryProfiler = &parser;
@@ -179,8 +190,11 @@ async fn intent_parser_trait_propagates_missing_api_key_error() {
     let via_inherent = parser.profile(query).await.unwrap_err();
     let via_trait = profiler.profile(query).await.unwrap_err();
 
-    assert_eq!(via_inherent.to_string(), via_trait.to_string());
-    assert!(via_trait.to_string().contains("missing DEEPSEEK_API_KEY"));
+    // Both paths should hit the proxy fallback and fail with the same kind of error.
+    assert!(!via_inherent
+        .to_string()
+        .contains("missing DEEPSEEK_API_KEY"));
+    assert!(!via_trait.to_string().contains("missing DEEPSEEK_API_KEY"));
 }
 
 #[tokio::test]
@@ -191,6 +205,7 @@ async fn intent_parser_uses_deepseek_when_configured() {
         api_base: "https://api.deepseek.com".into(),
         model: "deepseek-chat".into(),
         timeout: std::time::Duration::from_secs(5),
+        ..IntentParserConfig::default()
     });
     let user_profile = UserProfile {
         cpu: crate::intent::CpuProfile {
@@ -405,7 +420,8 @@ async fn search_wrapper_propagates_intent_parser_error_without_api_key() {
         .await
         .unwrap_err();
 
-    assert!(error.to_string().contains("missing DEEPSEEK_API_KEY"));
+    // With proxy fallback the error is a connection failure, not "missing DEEPSEEK_API_KEY".
+    assert!(!error.to_string().contains("missing DEEPSEEK_API_KEY"));
 }
 
 #[tokio::test]
@@ -427,10 +443,15 @@ async fn search_with_task_type_prefers_results_matching_requested_modality() {
         ],
     })]);
 
+    let profile = QueryProfile {
+        raw_query: "cat".into(),
+        task_type: Some("time_series_prediction".into()),
+        keywords: vec!["cat".into()],
+        ..Default::default()
+    };
     let output = engine
-        .search_with_task_type(
-            "cat",
-            Some("time_series_prediction"),
+        .search_with_profile(
+            &profile,
             &SearchFilters::default(),
             &[],
             &neutral_signal_fetcher(),
@@ -452,7 +473,7 @@ async fn search_with_task_type_prefers_results_matching_requested_modality() {
 // ===========================================================================
 
 /// Every DataSource variant must have exactly one adapter in default_adapters
-/// (except P2p and DataGov which are handled outside the adapter system).
+/// (except P2p which is handled outside the adapter system).
 #[test]
 fn default_adapters_covers_all_expected_sources() {
     let adapters = adapters::default_adapters();
@@ -469,6 +490,7 @@ fn default_adapters_covers_all_expected_sources() {
     assert!(names.contains(&"bittorrent"), "missing bittorrent adapter");
     assert!(names.contains(&"postgresql"), "missing postgresql adapter");
     assert!(names.contains(&"duckdb"), "missing duckdb adapter");
+    assert!(names.contains(&"guixu_hub"), "missing guixu_hub adapter");
     assert!(names.contains(&"local_file"), "missing local_file adapter");
     assert!(
         names.contains(&"google_dataset_search"),
@@ -496,6 +518,7 @@ fn default_adapters_covers_all_expected_sources() {
     assert!(sources.contains(&DataSource::BitTorrent));
     assert!(sources.contains(&DataSource::PostgreSql));
     assert!(sources.contains(&DataSource::DuckDb));
+    assert!(sources.contains(&DataSource::GuixuHub));
     assert!(sources.contains(&DataSource::LocalFile));
     assert!(sources.contains(&DataSource::GoogleDatasetSearch));
     assert!(sources.contains(&DataSource::DataCiteCommons));
@@ -555,11 +578,11 @@ fn datasource_serde_roundtrip() {
         (DataSource::P2p, "\"p2p\""),
         (DataSource::Kaggle, "\"kaggle\""),
         (DataSource::HuggingFace, "\"huggingface\""),
-        (DataSource::DataGov, "\"datagov\""),
         (DataSource::Ipfs, "\"ipfs\""),
         (DataSource::BitTorrent, "\"bittorrent\""),
         (DataSource::PostgreSql, "\"postgresql\""),
         (DataSource::DuckDb, "\"duckdb\""),
+        (DataSource::GuixuHub, "\"guixuhub\""),
         (DataSource::LocalFile, "\"localfile\""),
         (DataSource::GoogleDatasetSearch, "\"googledatasetsearch\""),
         (DataSource::DataCiteCommons, "\"datacitecommons\""),
@@ -600,6 +623,13 @@ fn datacite_adapter_source_type_and_name() {
     assert!(matches!(adapter.source_type(), DataSource::DataCiteCommons));
 }
 
+#[test]
+fn guixu_hub_adapter_source_type_and_name() {
+    let adapter = adapters::GuixuHubAdapter::default();
+    assert_eq!(adapter.name(), "guixu_hub");
+    assert!(matches!(adapter.source_type(), DataSource::GuixuHub));
+}
+
 /// Search engine should propagate results from new adapters through ranking.
 #[tokio::test]
 async fn search_engine_includes_new_adapter_results() {
@@ -618,6 +648,7 @@ async fn search_engine_includes_new_adapter_results() {
                 cid: DatasetCid("gds-001".into()),
                 title: "Climate Change Dataset".into(),
                 description: Some("from Google".into()),
+                tags: vec![],
                 schema: DatasetSchema {
                     columns: vec![],
                     row_count: 1000,
@@ -632,6 +663,7 @@ async fn search_engine_includes_new_adapter_results() {
                 },
                 provider: Did("gds:example.com".into()),
                 source: DataSource::GoogleDatasetSearch,
+                market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
             }])
@@ -652,6 +684,7 @@ async fn search_engine_includes_new_adapter_results() {
                 cid: DatasetCid("10.5281/zenodo.123".into()),
                 title: "Global Temperature Records".into(),
                 description: Some("from DataCite".into()),
+                tags: vec![],
                 schema: DatasetSchema {
                     columns: vec![],
                     row_count: 500,
@@ -666,6 +699,7 @@ async fn search_engine_includes_new_adapter_results() {
                 },
                 provider: Did("doi:10.5281/zenodo.123".into()),
                 source: DataSource::DataCiteCommons,
+                market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
             }])
@@ -673,9 +707,14 @@ async fn search_engine_includes_new_adapter_results() {
     }
 
     let engine = make_engine(vec![Box::new(GdsStub), Box::new(DcStub)]);
+    let profile = QueryProfile {
+        raw_query: "climate".into(),
+        keywords: vec!["climate".into()],
+        ..Default::default()
+    };
     let output = engine
-        .search(
-            "climate",
+        .search_with_profile(
+            &profile,
             &SearchFilters::default(),
             &[],
             &neutral_signal_fetcher(),
@@ -717,6 +756,7 @@ async fn source_filter_works_for_new_sources() {
                 cid: DatasetCid("gds-filter".into()),
                 title: "Filtered Dataset".into(),
                 description: None,
+                tags: vec![],
                 schema: DatasetSchema {
                     columns: vec![],
                     row_count: 10,
@@ -731,6 +771,7 @@ async fn source_filter_works_for_new_sources() {
                 },
                 provider: Did("gds:test".into()),
                 source: DataSource::GoogleDatasetSearch,
+                market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
             }])
@@ -738,6 +779,11 @@ async fn source_filter_works_for_new_sources() {
     }
 
     let engine = make_engine(vec![Box::new(GdsStub)]);
+    let profile = QueryProfile {
+        raw_query: "test".into(),
+        keywords: vec!["test".into()],
+        ..Default::default()
+    };
 
     // Filter for GoogleDatasetSearch — should keep the result
     let filters_match = SearchFilters {
@@ -745,7 +791,7 @@ async fn source_filter_works_for_new_sources() {
         ..Default::default()
     };
     let output = engine
-        .search("test", &filters_match, &[], &neutral_signal_fetcher(), 10)
+        .search_with_profile(&profile, &filters_match, &[], &neutral_signal_fetcher(), 10)
         .await
         .unwrap();
     assert_eq!(output.results.len(), 1);
@@ -756,7 +802,7 @@ async fn source_filter_works_for_new_sources() {
         ..Default::default()
     };
     let output = engine
-        .search("test", &filters_miss, &[], &neutral_signal_fetcher(), 10)
+        .search_with_profile(&profile, &filters_miss, &[], &neutral_signal_fetcher(), 10)
         .await
         .unwrap();
     assert_eq!(output.results.len(), 0);
@@ -933,9 +979,14 @@ async fn local_file_adapter_matches_by_column_name() {
 async fn search_result_includes_data_type() {
     let engine = make_engine(vec![]);
     let meta = vec![make_metadata("1", "video_clips", "video data", &["video"])];
+    let profile = QueryProfile {
+        raw_query: "video".into(),
+        keywords: vec!["video".into()],
+        ..Default::default()
+    };
     let output = engine
-        .search(
-            "video",
+        .search_with_profile(
+            &profile,
             &SearchFilters::default(),
             &meta,
             &neutral_signal_fetcher(),

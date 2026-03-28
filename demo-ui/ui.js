@@ -28,21 +28,20 @@ async function runPipeline() {
   resetUI();
 
   const query = $('taskInput').value;
-  const taskType = $('taskType').value;
   const budget = parseFloat($('budget').value) || 5.0;
   const sourceFilter = $('sourceFilter').value;
 
   // Step 1: active
   activateStep('step1');
   engine.log('[>]', `Agent task: "${query}"`);
-  engine.log('[>]', `Type: ${taskType}, Budget: $${budget.toFixed(2)}`);
+  engine.log('[>]', `Budget: $${budget.toFixed(2)}`);
   renderLog();
   await delay(400);
   completeStep('step1');
 
   // Step 2: Search
   activateStep('step2');
-  const { datasets, sources } = await engine.search(query, taskType, sourceFilter);
+  const { datasets, sources } = await engine.search(query, null, sourceFilter);
   renderSources(sources);
   await delay(300);
   renderSearchResults(datasets);
@@ -61,7 +60,7 @@ async function runPipeline() {
   // Step 3: Evaluate
   activateStep('step3');
   await delay(400);
-  const evalResults = await engine.evaluate(query, taskType, []);
+  const evalResults = await engine.evaluate(query, null, []);
   renderEvalResults(evalResults);
   renderTcvBreakdown(evalResults[0]);
   renderLog();
