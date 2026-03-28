@@ -16,10 +16,12 @@ tracing = { workspace = true }
 polars = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+rand = { workspace = true }
 glob = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
+data-valuation = { workspace = true }
 
 [lints]
 workspace = true

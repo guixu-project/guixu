@@ -303,16 +303,19 @@ impl SearchEngine {
 
             candidate.valuation.sample_plan = Some(plan.clone());
             match sample_evaluator
-                .evaluate_sample(metadata, task, &plan)
+                .evaluate_sample(&candidate.valuation.result, metadata, task, &plan)
                 .await
             {
                 Ok(Some(proxy_utility)) => {
-                    candidate.valuation.final_score = blend_scores(
-                        candidate.valuation.coarse_score,
-                        proxy_utility.utility_score,
-                        config.metadata_weight,
-                        config.utility_weight,
-                    );
+                    candidate.valuation.final_score = match proxy_utility.apply_mode {
+                        ProxyUtilityApplyMode::Blend => blend_scores(
+                            candidate.valuation.coarse_score,
+                            proxy_utility.utility_score,
+                            config.metadata_weight,
+                            config.utility_weight,
+                        ),
+                        ProxyUtilityApplyMode::OverrideFinal => proxy_utility.utility_score,
+                    };
                     candidate.valuation.proxy_utility = Some(proxy_utility);
                 }
                 Ok(None) => {}
@@ -473,7 +476,7 @@ pub struct DatasetValuationConfig {
 impl Default for DatasetValuationConfig {
     fn default() -> Self {
         Self {
-            coarse_top_k: 3,
+            coarse_top_k: 5,
             sample_fraction: 0.01,
             max_sample_rows: 2_000,
             max_sample_bytes: 64 * 1024 * 1024,
@@ -497,10 +500,18 @@ pub struct SamplePlan {
     pub time_budget_secs: u64,
 }
 
+/// How a sample-based utility score should affect the final dataset valuation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProxyUtilityApplyMode {
+    Blend,
+    OverrideFinal,
+}
+
 /// Proxy model result computed from a small sample of a dataset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyUtilityReport {
     pub utility_score: f64,
+    pub apply_mode: ProxyUtilityApplyMode,
     pub proxy_metric_name: String,
     pub proxy_metric_value: f64,
     pub sampled_rows: u64,
@@ -545,6 +556,7 @@ pub trait MetadataResolver: Send + Sync {
 pub trait SampleEvaluator: Send + Sync {
     async fn evaluate_sample(
         &self,
+        result: &SearchResult,
         metadata: &DatasetMetadata,
         task: &DatasetSelectionTask,
         plan: &SamplePlan,
@@ -1129,8 +1141,9 @@ fn build_valuation_explanation(valuation: &DatasetValuation) -> String {
 
     if let Some(proxy_utility) = &valuation.proxy_utility {
         parts.push(format!(
-            "{}={:.3} -> utility={:.1}",
+            "{}:{:?}={:.3} -> utility={:.1}",
             proxy_utility.proxy_metric_name,
+            proxy_utility.apply_mode,
             proxy_utility.proxy_metric_value,
             proxy_utility.utility_score
         ));
