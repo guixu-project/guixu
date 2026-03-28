@@ -1,8 +1,10 @@
+use anyhow::Result;
 use data_core::config::PaymentConfig;
 use data_core::identity::NodeIdentity;
 use data_p2p::dht::DhtIndex;
+use data_p2p::network::NetworkHandle;
 use data_p2p::torrent::TorrentEngine;
-use data_search::adapters::default_adapters_filtered;
+use data_search::adapters::default_adapters;
 use data_search::engine::SearchEngine;
 use data_search::intent::IntentParser;
 use data_search::vector_index::VectorIndex;
@@ -11,6 +13,12 @@ use data_storage::metadata_store::MetadataStore;
 use data_trading::router::PaymentRouter;
 use data_trading::wallet::AgentWallet;
 use data_valuation::tcv::TcvEngine;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolProfile {
+    Full,
+    CodexWorkflow,
+}
 
 /// Shared state accessible by MCP tool handlers.
 pub struct AppState {
@@ -22,6 +30,7 @@ pub struct AppState {
     pub search_engine: SearchEngine,
     pub payment_router: PaymentRouter,
     pub torrent_engine: Option<TorrentEngine>,
+    pub tool_profile: ToolProfile,
 }
 
 impl AppState {
@@ -37,9 +46,43 @@ impl AppState {
             store,
             feedback_store,
             &PaymentConfig::default(),
-            &[],
+            ToolProfile::Full,
         )
         .await
+    }
+
+    pub async fn for_codex() -> Result<Self> {
+        let identity = NodeIdentity::generate();
+        let session_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default();
+        let base_dir = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("local")
+            .join("codex-mcp")
+            .join("sessions")
+            .join(format!("{}-{session_suffix}", std::process::id()));
+        std::fs::create_dir_all(&base_dir)?;
+
+        let store = MetadataStore::open(&base_dir.join("db"))?;
+        let feedback_store = FeedbackStore::open(&base_dir.join("feedback_db"))?;
+
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel(8);
+        let dht = DhtIndex::new(NetworkHandle {
+            cmd_tx,
+            local_peer_id: libp2p::PeerId::random(),
+        });
+
+        Ok(Self::with_payment_config(
+            identity,
+            dht,
+            store,
+            feedback_store,
+            &PaymentConfig::default(),
+            ToolProfile::CodexWorkflow,
+        )
+        .await)
     }
 
     pub async fn with_payment_config(
@@ -48,11 +91,11 @@ impl AppState {
         store: MetadataStore,
         feedback_store: FeedbackStore,
         payment: &PaymentConfig,
-        disabled_adapters: &[String],
+        tool_profile: ToolProfile,
     ) -> Self {
         let vector_index = VectorIndex;
         let intent_parser = IntentParser::default();
-        let adapters = default_adapters_filtered(disabled_adapters);
+        let adapters = default_adapters();
         let search_engine = SearchEngine::new(vector_index, intent_parser, adapters);
 
         let wallet = AgentWallet::from_keyfile(&payment.wallet_key_path).unwrap_or_else(|_| {
@@ -87,6 +130,7 @@ impl AppState {
             search_engine,
             payment_router: PaymentRouter::new(wallet, payment.testnet),
             torrent_engine,
+            tool_profile,
         }
     }
 }

@@ -10,7 +10,7 @@ members = [
     "crates/valuation",
     "crates/publish",
     "crates/attestation",
-    "crates/mcp-server",
+    "crates/plugins/mcp",
     "crates/node",
 ]
 
@@ -36,7 +36,7 @@ data-trading = { path = "crates/trading" }
 data-valuation = { path = "crates/valuation" }
 data-publish = { path = "crates/publish" }
 data-attestation = { path = "crates/attestation" }
-data-mcp-server = { path = "crates/mcp-server" }
+data-mcp-server = { path = "crates/plugins/mcp" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

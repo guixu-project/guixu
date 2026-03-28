@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use data_core::types::*;
+use serde::Deserialize;
 use tracing::{debug, warn};
 
 /// Trait for external dataset platform adapters.
@@ -17,8 +18,10 @@ pub trait ExternalAdapter: Send + Sync {
 // ---------------------------------------------------------------------------
 
 pub struct KaggleAdapter {
+    client: reqwest::Client,
     pub api_base: String,
     enabled: bool,
+    proxy_url: String,
 }
 
 impl Default for KaggleAdapter {
@@ -26,9 +29,68 @@ impl Default for KaggleAdapter {
         let enabled =
             std::env::var("KAGGLE_USERNAME").is_ok() && std::env::var("KAGGLE_KEY").is_ok();
         Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             api_base: "https://www.kaggle.com/api/v1".into(),
             enabled,
+            proxy_url: std::env::var("GUIXU_KAGGLE_PROXY_URL")
+                .unwrap_or_else(|_| "https://www.guixu.org/api/search/kaggle".into()),
         }
+    }
+}
+
+impl KaggleAdapter {
+    fn parse_items(items: &[serde_json::Value], limit: usize) -> Vec<SearchResult> {
+        items
+            .iter()
+            .take(limit)
+            .filter_map(|item| {
+                let title = item.get("title")?.as_str()?;
+                let slug = item.get("ref")?.as_str().unwrap_or("");
+                let size = item.get("totalBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                let desc = item
+                    .get("subtitle")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let license_name = item
+                    .get("licenseName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let created = item
+                    .get("lastUpdated")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+
+                Some(SearchResult {
+                    cid: DatasetCid(format!("kaggle:{slug}")),
+                    title: title.to_string(),
+                    description: desc,
+                    tags: vec![],
+                    schema: DatasetSchema {
+                        columns: vec![],
+                        row_count: 0,
+                        size_bytes: size,
+                    },
+                    quality: None,
+                    price: Price::free(),
+                    license: License {
+                        spdx_id: license_name.into(),
+                        commercial_use: false,
+                        derivative_allowed: false,
+                    },
+                    provider: Did(format!("kaggle:{slug}")),
+                    source: DataSource::Kaggle,
+                    market: None,
+                    data_type: infer_data_type_from_title(title),
+                    created_at: created,
+                })
+            })
+            .collect()
     }
 }
 
@@ -41,12 +103,40 @@ impl ExternalAdapter for KaggleAdapter {
         DataSource::Kaggle
     }
 
-    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SearchResult>> {
-        if !self.enabled {
-            return Ok(vec![]);
-        }
-        // TODO: Real Kaggle API call using KAGGLE_USERNAME/KAGGLE_KEY
-        Ok(vec![])
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let resp = if self.enabled {
+            let username = std::env::var("KAGGLE_USERNAME").unwrap_or_default();
+            let key = std::env::var("KAGGLE_KEY").unwrap_or_default();
+            let url = format!("{}/datasets/list", self.api_base);
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client
+                    .get(&url)
+                    .basic_auth(&username, Some(&key))
+                    .query(&[("search", query), ("maxSize", &limit.min(20).to_string())])
+                    .send(),
+            )
+            .await
+            .map_err(|_| anyhow!("kaggle: timeout"))??
+            .error_for_status()?
+            .json::<Vec<serde_json::Value>>()
+            .await?
+        } else {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client
+                    .get(&self.proxy_url)
+                    .query(&[("q", query), ("limit", &limit.min(20).to_string())])
+                    .send(),
+            )
+            .await
+            .map_err(|_| anyhow!("kaggle proxy: timeout"))??
+            .error_for_status()?
+            .json::<Vec<serde_json::Value>>()
+            .await?
+        };
+
+        Ok(Self::parse_items(&resp, limit))
     }
 }
 
@@ -55,17 +145,86 @@ impl ExternalAdapter for KaggleAdapter {
 // ---------------------------------------------------------------------------
 
 pub struct HuggingFaceAdapter {
+    client: reqwest::Client,
     pub api_base: String,
     enabled: bool,
+    proxy_url: String,
 }
 
 impl Default for HuggingFaceAdapter {
     fn default() -> Self {
         let enabled = std::env::var("HF_TOKEN").is_ok();
         Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             api_base: "https://huggingface.co/api".into(),
             enabled,
+            proxy_url: std::env::var("GUIXU_HF_PROXY_URL")
+                .unwrap_or_else(|_| "https://www.guixu.org/api/search/huggingface".into()),
         }
+    }
+}
+
+impl HuggingFaceAdapter {
+    fn parse_items(items: &[serde_json::Value], limit: usize) -> Vec<SearchResult> {
+        items
+            .iter()
+            .take(limit)
+            .filter_map(|item| {
+                let id = item.get("id")?.as_str()?;
+                let downloads = item.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0);
+                let desc = item
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let created = item
+                    .get("lastModified")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+                let tags: Vec<String> = item
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|t| t.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                Some(SearchResult {
+                    cid: DatasetCid(format!("hf:{id}")),
+                    title: id.to_string(),
+                    description: desc,
+                    tags,
+                    schema: DatasetSchema {
+                        columns: vec![],
+                        row_count: 0,
+                        size_bytes: 0,
+                    },
+                    quality: None,
+                    price: Price::free(),
+                    license: License {
+                        spdx_id: "unknown".into(),
+                        commercial_use: false,
+                        derivative_allowed: false,
+                    },
+                    provider: Did(format!("hf:{id}")),
+                    source: DataSource::HuggingFace,
+                    market: Some(DatasetMarketStats {
+                        download_count: downloads,
+                        review_count: 0,
+                        trade_count: 0,
+                    }),
+                    data_type: infer_data_type_from_title(id),
+                    created_at: created,
+                })
+            })
+            .collect()
     }
 }
 
@@ -78,12 +237,44 @@ impl ExternalAdapter for HuggingFaceAdapter {
         DataSource::HuggingFace
     }
 
-    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SearchResult>> {
-        if !self.enabled {
-            return Ok(vec![]);
-        }
-        // TODO: Real HuggingFace Datasets API call using HF_TOKEN
-        Ok(vec![])
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let resp = if self.enabled {
+            let token = std::env::var("HF_TOKEN").unwrap_or_default();
+            let url = format!("{}/datasets", self.api_base);
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .query(&[
+                        ("search", query),
+                        ("limit", &limit.min(100).to_string()),
+                        ("sort", "downloads"),
+                        ("direction", "-1"),
+                    ])
+                    .send(),
+            )
+            .await
+            .map_err(|_| anyhow!("huggingface: timeout"))??
+            .error_for_status()?
+            .json::<Vec<serde_json::Value>>()
+            .await?
+        } else {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client
+                    .get(&self.proxy_url)
+                    .query(&[("q", query), ("limit", &limit.min(100).to_string())])
+                    .send(),
+            )
+            .await
+            .map_err(|_| anyhow!("huggingface proxy: timeout"))??
+            .error_for_status()?
+            .json::<Vec<serde_json::Value>>()
+            .await?
+        };
+
+        Ok(Self::parse_items(&resp, limit))
     }
 }
 
@@ -92,13 +283,22 @@ impl ExternalAdapter for HuggingFaceAdapter {
 // ---------------------------------------------------------------------------
 
 pub struct IpfsAdapter {
+    client: reqwest::Client,
     pub gateway_url: String,
+    search_url: String,
 }
 
 impl Default for IpfsAdapter {
     fn default() -> Self {
         Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             gateway_url: "https://ipfs.io".into(),
+            search_url: std::env::var("IPFS_SEARCH_URL")
+                .unwrap_or_else(|_| "https://api.ipfs-search.com/v1/search".into()),
         }
     }
 }
@@ -112,9 +312,70 @@ impl ExternalAdapter for IpfsAdapter {
         DataSource::Ipfs
     }
 
-    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SearchResult>> {
-        // IPFS doesn't have native search — datasets come via P2P DHT.
-        Ok(vec![])
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let page_size = limit.min(100).to_string();
+        let resp = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.client
+                .get(&self.search_url)
+                .query(&[("q", query), ("page_size", &page_size), ("type", "file")])
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow!("ipfs-search: timeout"))??
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+
+        let empty = vec![];
+        let hits = resp
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+
+        Ok(hits
+            .iter()
+            .take(limit)
+            .filter_map(|hit| {
+                let hash = hit.get("hash")?.as_str()?;
+                let title = hit.get("title").and_then(|v| v.as_str()).unwrap_or(hash);
+                let size = hit.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                let desc = hit
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let created = hit
+                    .get("first-seen")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+
+                Some(SearchResult {
+                    cid: DatasetCid(hash.to_string()),
+                    title: title.to_string(),
+                    description: desc,
+                    tags: vec![],
+                    schema: DatasetSchema {
+                        columns: vec![],
+                        row_count: 0,
+                        size_bytes: size,
+                    },
+                    quality: None,
+                    price: Price::free(),
+                    license: License {
+                        spdx_id: "unknown".into(),
+                        commercial_use: false,
+                        derivative_allowed: false,
+                    },
+                    provider: Did(format!("ipfs:{hash}")),
+                    source: DataSource::Ipfs,
+                    market: None,
+                    data_type: infer_data_type_from_title(title),
+                    created_at: created,
+                })
+            })
+            .collect())
     }
 }
 
@@ -207,6 +468,7 @@ impl BitTorrentAdapter {
             cid: DatasetCid(hash.to_string()),
             title: name.to_string(),
             description: Some(format!("{seeders} seeders")),
+            tags: vec![],
             schema: DatasetSchema {
                 columns: vec![],
                 row_count: 0,
@@ -221,6 +483,7 @@ impl BitTorrentAdapter {
             },
             provider: Did(format!("bt:{hash}")),
             source: DataSource::BitTorrent,
+            market: None,
             data_type: infer_data_type_from_title(name),
             created_at: created,
         })
@@ -264,6 +527,7 @@ impl BitTorrentAdapter {
             cid: DatasetCid(hash.to_string()),
             title: title.to_string(),
             description: Some(format!("{seeders} seeders")),
+            tags: vec![],
             schema: DatasetSchema {
                 columns: vec![],
                 row_count: 0,
@@ -278,6 +542,7 @@ impl BitTorrentAdapter {
             },
             provider: Did(format!("bt:{hash}")),
             source: DataSource::BitTorrent,
+            market: None,
             data_type: infer_data_type_from_title(title),
             created_at: created,
         })
@@ -313,6 +578,7 @@ impl BitTorrentAdapter {
                     cid: DatasetCid(hash.to_string()),
                     title: title.to_string(),
                     description: Some(format!("{seeders} seeders")),
+                    tags: vec![],
                     schema: DatasetSchema {
                         columns: vec![],
                         row_count: 0,
@@ -327,6 +593,7 @@ impl BitTorrentAdapter {
                     },
                     provider: Did(format!("bt:{hash}")),
                     source: DataSource::BitTorrent,
+                    market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: chrono::Utc::now(),
                 })
@@ -453,6 +720,7 @@ pub struct GoogleDatasetSearchAdapter {
     client: reqwest::Client,
     api_key: Option<String>,
     cse_id: Option<String>,
+    proxy_url: String,
 }
 
 impl Default for GoogleDatasetSearchAdapter {
@@ -465,26 +733,22 @@ impl Default for GoogleDatasetSearchAdapter {
                 .unwrap_or_else(|_| reqwest::Client::new()),
             api_key: std::env::var("GOOGLE_API_KEY").ok(),
             cse_id: std::env::var("GOOGLE_CSE_ID").ok(),
+            proxy_url: std::env::var("GUIXU_GOOGLE_SEARCH_PROXY_URL")
+                .unwrap_or_else(|_| "https://www.guixu.org/api/search/google".into()),
         }
     }
 }
 
-#[async_trait::async_trait]
-impl ExternalAdapter for GoogleDatasetSearchAdapter {
-    fn name(&self) -> &str {
-        "google_dataset_search"
-    }
-    fn source_type(&self) -> DataSource {
-        DataSource::GoogleDatasetSearch
-    }
-
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        let (api_key, cse_id) = match (&self.api_key, &self.cse_id) {
-            (Some(k), Some(c)) => (k.as_str(), c.as_str()),
-            _ => return Ok(vec![]),
-        };
-
-        let num = limit.min(10).to_string(); // Google CSE max 10 per request
+impl GoogleDatasetSearchAdapter {
+    /// Call Google CSE directly with user's own key.
+    async fn search_direct(
+        &self,
+        query: &str,
+        limit: usize,
+        api_key: &str,
+        cse_id: &str,
+    ) -> Result<serde_json::Value> {
+        let num = limit.min(10).to_string();
         let resp = tokio::time::timeout(
             Duration::from_secs(10),
             self.client
@@ -502,14 +766,29 @@ impl ExternalAdapter for GoogleDatasetSearchAdapter {
         .error_for_status()?
         .json::<serde_json::Value>()
         .await?;
+        Ok(resp)
+    }
 
-        let empty = vec![];
-        let items = resp
-            .get("items")
-            .and_then(|v| v.as_array())
-            .unwrap_or(&empty);
+    /// Fallback: call Guixu Hub proxy which uses Guixu's own key.
+    async fn search_proxy(&self, query: &str, limit: usize) -> Result<serde_json::Value> {
+        let num = limit.min(10).to_string();
+        let resp = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.client
+                .get(&self.proxy_url)
+                .query(&[("q", query), ("num", &num)])
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow!("google search proxy: timeout"))??
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+        Ok(resp)
+    }
 
-        Ok(items
+    fn parse_items(items: &[serde_json::Value], limit: usize) -> Vec<SearchResult> {
+        items
             .iter()
             .take(limit)
             .filter_map(|item| {
@@ -530,6 +809,7 @@ impl ExternalAdapter for GoogleDatasetSearchAdapter {
                     cid: DatasetCid(cid_hash),
                     title: title.to_string(),
                     description: snippet,
+                    tags: vec![],
                     schema: DatasetSchema {
                         columns: vec![],
                         row_count: 0,
@@ -544,11 +824,37 @@ impl ExternalAdapter for GoogleDatasetSearchAdapter {
                     },
                     provider: Did(format!("gds:{link}")),
                     source: DataSource::GoogleDatasetSearch,
+                    market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: chrono::Utc::now(),
                 })
             })
-            .collect())
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for GoogleDatasetSearchAdapter {
+    fn name(&self) -> &str {
+        "google_dataset_search"
+    }
+    fn source_type(&self) -> DataSource {
+        DataSource::GoogleDatasetSearch
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let resp = match (&self.api_key, &self.cse_id) {
+            (Some(k), Some(c)) => self.search_direct(query, limit, k, c).await?,
+            _ => self.search_proxy(query, limit).await?,
+        };
+
+        let empty = vec![];
+        let items = resp
+            .get("items")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+
+        Ok(Self::parse_items(items, limit))
     }
 }
 
@@ -642,6 +948,7 @@ impl ExternalAdapter for DataCiteCommonsAdapter {
                     cid: DatasetCid(doi.to_string()),
                     title: title.to_string(),
                     description: desc.map(|d| if year > 0 { format!("[{year}] {d}") } else { d }),
+                    tags: vec![],
                     schema: DatasetSchema {
                         columns: vec![],
                         row_count: 0,
@@ -656,6 +963,7 @@ impl ExternalAdapter for DataCiteCommonsAdapter {
                     },
                     provider: Did(format!("doi:{doi}")),
                     source: DataSource::DataCiteCommons,
+                    market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: created,
                 })
@@ -664,19 +972,214 @@ impl ExternalAdapter for DataCiteCommonsAdapter {
     }
 }
 
-/// Create all default adapters.
-pub fn default_adapters() -> Vec<Box<dyn ExternalAdapter>> {
-    vec![
+// ---------------------------------------------------------------------------
+// Guixu Hub — Guixu's public dataset hub and market index
+//   Uses the Hub REST API and surfaces tags, schema, and market signals.
+//   GUIXU_HUB_API_URL can override the default endpoint.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct GuixuHubDatasetResponse {
+    id: String,
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    data_type: String,
+    #[serde(default)]
+    schema: GuixuHubSchemaResponse,
+    #[serde(default)]
+    metrics: GuixuHubMetricsResponse,
+    #[serde(default)]
+    price: GuixuHubPriceResponse,
+    #[serde(default)]
+    created_at: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuixuHubSchemaResponse {
+    #[serde(default)]
+    columns: Vec<GuixuHubColumnResponse>,
+    #[serde(default)]
+    row_count: u64,
+    #[serde(default)]
+    size_bytes: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuixuHubColumnResponse {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuixuHubMetricsResponse {
+    #[serde(default)]
+    download_count: u64,
+    #[serde(default)]
+    review_count: u64,
+    #[serde(default)]
+    trade_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GuixuHubPriceResponse {
+    #[serde(default)]
+    amount: f64,
+    #[serde(default = "default_guixu_hub_currency")]
+    currency: String,
+}
+
+impl Default for GuixuHubPriceResponse {
+    fn default() -> Self {
+        Self {
+            amount: 0.0,
+            currency: default_guixu_hub_currency(),
+        }
+    }
+}
+
+fn default_guixu_hub_currency() -> String {
+    "ETH".to_string()
+}
+
+pub struct GuixuHubAdapter {
+    client: reqwest::Client,
+    api_url: String,
+}
+
+impl Default for GuixuHubAdapter {
+    fn default() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(8))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            api_url: std::env::var("GUIXU_HUB_API_URL")
+                .unwrap_or_else(|_| "https://www.guixu.org/api/hub/datasets".into()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for GuixuHubAdapter {
+    fn name(&self) -> &str {
+        "guixu_hub"
+    }
+
+    fn source_type(&self) -> DataSource {
+        DataSource::GuixuHub
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let limit_str = limit.min(100).to_string();
+        let items = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.client
+                .get(&self.api_url)
+                .query(&[("q", query), ("limit", &limit_str)])
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow!("guixu hub: timeout"))??
+        .error_for_status()?
+        .json::<Vec<GuixuHubDatasetResponse>>()
+        .await?;
+
+        Ok(items
+            .into_iter()
+            .take(limit)
+            .map(|item| {
+                let data_type = parse_data_type(&item.data_type)
+                    .unwrap_or_else(|| infer_data_type_from_title(&item.title));
+                let created_at = chrono::DateTime::parse_from_rfc3339(&item.created_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+
+                SearchResult {
+                    cid: DatasetCid(format!("guixu-hub:{}", item.id)),
+                    title: item.title,
+                    description: if item.description.trim().is_empty() {
+                        None
+                    } else {
+                        Some(item.description)
+                    },
+                    tags: item.tags,
+                    schema: DatasetSchema {
+                        columns: item
+                            .schema
+                            .columns
+                            .into_iter()
+                            .filter_map(|column| {
+                                let name = column.name.trim().to_string();
+                                if name.is_empty() {
+                                    None
+                                } else {
+                                    Some(ColumnDef {
+                                        name,
+                                        dtype: "unknown".into(),
+                                        nullable: true,
+                                        description: None,
+                                    })
+                                }
+                            })
+                            .collect(),
+                        row_count: item.schema.row_count,
+                        size_bytes: item.schema.size_bytes,
+                    },
+                    quality: None,
+                    price: Price {
+                        amount: item.price.amount,
+                        currency: item.price.currency,
+                    },
+                    license: License {
+                        spdx_id: "proprietary".into(),
+                        commercial_use: false,
+                        derivative_allowed: false,
+                    },
+                    provider: Did(format!("guixu:hub:{}", item.id)),
+                    source: DataSource::GuixuHub,
+                    market: Some(DatasetMarketStats {
+                        download_count: item.metrics.download_count,
+                        review_count: item.metrics.review_count,
+                        trade_count: item.metrics.trade_count,
+                    }),
+                    data_type,
+                    created_at,
+                }
+            })
+            .collect())
+    }
+}
+
+/// Create all default adapters, filtering out any whose name is in `disabled`.
+pub fn default_adapters_filtered(disabled: &[String]) -> Vec<Box<dyn ExternalAdapter>> {
+    let all: Vec<Box<dyn ExternalAdapter>> = vec![
         Box::new(KaggleAdapter::default()),
         Box::new(HuggingFaceAdapter::default()),
         Box::new(IpfsAdapter::default()),
+        Box::new(GuixuHubAdapter::default()),
         Box::new(BitTorrentAdapter::default()),
         Box::new(PostgreSqlAdapter::default()),
         Box::new(DuckDbAdapter::default()),
         Box::new(LocalFileAdapter::default()),
         Box::new(GoogleDatasetSearchAdapter::default()),
         Box::new(DataCiteCommonsAdapter::default()),
-    ]
+    ];
+    if disabled.is_empty() {
+        return all;
+    }
+    all.into_iter()
+        .filter(|a| !disabled.iter().any(|d| d.eq_ignore_ascii_case(a.name())))
+        .collect()
+}
+
+/// Create all default adapters (no filtering).
+pub fn default_adapters() -> Vec<Box<dyn ExternalAdapter>> {
+    default_adapters_filtered(&[])
 }
 
 // ---------------------------------------------------------------------------
@@ -777,6 +1280,7 @@ impl LocalFileAdapter {
             cid: DatasetCid(cid_hash),
             title: path.file_name()?.to_str()?.to_string(),
             description: Some(format!("local file: {}", path.display())),
+            tags: vec![],
             schema: DatasetSchema {
                 columns,
                 row_count,
@@ -791,6 +1295,7 @@ impl LocalFileAdapter {
             },
             provider: Did("did:local:self".into()),
             source: DataSource::LocalFile,
+            market: None,
             data_type: DataType::from_ext(ext),
             created_at: chrono::Utc::now(),
         })
@@ -931,4 +1436,15 @@ pub(crate) fn infer_data_type_from_title(title: &str) -> DataType {
         return DataType::Video;
     }
     DataType::Tabular
+}
+
+fn parse_data_type(value: &str) -> Option<DataType> {
+    match value.trim().to_lowercase().as_str() {
+        "tabular" => Some(DataType::Tabular),
+        "image" => Some(DataType::Image),
+        "video" => Some(DataType::Video),
+        "audio" => Some(DataType::Audio),
+        "text" => Some(DataType::Text),
+        _ => None,
+    }
 }

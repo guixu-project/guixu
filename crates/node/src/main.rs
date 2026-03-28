@@ -197,8 +197,9 @@ async fn cmd_start() -> Result<()> {
     });
 
     // Start embedded Web UI + MCP HTTP server
+    let disabled_adapters = config.disabled_adapters.clone();
     let state = Arc::new(
-        AppState::new(
+        AppState::with_payment_config(
             NodeIdentity::from_seed(identity.seed()),
             DhtIndex::new(data_p2p::network::NetworkHandle {
                 cmd_tx: dht.handle().cmd_tx.clone(),
@@ -206,6 +207,8 @@ async fn cmd_start() -> Result<()> {
             }),
             store,
             feedback_store,
+            &config.payment,
+            &disabled_adapters,
         )
         .await,
     );
@@ -267,11 +270,13 @@ async fn cmd_mcp(mode: String) -> Result<()> {
     });
 
     let state = Arc::new(
-        AppState::new(
+        AppState::with_payment_config(
             NodeIdentity::from_seed(identity.seed()),
             dht,
             store,
             feedback_store,
+            &config.payment,
+            &config.disabled_adapters,
         )
         .await,
     );

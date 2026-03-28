@@ -1,13 +1,136 @@
+use crate::protocol::{ToolAnnotations, ToolDefinition};
 use serde_json::json;
 
-use crate::protocol::ToolDefinition;
+fn read_only_annotations() -> Option<ToolAnnotations> {
+    Some(ToolAnnotations {
+        read_only_hint: Some(true),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(true),
+        open_world_hint: Some(true),
+    })
+}
+
+fn mutating_annotations(open_world: bool) -> Option<ToolAnnotations> {
+    Some(ToolAnnotations {
+        read_only_hint: Some(false),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(false),
+        open_world_hint: Some(open_world),
+    })
+}
+
+fn local_side_effect_annotations() -> Option<ToolAnnotations> {
+    Some(ToolAnnotations {
+        read_only_hint: Some(false),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(false),
+        open_world_hint: Some(true),
+    })
+}
+
+fn task_pipeline_definition(allow_source_filter: bool) -> ToolDefinition {
+    let mut search_filter_properties = json!({
+        "topic": { "type": "string" },
+        "min_rows": { "type": "integer" },
+        "max_price": { "type": "number" },
+        "license": { "type": "string" },
+        "min_quality": { "type": "number" }
+    });
+    if allow_source_filter {
+        search_filter_properties["source"] = json!({ "type": "string" });
+    }
+
+    ToolDefinition {
+        name: "task_pipeline".into(),
+        description: "Primary Guixu workflow entrypoint for agents. Call this once with raw_query, and the server will execute intent_parse -> dataset_search -> dataset_normalize -> dataset_evaluate in order until stop_after. Returns only the compact workflow result, not per-stage debug output.".into(),
+        annotations: read_only_annotations(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Backward-compatible task field. If raw_query is present, this may contain an agent-side working rewrite."
+                },
+                "raw_query": {
+                    "type": "string",
+                    "description": "The user's original request verbatim. Prefer this field for workflow execution."
+                },
+                "task_type": {
+                    "type": "string",
+                    "description": "Optional task category override"
+                },
+                "stop_after": {
+                    "type": "string",
+                    "enum": ["intent_parse", "dataset_search", "dataset_evaluate"],
+                    "default": "dataset_evaluate",
+                    "description": "Execute the fixed workflow in order and stop after this stage."
+                },
+                    "search": {
+                        "type": "object",
+                        "description": "Search parameters used once the workflow reaches dataset_search",
+                        "properties": {
+                            "limit": { "type": "integer", "default": 10 },
+                            "filters": {
+                                "type": "object",
+                                "properties": search_filter_properties
+                            }
+                        }
+                    },
+                "evaluate": {
+                    "type": "object",
+                    "description": "Evaluation settings used once the workflow reaches dataset_evaluate. External datasets fall back to the demo UI heuristic when no local metadata is available.",
+                    "properties": {
+                        "top_k": { "type": "integer" },
+                        "budget": { "type": "number" },
+                        "required_columns": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    }
+                }
+            },
+            "anyOf": [
+                { "required": ["query"] },
+                { "required": ["raw_query"] }
+            ]
+        }),
+    }
+}
+
+pub fn codex_tool_definitions() -> Vec<ToolDefinition> {
+    vec![task_pipeline_definition(false)]
+}
 
 /// Returns all MCP tool definitions exposed by this server.
 pub fn all_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
+            name: "intent_parse".into(),
+            description: "Parse a natural-language task into a structured QueryProfile for inspection or debugging. Pass the user's original request verbatim in raw_query when available; do not paraphrase it first. Use task_pipeline instead when you want Guixu to run the full query flow.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Backward-compatible query field. If raw_query is present, this may contain an agent-side working rewrite."
+                    },
+                    "raw_query": {
+                        "type": "string",
+                        "description": "The user's original request verbatim. Prefer this field for intent parsing."
+                    }
+                },
+                "anyOf": [
+                    { "required": ["query"] },
+                    { "required": ["raw_query"] }
+                ]
+            }),
+        },
+        task_pipeline_definition(true),
+        ToolDefinition {
             name: "dataset_search".into(),
-            description: "Search datasets across Guixu Hub, Kaggle, HuggingFace, IPFS, BitTorrent, PostgreSQL, DuckDB, local files and the P2P network".into(),
+            description: "Search datasets across Kaggle, HuggingFace, IPFS, BitTorrent, PostgreSQL, DuckDB and P2P network".into(),
+            annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -24,22 +147,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                             "max_price": { "type": "number" },
                             "license": { "type": "string" },
                             "min_quality": { "type": "number" },
-                            "source": {
-                                "type": "string",
-                                "enum": [
-                                    "guixuhub",
-                                    "kaggle",
-                                    "huggingface",
-                                    "ipfs",
-                                    "bittorrent",
-                                    "postgresql",
-                                    "duckdb",
-                                    "localfile",
-                                    "googledatasetsearch",
-                                    "datacitecommons",
-                                    "p2p"
-                                ]
-                            }
+                            "source": { "type": "string", "enum": ["kaggle", "huggingface", "ipfs", "bittorrent", "postgresql", "duckdb", "p2p"] }
                         }
                     },
                     "limit": { "type": "integer", "default": 10 }
@@ -50,6 +158,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "dataset_evaluate".into(),
             description: "Compute Task-Conditioned Value (TCV) for a dataset. Returns a score from -100 (harmful) to +100 (highly valuable) based on schema fit, quality, and on-chain community feedback.".into(),
+            annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -69,6 +178,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "dataset_feedback".into(),
             description: "Submit on-chain feedback after using a dataset. Recorded as an EAS attestation to help future agents evaluate this dataset.".into(),
+            annotations: mutating_annotations(false),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -87,6 +197,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "dataset_purchase".into(),
             description: "Purchase a paid dataset using x402 or Machine Payment Protocol. Automatically selects optimal payment protocol.".into(),
+            annotations: mutating_annotations(true),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -99,6 +210,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "dataset_verify".into(),
             description: "Verify dataset integrity and provenance via cryptographic signatures".into(),
+            annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -111,6 +223,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "dataset_publish".into(),
             description: "Publish a local dataset to the P2P network".into(),
+            annotations: mutating_annotations(true),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -132,6 +245,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "dataset_reviews".into(),
             description: "List all on-chain feedback/reviews for a dataset (like a product review page). Shows individual reviews and aggregated community signal.".into(),
+            annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -143,6 +257,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "dataset_bt_download".into(),
             description: "Download a dataset from the BitTorrent network by info hash. Use dataset_search with source=bittorrent to find info hashes first.".into(),
+            annotations: local_side_effect_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -154,6 +269,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "dataset_bt_preview".into(),
             description: "Download a partial preview of a BitTorrent dataset (first N bytes) without downloading the full file.".into(),
+            annotations: local_side_effect_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -166,6 +282,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "dataset_bt_stats".into(),
             description: "Get download progress and speed for an active BitTorrent download.".into(),
+            annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -175,4 +292,23 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
     ]
+}
+
+pub fn validate_tool_definitions(
+    definitions: &[ToolDefinition],
+) -> std::result::Result<(), String> {
+    for definition in definitions {
+        let valid = !definition.name.is_empty()
+            && definition
+                .name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'));
+        if !valid {
+            return Err(format!(
+                "invalid MCP tool name '{}': only letters, digits, '-', '_' and '.' are allowed",
+                definition.name
+            ));
+        }
+    }
+    Ok(())
 }

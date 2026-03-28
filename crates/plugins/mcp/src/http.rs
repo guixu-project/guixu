@@ -15,7 +15,7 @@ use data_auth::privacy::{PrivacyConfig, PrivacyLevel};
 use data_core::types::AccessMode;
 
 use crate::demo_ui;
-use crate::protocol::{McpRequest, McpResponse};
+use crate::protocol::McpRequest;
 use crate::rpc::handle_request;
 use crate::state::AppState;
 use crate::web_ui::INDEX_HTML;
@@ -29,6 +29,7 @@ pub async fn run_http(state: Arc<AppState>, port: u16) -> Result<()> {
         .route("/demo/{file}", get(demo_ui::serve_demo_js))
         .route("/api/datasets", get(api_list_datasets))
         .route("/api/publish", post(api_publish))
+        .route("/mcp", post(http_rpc_handler))
         .route("/rpc", post(http_rpc_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -36,7 +37,8 @@ pub async fn run_http(state: Arc<AppState>, port: u16) -> Result<()> {
     let addr = format!("0.0.0.0:{port}");
     info!("Guixu Web UI → http://localhost:{port}");
     info!("Guixu Demo UI → http://localhost:{port}/demo");
-    info!("MCP HTTP RPC → http://localhost:{port}/rpc");
+    info!("MCP HTTP RPC → http://localhost:{port}/mcp");
+    info!("Legacy MCP RPC alias → http://localhost:{port}/rpc");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
@@ -257,8 +259,11 @@ pub(crate) fn parse_publish_privacy(
 async fn http_rpc_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<McpRequest>,
-) -> Json<McpResponse> {
-    Json(handle_request(req, &state).await)
+) -> impl IntoResponse {
+    match handle_request(req, &state).await {
+        Some(response) => Json(response).into_response(),
+        None => StatusCode::ACCEPTED.into_response(),
+    }
 }
 
 #[cfg(test)]

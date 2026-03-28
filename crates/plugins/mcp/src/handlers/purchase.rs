@@ -42,30 +42,17 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             .map(String::from),
     };
 
-    let (receipt, protocol_desc, selection_reason) = if metadata.price.is_free() {
-        (
-            None,
-            "Free dataset — no payment required",
-            "price=0, no payment needed",
-        )
+    let (receipt, protocol_desc) = if metadata.price.is_free() {
+        (None, "Free dataset — no payment required")
     } else {
         let protocol = state.payment_router.select_protocol(&tx_ctx);
         let r = state.payment_router.pay(protocol, &tx_ctx).await?;
-        let (desc, reason) = match protocol {
-            PaymentProtocol::X402 => (
-                "Micropayment via x402 (USDC on Base L2)",
-                "amount<$0.01 single request → x402 micropayment",
-            ),
-            PaymentProtocol::StripeMpp => (
-                "Session payment via Stripe MPP",
-                "session batch or fiat preferred → Stripe MPP",
-            ),
-            PaymentProtocol::Erc8183 => (
-                "Escrowed payment via ERC-8183 (verify then release)",
-                "amount>$1.00 with verification → ERC-8183 escrow",
-            ),
+        let desc = match protocol {
+            PaymentProtocol::X402 => "Micropayment via x402 (USDC on Base L2)",
+            PaymentProtocol::StripeMpp => "Session payment via Stripe MPP",
+            PaymentProtocol::Erc8183 => "Escrowed payment via ERC-8183 (verify then release)",
         };
-        (Some(r), desc, reason)
+        (Some(r), desc)
     };
 
     let tx_id = receipt
@@ -105,12 +92,6 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         "price_paid": metadata.price.amount,
         "payment_protocol": protocol_name,
         "protocol_description": protocol_desc,
-        "protocol_selection_reason": selection_reason,
-        "budget_check": if max_price > 0.0 {
-            format!("${:.2} <= budget ${:.2}", metadata.price.amount, max_price)
-        } else {
-            "no budget limit set".into()
-        },
         "tx_id": tx_id,
         "on_chain_receipt": "EAS attestation simulated (Base L2)",
         "delivery": delivery,
