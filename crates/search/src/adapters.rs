@@ -42,12 +42,74 @@ impl ExternalAdapter for KaggleAdapter {
         DataSource::Kaggle
     }
 
-    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SearchResult>> {
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         if !self.enabled {
             return Ok(vec![]);
         }
-        // TODO: Real Kaggle API call using KAGGLE_USERNAME/KAGGLE_KEY
-        Ok(vec![])
+        let username = std::env::var("KAGGLE_USERNAME").unwrap_or_default();
+        let key = std::env::var("KAGGLE_KEY").unwrap_or_default();
+        let url = format!("{}/datasets/list", self.api_base);
+        let resp = tokio::time::timeout(
+            Duration::from_secs(10),
+            reqwest::Client::new()
+                .get(&url)
+                .basic_auth(&username, Some(&key))
+                .query(&[("search", query), ("maxSize", &limit.min(20).to_string())])
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow!("kaggle: timeout"))??
+        .error_for_status()?
+        .json::<Vec<serde_json::Value>>()
+        .await?;
+
+        Ok(resp
+            .iter()
+            .take(limit)
+            .filter_map(|item| {
+                let title = item.get("title")?.as_str()?;
+                let slug = item.get("ref")?.as_str().unwrap_or("");
+                let size = item.get("totalBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                let desc = item
+                    .get("subtitle")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let license_name = item
+                    .get("licenseName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let created = item
+                    .get("lastUpdated")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+
+                Some(SearchResult {
+                    cid: DatasetCid(format!("kaggle:{slug}")),
+                    title: title.to_string(),
+                    description: desc,
+                    tags: vec![],
+                    schema: DatasetSchema {
+                        columns: vec![],
+                        row_count: 0,
+                        size_bytes: size,
+                    },
+                    quality: None,
+                    price: Price::free(),
+                    license: License {
+                        spdx_id: license_name.into(),
+                        commercial_use: false,
+                        derivative_allowed: false,
+                    },
+                    provider: Did(format!("kaggle:{slug}")),
+                    source: DataSource::Kaggle,
+                    market: None,
+                    data_type: infer_data_type_from_title(title),
+                    created_at: created,
+                })
+            })
+            .collect())
     }
 }
 
@@ -79,12 +141,86 @@ impl ExternalAdapter for HuggingFaceAdapter {
         DataSource::HuggingFace
     }
 
-    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SearchResult>> {
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         if !self.enabled {
             return Ok(vec![]);
         }
-        // TODO: Real HuggingFace Datasets API call using HF_TOKEN
-        Ok(vec![])
+        let token = std::env::var("HF_TOKEN").unwrap_or_default();
+        let url = format!("{}/datasets", self.api_base);
+        let resp = tokio::time::timeout(
+            Duration::from_secs(10),
+            reqwest::Client::new()
+                .get(&url)
+                .bearer_auth(&token)
+                .query(&[
+                    ("search", query),
+                    ("limit", &limit.min(100).to_string()),
+                    ("sort", "downloads"),
+                    ("direction", "-1"),
+                ])
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow!("huggingface: timeout"))??
+        .error_for_status()?
+        .json::<Vec<serde_json::Value>>()
+        .await?;
+
+        Ok(resp
+            .iter()
+            .take(limit)
+            .filter_map(|item| {
+                let id = item.get("id")?.as_str()?;
+                let downloads = item.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0);
+                let desc = item
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let created = item
+                    .get("lastModified")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+                let tags: Vec<String> = item
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|t| t.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                Some(SearchResult {
+                    cid: DatasetCid(format!("hf:{id}")),
+                    title: id.to_string(),
+                    description: desc,
+                    tags,
+                    schema: DatasetSchema {
+                        columns: vec![],
+                        row_count: 0,
+                        size_bytes: 0,
+                    },
+                    quality: None,
+                    price: Price::free(),
+                    license: License {
+                        spdx_id: "unknown".into(),
+                        commercial_use: false,
+                        derivative_allowed: false,
+                    },
+                    provider: Did(format!("hf:{id}")),
+                    source: DataSource::HuggingFace,
+                    market: Some(DatasetMarketStats {
+                        download_count: downloads,
+                        review_count: 0,
+                        trade_count: 0,
+                    }),
+                    data_type: infer_data_type_from_title(id),
+                    created_at: created,
+                })
+            })
+            .collect())
     }
 }
 
@@ -460,6 +596,7 @@ pub struct GoogleDatasetSearchAdapter {
     client: reqwest::Client,
     api_key: Option<String>,
     cse_id: Option<String>,
+    proxy_url: String,
 }
 
 impl Default for GoogleDatasetSearchAdapter {
@@ -472,26 +609,22 @@ impl Default for GoogleDatasetSearchAdapter {
                 .unwrap_or_else(|_| reqwest::Client::new()),
             api_key: std::env::var("GOOGLE_API_KEY").ok(),
             cse_id: std::env::var("GOOGLE_CSE_ID").ok(),
+            proxy_url: std::env::var("GUIXU_GOOGLE_SEARCH_PROXY_URL")
+                .unwrap_or_else(|_| "https://www.guixu.org/api/search/google".into()),
         }
     }
 }
 
-#[async_trait::async_trait]
-impl ExternalAdapter for GoogleDatasetSearchAdapter {
-    fn name(&self) -> &str {
-        "google_dataset_search"
-    }
-    fn source_type(&self) -> DataSource {
-        DataSource::GoogleDatasetSearch
-    }
-
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        let (api_key, cse_id) = match (&self.api_key, &self.cse_id) {
-            (Some(k), Some(c)) => (k.as_str(), c.as_str()),
-            _ => return Ok(vec![]),
-        };
-
-        let num = limit.min(10).to_string(); // Google CSE max 10 per request
+impl GoogleDatasetSearchAdapter {
+    /// Call Google CSE directly with user's own key.
+    async fn search_direct(
+        &self,
+        query: &str,
+        limit: usize,
+        api_key: &str,
+        cse_id: &str,
+    ) -> Result<serde_json::Value> {
+        let num = limit.min(10).to_string();
         let resp = tokio::time::timeout(
             Duration::from_secs(10),
             self.client
@@ -509,14 +642,29 @@ impl ExternalAdapter for GoogleDatasetSearchAdapter {
         .error_for_status()?
         .json::<serde_json::Value>()
         .await?;
+        Ok(resp)
+    }
 
-        let empty = vec![];
-        let items = resp
-            .get("items")
-            .and_then(|v| v.as_array())
-            .unwrap_or(&empty);
+    /// Fallback: call Guixu Hub proxy which uses Guixu's own key.
+    async fn search_proxy(&self, query: &str, limit: usize) -> Result<serde_json::Value> {
+        let num = limit.min(10).to_string();
+        let resp = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.client
+                .get(&self.proxy_url)
+                .query(&[("q", query), ("num", &num)])
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow!("google search proxy: timeout"))??
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+        Ok(resp)
+    }
 
-        Ok(items
+    fn parse_items(items: &[serde_json::Value], limit: usize) -> Vec<SearchResult> {
+        items
             .iter()
             .take(limit)
             .filter_map(|item| {
@@ -557,7 +705,32 @@ impl ExternalAdapter for GoogleDatasetSearchAdapter {
                     created_at: chrono::Utc::now(),
                 })
             })
-            .collect())
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for GoogleDatasetSearchAdapter {
+    fn name(&self) -> &str {
+        "google_dataset_search"
+    }
+    fn source_type(&self) -> DataSource {
+        DataSource::GoogleDatasetSearch
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let resp = match (&self.api_key, &self.cse_id) {
+            (Some(k), Some(c)) => self.search_direct(query, limit, k, c).await?,
+            _ => self.search_proxy(query, limit).await?,
+        };
+
+        let empty = vec![];
+        let items = resp
+            .get("items")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+
+        Ok(Self::parse_items(items, limit))
     }
 }
 

@@ -454,7 +454,7 @@ async fn search_with_task_type_prefers_results_matching_requested_modality() {
 // ===========================================================================
 
 /// Every DataSource variant must have exactly one adapter in default_adapters
-/// (except P2p and DataGov which are handled outside the adapter system).
+/// (except P2p which is handled outside the adapter system).
 #[test]
 fn default_adapters_covers_all_expected_sources() {
     let adapters = adapters::default_adapters();
@@ -559,7 +559,6 @@ fn datasource_serde_roundtrip() {
         (DataSource::P2p, "\"p2p\""),
         (DataSource::Kaggle, "\"kaggle\""),
         (DataSource::HuggingFace, "\"huggingface\""),
-        (DataSource::DataGov, "\"datagov\""),
         (DataSource::Ipfs, "\"ipfs\""),
         (DataSource::BitTorrent, "\"bittorrent\""),
         (DataSource::PostgreSql, "\"postgresql\""),
