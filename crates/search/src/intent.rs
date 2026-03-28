@@ -425,7 +425,12 @@ fn normalize_data_standard(data_standard: DataStandard) -> DataStandard {
     let metadata_values = data_standard
         .metadata_fields
         .into_iter()
-        .map(|field| (field.name.trim().to_lowercase(), field.value.trim().to_string()))
+        .map(|field| {
+            (
+                field.name.trim().to_lowercase(),
+                field.value.trim().to_string(),
+            )
+        })
         .collect::<std::collections::HashMap<_, _>>();
 
     DataStandard {
@@ -440,7 +445,10 @@ fn normalize_data_standard(data_standard: DataStandard) -> DataStandard {
             },
             MetadataField {
                 name: "resolution".to_string(),
-                value: metadata_values.get("resolution").cloned().unwrap_or_default(),
+                value: metadata_values
+                    .get("resolution")
+                    .cloned()
+                    .unwrap_or_default(),
             },
         ],
         canonical_columns: default_canonical_columns(),
