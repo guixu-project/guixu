@@ -1,7 +1,7 @@
 use anyhow::Result;
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::DatasetMetadata;
-use data_core::types::SearchResult;
+use data_core::types::{DataType, SearchResult};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
@@ -234,6 +234,16 @@ impl SearchEngine {
                 }
             }
 
+            if let Some(required_data_type) = task.required_data_type {
+                let candidate_data_type = metadata
+                    .as_ref()
+                    .map(|metadata| metadata.data_type)
+                    .unwrap_or(ranked.result.data_type);
+                if candidate_data_type != required_data_type {
+                    continue;
+                }
+            }
+
             let task_similarity = compute_task_similarity(task, &ranked.result, metadata.as_ref());
             let schema_fit = compute_schema_fit(task, &ranked.result, metadata.as_ref());
             let scale_score = compute_scale_score(config, &ranked.result, metadata.as_ref());
@@ -367,7 +377,9 @@ impl SearchEngine {
                 if keyword_terms.is_empty() {
                     all_text.contains(&fallback_query)
                 } else {
-                    keyword_terms.iter().any(|keyword| all_text.contains(keyword))
+                    keyword_terms
+                        .iter()
+                        .any(|keyword| all_text.contains(keyword))
                 }
             })
             .map(metadata_to_search_result)
@@ -421,6 +433,7 @@ pub struct DatasetSelectionTask {
     pub task_type: String,
     pub required_columns: Vec<String>,
     pub target_entity: Option<String>,
+    pub required_data_type: Option<DataType>,
 }
 
 impl From<&QueryProfile> for DatasetSelectionTask {
@@ -437,6 +450,8 @@ impl From<&QueryProfile> for DatasetSelectionTask {
                 .unwrap_or_else(|| "general".to_string()),
             required_columns: infer_required_columns(profile),
             target_entity: profile.target_entity.clone(),
+            required_data_type: sample_unit_data_type(&profile.data_standard.sample_unit)
+                .or_else(|| strict_task_data_type(profile.task_type.as_deref())),
         }
     }
 }
@@ -655,9 +670,7 @@ fn sample_unit_data_type(sample_unit: &str) -> Option<data_core::types::DataType
     use data_core::types::DataType;
 
     match sample_unit.trim().to_lowercase().as_str() {
-        "image" | "images" | "photo" | "photos" | "picture" | "pictures" => {
-            Some(DataType::Image)
-        }
+        "image" | "images" | "photo" | "photos" | "picture" | "pictures" => Some(DataType::Image),
         "video" | "videos" => Some(DataType::Video),
         "audio" => Some(DataType::Audio),
         "text" | "document" | "documents" => Some(DataType::Text),
@@ -1002,7 +1015,9 @@ fn parse_resolution_from_text(text: &str) -> Option<SpatialResolution> {
     let mut best = None;
 
     for token in normalized
-        .split(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, 'x' | '*')))
+        .split(|character: char| {
+            !(character.is_ascii_alphanumeric() || matches!(character, 'x' | '*'))
+        })
         .filter(|token| !token.is_empty())
     {
         let candidate = if let Some((left, right)) = split_resolution_dims(token) {
