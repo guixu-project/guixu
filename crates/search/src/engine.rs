@@ -99,11 +99,27 @@ impl SearchEngine {
         all.extend(external_results);
 
         // Apply filters
+        if let Some(ref topic) = filters.topic {
+            let topic = topic.to_lowercase();
+            all.retain(|r| searchable_result_text(r).contains(&topic));
+        }
         if let Some(min_rows) = filters.min_rows {
             all.retain(|r| r.schema.row_count >= min_rows);
         }
         if let Some(max_price) = filters.max_price {
             all.retain(|r| r.price.amount <= max_price);
+        }
+        if let Some(ref license) = filters.license {
+            let license = license.to_lowercase();
+            all.retain(|r| r.license.spdx_id.to_lowercase() == license);
+        }
+        if let Some(min_quality) = filters.min_quality {
+            all.retain(|r| {
+                r.quality
+                    .as_ref()
+                    .map(|quality| quality.total >= min_quality)
+                    .unwrap_or(false)
+            });
         }
         if let Some(ref src) = filters.source {
             all.retain(|r| {
@@ -167,7 +183,16 @@ impl SearchEngine {
                 let title = m.title.to_lowercase();
                 let desc = m.description.as_deref().unwrap_or("").to_lowercase();
                 let tags_str = m.tags.join(" ").to_lowercase();
-                let all_text = format!("{title} {desc} {tags_str}");
+                let column_names = m
+                    .schema
+                    .columns
+                    .iter()
+                    .map(|column| column.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_lowercase();
+                let data_type = format!("{:?}", m.data_type).to_lowercase();
+                let all_text = format!("{title} {desc} {tags_str} {column_names} {data_type}");
 
                 // Match if query substring or any keyword matches
                 all_text.contains(&query_lower) || keywords.iter().any(|kw| all_text.contains(kw))
@@ -238,16 +263,12 @@ pub type ParsedIntent = QueryProfile;
 fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &ParsedIntent) -> f64 {
     let quality = result.quality.as_ref().map(|q| q.total).unwrap_or(50.0);
 
-    // Keyword relevance: how many query keywords appear in title/description
-    let title_desc = format!(
-        "{} {}",
-        result.title.to_lowercase(),
-        result.description.as_deref().unwrap_or("").to_lowercase()
-    );
+    // Keyword relevance: how many query keywords appear in title/description/tags/schema
+    let searchable_text = searchable_result_text(result);
     let keyword_hits = intent
         .keywords
         .iter()
-        .filter(|kw| title_desc.contains(kw.as_str()))
+        .filter(|kw| searchable_text.contains(kw.as_str()))
         .count();
     let relevance = if intent.keywords.is_empty() {
         50.0
@@ -266,6 +287,7 @@ fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &Pa
 
     let risk = signal.risk_penalty();
     let price_penalty = if result.price.is_free() { 0.0 } else { 5.0 };
+    let market_boost = market_signal_score(result);
     let task_type_adjustment = match strict_task_data_type(intent.task_type.as_deref()) {
         Some(expected_type) if result.data_type == expected_type => 20.0,
         Some(_) => -40.0,
@@ -277,6 +299,7 @@ fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &Pa
         + 0.25 * quality
         + 0.25 * community
         + 0.15 * 70.0 /* freshness placeholder */
+        + 0.05 * market_boost
         - 0.05 * risk
         - price_penalty
         + task_type_adjustment
@@ -315,13 +338,44 @@ fn metadata_to_search_result(m: &DatasetMetadata) -> SearchResult {
         cid: m.cid.clone(),
         title: m.title.clone(),
         description: m.description.clone(),
+        tags: m.tags.clone(),
         schema: m.schema.clone(),
         quality: None, // computed separately by TCV engine
         price: m.price.clone(),
         license: m.license.clone(),
         provider: m.provider.clone(),
         source: DataSource::P2p,
+        market: None,
         data_type: m.data_type,
         created_at: m.created_at,
     }
+}
+
+fn searchable_result_text(result: &SearchResult) -> String {
+    let columns = result
+        .schema
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{} {} {} {} {}",
+        result.title.to_lowercase(),
+        result.description.as_deref().unwrap_or("").to_lowercase(),
+        result.tags.join(" ").to_lowercase(),
+        columns.to_lowercase(),
+        format!("{:?}", result.data_type).to_lowercase()
+    )
+}
+
+fn market_signal_score(result: &SearchResult) -> f64 {
+    let Some(market) = &result.market else {
+        return 0.0;
+    };
+
+    let downloads = (market.download_count as f64 + 1.0).ln();
+    let reviews = (market.review_count as f64 + 1.0).ln();
+    let trades = (market.trade_count as f64 + 1.0).ln();
+    ((downloads * 20.0) + (reviews * 25.0) + (trades * 35.0)).clamp(0.0, 100.0)
 }

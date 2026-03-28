@@ -82,6 +82,7 @@ fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> Sea
         cid: DatasetCid(format!("cid-{cid_suffix}")),
         title: title.into(),
         description: Some(description.into()),
+        tags: vec![],
         schema: DatasetSchema {
             columns: vec![],
             row_count: 42,
@@ -96,6 +97,7 @@ fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> Sea
         },
         provider: Did(format!("did:key:{cid_suffix}")),
         source: DataSource::Kaggle,
+        market: None,
         data_type: DataType::Tabular,
         created_at: Utc::now(),
     }
@@ -469,6 +471,7 @@ fn default_adapters_covers_all_expected_sources() {
     assert!(names.contains(&"bittorrent"), "missing bittorrent adapter");
     assert!(names.contains(&"postgresql"), "missing postgresql adapter");
     assert!(names.contains(&"duckdb"), "missing duckdb adapter");
+    assert!(names.contains(&"guixu_hub"), "missing guixu_hub adapter");
     assert!(names.contains(&"local_file"), "missing local_file adapter");
     assert!(
         names.contains(&"google_dataset_search"),
@@ -496,6 +499,7 @@ fn default_adapters_covers_all_expected_sources() {
     assert!(sources.contains(&DataSource::BitTorrent));
     assert!(sources.contains(&DataSource::PostgreSql));
     assert!(sources.contains(&DataSource::DuckDb));
+    assert!(sources.contains(&DataSource::GuixuHub));
     assert!(sources.contains(&DataSource::LocalFile));
     assert!(sources.contains(&DataSource::GoogleDatasetSearch));
     assert!(sources.contains(&DataSource::DataCiteCommons));
@@ -560,6 +564,7 @@ fn datasource_serde_roundtrip() {
         (DataSource::BitTorrent, "\"bittorrent\""),
         (DataSource::PostgreSql, "\"postgresql\""),
         (DataSource::DuckDb, "\"duckdb\""),
+        (DataSource::GuixuHub, "\"guixuhub\""),
         (DataSource::LocalFile, "\"localfile\""),
         (DataSource::GoogleDatasetSearch, "\"googledatasetsearch\""),
         (DataSource::DataCiteCommons, "\"datacitecommons\""),
@@ -600,6 +605,13 @@ fn datacite_adapter_source_type_and_name() {
     assert!(matches!(adapter.source_type(), DataSource::DataCiteCommons));
 }
 
+#[test]
+fn guixu_hub_adapter_source_type_and_name() {
+    let adapter = adapters::GuixuHubAdapter::default();
+    assert_eq!(adapter.name(), "guixu_hub");
+    assert!(matches!(adapter.source_type(), DataSource::GuixuHub));
+}
+
 /// Search engine should propagate results from new adapters through ranking.
 #[tokio::test]
 async fn search_engine_includes_new_adapter_results() {
@@ -618,6 +630,7 @@ async fn search_engine_includes_new_adapter_results() {
                 cid: DatasetCid("gds-001".into()),
                 title: "Climate Change Dataset".into(),
                 description: Some("from Google".into()),
+                tags: vec![],
                 schema: DatasetSchema {
                     columns: vec![],
                     row_count: 1000,
@@ -632,6 +645,7 @@ async fn search_engine_includes_new_adapter_results() {
                 },
                 provider: Did("gds:example.com".into()),
                 source: DataSource::GoogleDatasetSearch,
+                market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
             }])
@@ -652,6 +666,7 @@ async fn search_engine_includes_new_adapter_results() {
                 cid: DatasetCid("10.5281/zenodo.123".into()),
                 title: "Global Temperature Records".into(),
                 description: Some("from DataCite".into()),
+                tags: vec![],
                 schema: DatasetSchema {
                     columns: vec![],
                     row_count: 500,
@@ -666,6 +681,7 @@ async fn search_engine_includes_new_adapter_results() {
                 },
                 provider: Did("doi:10.5281/zenodo.123".into()),
                 source: DataSource::DataCiteCommons,
+                market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
             }])
@@ -717,6 +733,7 @@ async fn source_filter_works_for_new_sources() {
                 cid: DatasetCid("gds-filter".into()),
                 title: "Filtered Dataset".into(),
                 description: None,
+                tags: vec![],
                 schema: DatasetSchema {
                     columns: vec![],
                     row_count: 10,
@@ -731,6 +748,7 @@ async fn source_filter_works_for_new_sources() {
                 },
                 provider: Did("gds:test".into()),
                 source: DataSource::GoogleDatasetSearch,
+                market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
             }])

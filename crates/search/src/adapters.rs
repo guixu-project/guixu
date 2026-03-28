@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use data_core::types::*;
+use serde::Deserialize;
 use tracing::{debug, warn};
 
 /// Trait for external dataset platform adapters.
@@ -207,6 +208,7 @@ impl BitTorrentAdapter {
             cid: DatasetCid(hash.to_string()),
             title: name.to_string(),
             description: Some(format!("{seeders} seeders")),
+            tags: vec![],
             schema: DatasetSchema {
                 columns: vec![],
                 row_count: 0,
@@ -221,6 +223,7 @@ impl BitTorrentAdapter {
             },
             provider: Did(format!("bt:{hash}")),
             source: DataSource::BitTorrent,
+            market: None,
             data_type: infer_data_type_from_title(name),
             created_at: created,
         })
@@ -264,6 +267,7 @@ impl BitTorrentAdapter {
             cid: DatasetCid(hash.to_string()),
             title: title.to_string(),
             description: Some(format!("{seeders} seeders")),
+            tags: vec![],
             schema: DatasetSchema {
                 columns: vec![],
                 row_count: 0,
@@ -278,6 +282,7 @@ impl BitTorrentAdapter {
             },
             provider: Did(format!("bt:{hash}")),
             source: DataSource::BitTorrent,
+            market: None,
             data_type: infer_data_type_from_title(title),
             created_at: created,
         })
@@ -313,6 +318,7 @@ impl BitTorrentAdapter {
                     cid: DatasetCid(hash.to_string()),
                     title: title.to_string(),
                     description: Some(format!("{seeders} seeders")),
+                    tags: vec![],
                     schema: DatasetSchema {
                         columns: vec![],
                         row_count: 0,
@@ -327,6 +333,7 @@ impl BitTorrentAdapter {
                     },
                     provider: Did(format!("bt:{hash}")),
                     source: DataSource::BitTorrent,
+                    market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: chrono::Utc::now(),
                 })
@@ -530,6 +537,7 @@ impl ExternalAdapter for GoogleDatasetSearchAdapter {
                     cid: DatasetCid(cid_hash),
                     title: title.to_string(),
                     description: snippet,
+                    tags: vec![],
                     schema: DatasetSchema {
                         columns: vec![],
                         row_count: 0,
@@ -544,6 +552,7 @@ impl ExternalAdapter for GoogleDatasetSearchAdapter {
                     },
                     provider: Did(format!("gds:{link}")),
                     source: DataSource::GoogleDatasetSearch,
+                    market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: chrono::Utc::now(),
                 })
@@ -642,6 +651,7 @@ impl ExternalAdapter for DataCiteCommonsAdapter {
                     cid: DatasetCid(doi.to_string()),
                     title: title.to_string(),
                     description: desc.map(|d| if year > 0 { format!("[{year}] {d}") } else { d }),
+                    tags: vec![],
                     schema: DatasetSchema {
                         columns: vec![],
                         row_count: 0,
@@ -656,9 +666,193 @@ impl ExternalAdapter for DataCiteCommonsAdapter {
                     },
                     provider: Did(format!("doi:{doi}")),
                     source: DataSource::DataCiteCommons,
+                    market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: created,
                 })
+            })
+            .collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Guixu Hub — Guixu's public dataset hub and market index
+//   Uses the Hub REST API and surfaces tags, schema, and market signals.
+//   GUIXU_HUB_API_URL can override the default endpoint.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct GuixuHubDatasetResponse {
+    id: String,
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    data_type: String,
+    #[serde(default)]
+    schema: GuixuHubSchemaResponse,
+    #[serde(default)]
+    metrics: GuixuHubMetricsResponse,
+    #[serde(default)]
+    price: GuixuHubPriceResponse,
+    #[serde(default)]
+    created_at: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuixuHubSchemaResponse {
+    #[serde(default)]
+    columns: Vec<GuixuHubColumnResponse>,
+    #[serde(default)]
+    row_count: u64,
+    #[serde(default)]
+    size_bytes: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuixuHubColumnResponse {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GuixuHubMetricsResponse {
+    #[serde(default)]
+    download_count: u64,
+    #[serde(default)]
+    review_count: u64,
+    #[serde(default)]
+    trade_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GuixuHubPriceResponse {
+    #[serde(default)]
+    amount: f64,
+    #[serde(default = "default_guixu_hub_currency")]
+    currency: String,
+}
+
+impl Default for GuixuHubPriceResponse {
+    fn default() -> Self {
+        Self {
+            amount: 0.0,
+            currency: default_guixu_hub_currency(),
+        }
+    }
+}
+
+fn default_guixu_hub_currency() -> String {
+    "ETH".to_string()
+}
+
+pub struct GuixuHubAdapter {
+    client: reqwest::Client,
+    api_url: String,
+}
+
+impl Default for GuixuHubAdapter {
+    fn default() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(8))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            api_url: std::env::var("GUIXU_HUB_API_URL")
+                .unwrap_or_else(|_| "https://www.guixu.org/api/hub/datasets".into()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for GuixuHubAdapter {
+    fn name(&self) -> &str {
+        "guixu_hub"
+    }
+
+    fn source_type(&self) -> DataSource {
+        DataSource::GuixuHub
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let limit_str = limit.min(100).to_string();
+        let items = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.client
+                .get(&self.api_url)
+                .query(&[("q", query), ("limit", &limit_str)])
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow!("guixu hub: timeout"))??
+        .error_for_status()?
+        .json::<Vec<GuixuHubDatasetResponse>>()
+        .await?;
+
+        Ok(items
+            .into_iter()
+            .take(limit)
+            .map(|item| {
+                let data_type = parse_data_type(&item.data_type)
+                    .unwrap_or_else(|| infer_data_type_from_title(&item.title));
+                let created_at = chrono::DateTime::parse_from_rfc3339(&item.created_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+
+                SearchResult {
+                    cid: DatasetCid(format!("guixu-hub:{}", item.id)),
+                    title: item.title,
+                    description: if item.description.trim().is_empty() {
+                        None
+                    } else {
+                        Some(item.description)
+                    },
+                    tags: item.tags,
+                    schema: DatasetSchema {
+                        columns: item
+                            .schema
+                            .columns
+                            .into_iter()
+                            .filter_map(|column| {
+                                let name = column.name.trim().to_string();
+                                if name.is_empty() {
+                                    None
+                                } else {
+                                    Some(ColumnDef {
+                                        name,
+                                        dtype: "unknown".into(),
+                                        nullable: true,
+                                        description: None,
+                                    })
+                                }
+                            })
+                            .collect(),
+                        row_count: item.schema.row_count,
+                        size_bytes: item.schema.size_bytes,
+                    },
+                    quality: None,
+                    price: Price {
+                        amount: item.price.amount,
+                        currency: item.price.currency,
+                    },
+                    license: License {
+                        spdx_id: "proprietary".into(),
+                        commercial_use: false,
+                        derivative_allowed: false,
+                    },
+                    provider: Did(format!("guixu:hub:{}", item.id)),
+                    source: DataSource::GuixuHub,
+                    market: Some(DatasetMarketStats {
+                        download_count: item.metrics.download_count,
+                        review_count: item.metrics.review_count,
+                        trade_count: item.metrics.trade_count,
+                    }),
+                    data_type,
+                    created_at,
+                }
             })
             .collect())
     }
@@ -670,6 +864,7 @@ pub fn default_adapters() -> Vec<Box<dyn ExternalAdapter>> {
         Box::new(KaggleAdapter::default()),
         Box::new(HuggingFaceAdapter::default()),
         Box::new(IpfsAdapter::default()),
+        Box::new(GuixuHubAdapter::default()),
         Box::new(BitTorrentAdapter::default()),
         Box::new(PostgreSqlAdapter::default()),
         Box::new(DuckDbAdapter::default()),
@@ -777,6 +972,7 @@ impl LocalFileAdapter {
             cid: DatasetCid(cid_hash),
             title: path.file_name()?.to_str()?.to_string(),
             description: Some(format!("local file: {}", path.display())),
+            tags: vec![],
             schema: DatasetSchema {
                 columns,
                 row_count,
@@ -791,6 +987,7 @@ impl LocalFileAdapter {
             },
             provider: Did("did:local:self".into()),
             source: DataSource::LocalFile,
+            market: None,
             data_type: DataType::from_ext(ext),
             created_at: chrono::Utc::now(),
         })
@@ -931,4 +1128,15 @@ pub(crate) fn infer_data_type_from_title(title: &str) -> DataType {
         return DataType::Video;
     }
     DataType::Tabular
+}
+
+fn parse_data_type(value: &str) -> Option<DataType> {
+    match value.trim().to_lowercase().as_str() {
+        "tabular" => Some(DataType::Tabular),
+        "image" => Some(DataType::Image),
+        "video" => Some(DataType::Video),
+        "audio" => Some(DataType::Audio),
+        "text" => Some(DataType::Text),
+        _ => None,
+    }
 }

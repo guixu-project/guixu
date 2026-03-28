@@ -136,18 +136,30 @@ impl Price {
     }
 }
 
+/// Lightweight marketplace engagement stats associated with a dataset.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DatasetMarketStats {
+    pub download_count: u64,
+    pub review_count: u64,
+    pub trade_count: u64,
+}
+
 /// A search result returned to the Agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub cid: DatasetCid,
     pub title: String,
     pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub schema: DatasetSchema,
     pub quality: Option<QualityScore>,
     pub price: Price,
     pub license: License,
     pub provider: Did,
     pub source: DataSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub market: Option<DatasetMarketStats>,
     pub data_type: DataType,
     pub created_at: DateTime<Utc>,
 }
@@ -167,6 +179,7 @@ pub enum DataSource {
     LocalFile,
     GoogleDatasetSearch,
     DataCiteCommons,
+    GuixuHub,
 }
 
 /// Payment protocol used for a transaction.
