@@ -1155,9 +1155,9 @@ impl ExternalAdapter for GuixuHubAdapter {
     }
 }
 
-/// Create all default adapters.
-pub fn default_adapters() -> Vec<Box<dyn ExternalAdapter>> {
-    vec![
+/// Create all default adapters, filtering out any whose name is in `disabled`.
+pub fn default_adapters_filtered(disabled: &[String]) -> Vec<Box<dyn ExternalAdapter>> {
+    let all: Vec<Box<dyn ExternalAdapter>> = vec![
         Box::new(KaggleAdapter::default()),
         Box::new(HuggingFaceAdapter::default()),
         Box::new(IpfsAdapter::default()),
@@ -1168,7 +1168,18 @@ pub fn default_adapters() -> Vec<Box<dyn ExternalAdapter>> {
         Box::new(LocalFileAdapter::default()),
         Box::new(GoogleDatasetSearchAdapter::default()),
         Box::new(DataCiteCommonsAdapter::default()),
-    ]
+    ];
+    if disabled.is_empty() {
+        return all;
+    }
+    all.into_iter()
+        .filter(|a| !disabled.iter().any(|d| d.eq_ignore_ascii_case(a.name())))
+        .collect()
+}
+
+/// Create all default adapters (no filtering).
+pub fn default_adapters() -> Vec<Box<dyn ExternalAdapter>> {
+    default_adapters_filtered(&[])
 }
 
 // ---------------------------------------------------------------------------

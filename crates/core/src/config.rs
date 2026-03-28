@@ -27,6 +27,9 @@ pub struct NodeConfig {
     /// Payment subsystem configuration.
     #[serde(default)]
     pub payment: PaymentConfig,
+    /// Adapter names to disable (e.g. ["google_dataset_search", "ipfs", "huggingface"]).
+    #[serde(default)]
+    pub disabled_adapters: Vec<String>,
 }
 
 /// Payment subsystem configuration.
@@ -124,6 +127,12 @@ impl Default for NodeConfig {
             disable_mdns: true,
             ephemeral_dids: false,
             payment: PaymentConfig::default(),
+            // Temporarily disabled until guixu.org proxy is ready.
+            disabled_adapters: vec![
+                "google_dataset_search".into(),
+                "ipfs".into(),
+                "huggingface".into(),
+            ],
         }
     }
 }

@@ -443,10 +443,15 @@ async fn search_with_task_type_prefers_results_matching_requested_modality() {
         ],
     })]);
 
+    let profile = QueryProfile {
+        raw_query: "cat".into(),
+        task_type: Some("time_series_prediction".into()),
+        keywords: vec!["cat".into()],
+        ..Default::default()
+    };
     let output = engine
-        .search_with_task_type(
-            "cat",
-            Some("time_series_prediction"),
+        .search_with_profile(
+            &profile,
             &SearchFilters::default(),
             &[],
             &neutral_signal_fetcher(),
@@ -702,9 +707,14 @@ async fn search_engine_includes_new_adapter_results() {
     }
 
     let engine = make_engine(vec![Box::new(GdsStub), Box::new(DcStub)]);
+    let profile = QueryProfile {
+        raw_query: "climate".into(),
+        keywords: vec!["climate".into()],
+        ..Default::default()
+    };
     let output = engine
-        .search(
-            "climate",
+        .search_with_profile(
+            &profile,
             &SearchFilters::default(),
             &[],
             &neutral_signal_fetcher(),
@@ -769,6 +779,11 @@ async fn source_filter_works_for_new_sources() {
     }
 
     let engine = make_engine(vec![Box::new(GdsStub)]);
+    let profile = QueryProfile {
+        raw_query: "test".into(),
+        keywords: vec!["test".into()],
+        ..Default::default()
+    };
 
     // Filter for GoogleDatasetSearch — should keep the result
     let filters_match = SearchFilters {
@@ -776,7 +791,7 @@ async fn source_filter_works_for_new_sources() {
         ..Default::default()
     };
     let output = engine
-        .search("test", &filters_match, &[], &neutral_signal_fetcher(), 10)
+        .search_with_profile(&profile, &filters_match, &[], &neutral_signal_fetcher(), 10)
         .await
         .unwrap();
     assert_eq!(output.results.len(), 1);
@@ -787,7 +802,7 @@ async fn source_filter_works_for_new_sources() {
         ..Default::default()
     };
     let output = engine
-        .search("test", &filters_miss, &[], &neutral_signal_fetcher(), 10)
+        .search_with_profile(&profile, &filters_miss, &[], &neutral_signal_fetcher(), 10)
         .await
         .unwrap();
     assert_eq!(output.results.len(), 0);
@@ -964,9 +979,14 @@ async fn local_file_adapter_matches_by_column_name() {
 async fn search_result_includes_data_type() {
     let engine = make_engine(vec![]);
     let meta = vec![make_metadata("1", "video_clips", "video data", &["video"])];
+    let profile = QueryProfile {
+        raw_query: "video".into(),
+        keywords: vec!["video".into()],
+        ..Default::default()
+    };
     let output = engine
-        .search(
-            "video",
+        .search_with_profile(
+            &profile,
             &SearchFilters::default(),
             &meta,
             &neutral_signal_fetcher(),
