@@ -124,12 +124,9 @@ class GuixuEngine {
     const filters = {};
     if (sourceFilter) filters.source = sourceFilter;
     this._lastError = null;
-    const data = await this.callTool('dataset_search', {
-      query,
-      task_type: taskType,
-      filters,
-      limit: 10,
-    });
+    const params = { query, filters, limit: 10 };
+    if (taskType) params.task_type = taskType;
+    const data = await this.callTool('dataset_search', params);
 
     // Response is { results: [...], errors: [...] } or legacy array
     const results = Array.isArray(data) ? data : (data?.results || []);
@@ -223,13 +220,14 @@ class GuixuEngine {
 
       if (!tcvComps && d.source === 'p2p') {
         // Call backend for local P2P datasets (they exist in store)
-        const evalData = await this.callTool('dataset_evaluate', {
+        const evalParams = {
           cid: d.cid,
           task_description: taskDesc,
-          task_type: taskType,
           required_columns: requiredCols,
           budget: 10,
-        });
+        };
+        if (taskType) evalParams.task_type = taskType;
+        const evalData = await this.callTool('dataset_evaluate', evalParams);
         if (evalData && evalData.tcv) {
           const t = evalData.tcv;
           tcvComps = {

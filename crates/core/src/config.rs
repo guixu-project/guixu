@@ -28,7 +28,7 @@ pub struct NodeConfig {
     #[serde(default)]
     pub payment: PaymentConfig,
     /// Adapter names to disable (e.g. ["google_dataset_search", "ipfs", "huggingface"]).
-    #[serde(default)]
+    #[serde(default = "default_disabled_adapters")]
     pub disabled_adapters: Vec<String>,
 }
 
@@ -72,6 +72,13 @@ fn default_epsilon() -> f64 {
 }
 fn default_true() -> bool {
     true
+}
+fn default_disabled_adapters() -> Vec<String> {
+    vec![
+        "google_dataset_search".into(),
+        "ipfs".into(),
+        "huggingface".into(),
+    ]
 }
 
 /// Privacy protection level for metadata publication.
