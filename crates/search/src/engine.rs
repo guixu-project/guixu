@@ -96,6 +96,10 @@ impl SearchEngine {
             self.search_external(profile, filters, limit),
         );
 
+        let local_metadata_by_cid: HashMap<&str, &DatasetMetadata> = local_metadata
+            .iter()
+            .map(|metadata| (metadata.cid.0.as_str(), metadata))
+            .collect();
         let mut all: Vec<SearchResult> = local_results.unwrap_or_default();
         all.extend(external_results);
 
@@ -114,23 +118,19 @@ impl SearchEngine {
             });
         }
 
+        apply_intent_hard_filters(&mut all, profile, &local_metadata_by_cid);
+
         // Deduplicate by CID
         let mut seen = HashSet::new();
         all.retain(|r| seen.insert(r.cid.0.clone()));
-
-        if let Some(expected_type) = strict_task_data_type(profile.task_type.as_deref()) {
-            let compatible_count = all.iter().filter(|r| r.data_type == expected_type).count();
-            if compatible_count > 0 {
-                all.retain(|r| r.data_type == expected_type);
-            }
-        }
 
         // Rank with community signal (TCV-lite for search ranking)
         let mut ranked: Vec<RankedResult> = all
             .into_iter()
             .map(|r| {
+                let metadata = local_metadata_by_cid.get(r.cid.0.as_str()).copied();
                 let signal = signal_fetcher(&r.cid.0);
-                let score = rank_with_signal(&r, &signal, profile);
+                let score = rank_with_signal(&r, metadata, &signal, profile);
                 RankedResult {
                     result: r,
                     rank_score: score,
@@ -345,8 +345,8 @@ impl SearchEngine {
         _filters: &SearchFilters,
         metadata: &[DatasetMetadata],
     ) -> Result<Vec<SearchResult>> {
-        let query_lower = intent.raw_query.to_lowercase();
-        let keywords = &intent.keywords;
+        let keyword_terms = normalized_intent_keywords(intent);
+        let fallback_query = intent.raw_query.to_lowercase();
 
         let results: Vec<SearchResult> = metadata
             .iter()
@@ -354,10 +354,21 @@ impl SearchEngine {
                 let title = m.title.to_lowercase();
                 let desc = m.description.as_deref().unwrap_or("").to_lowercase();
                 let tags_str = m.tags.join(" ").to_lowercase();
-                let all_text = format!("{title} {desc} {tags_str}");
+                let columns = m
+                    .schema
+                    .columns
+                    .iter()
+                    .map(|column| column.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_lowercase();
+                let all_text = format!("{title} {desc} {tags_str} {columns}");
 
-                // Match if query substring or any keyword matches
-                all_text.contains(&query_lower) || keywords.iter().any(|kw| all_text.contains(kw))
+                if keyword_terms.is_empty() {
+                    all_text.contains(&fallback_query)
+                } else {
+                    keyword_terms.iter().any(|keyword| all_text.contains(keyword))
+                }
             })
             .map(metadata_to_search_result)
             .collect();
@@ -374,21 +385,7 @@ impl SearchEngine {
     ) -> (Vec<SearchResult>, Vec<String>) {
         let mut results = vec![];
         let mut errors = vec![];
-        let external_query = {
-            let mut seen = std::collections::HashSet::new();
-            let keywords: Vec<&str> = intent
-                .keywords
-                .iter()
-                .map(|kw| kw.trim())
-                .filter(|kw| !kw.is_empty())
-                .filter(|kw| seen.insert(kw.to_lowercase()))
-                .collect();
-            if keywords.is_empty() {
-                intent.raw_query.clone()
-            } else {
-                keywords.join(" ")
-            }
-        };
+        let external_query = build_search_query(intent);
         for adapter in &self.adapters {
             match adapter.search(&external_query, limit).await {
                 Ok(mut r) => results.append(&mut r),
@@ -429,7 +426,11 @@ pub struct DatasetSelectionTask {
 impl From<&QueryProfile> for DatasetSelectionTask {
     fn from(profile: &QueryProfile) -> Self {
         Self {
-            task_description: profile.raw_query.clone(),
+            task_description: profile
+                .task_description
+                .clone()
+                .filter(|description| !description.trim().is_empty())
+                .unwrap_or_else(|| profile.raw_query.clone()),
             task_type: profile
                 .task_type
                 .clone()
@@ -540,24 +541,36 @@ pub type ParsedIntent = QueryProfile;
 
 /// Rank a search result incorporating community signal.
 /// This is a lightweight version of TCV used for search ranking.
-fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &ParsedIntent) -> f64 {
+fn rank_with_signal(
+    result: &SearchResult,
+    metadata: Option<&DatasetMetadata>,
+    signal: &CommunitySignal,
+    intent: &ParsedIntent,
+) -> f64 {
     let quality = result.quality.as_ref().map(|q| q.total).unwrap_or(50.0);
 
-    // Keyword relevance: how many query keywords appear in title/description
-    let title_desc = format!(
-        "{} {}",
-        result.title.to_lowercase(),
-        result.description.as_deref().unwrap_or("").to_lowercase()
-    );
-    let keyword_hits = intent
-        .keywords
+    let metadata_text = build_dataset_text(result, metadata).to_lowercase();
+    let task_text = intent
+        .task_description
+        .as_deref()
+        .filter(|description| !description.trim().is_empty())
+        .unwrap_or(intent.raw_query.as_str());
+
+    let keywords = normalized_intent_keywords(intent);
+    let keyword_hits = keywords
         .iter()
-        .filter(|kw| title_desc.contains(kw.as_str()))
+        .filter(|keyword| metadata_text.contains(keyword.as_str()))
         .count();
-    let relevance = if intent.keywords.is_empty() {
-        50.0
+    let keyword_relevance = if keywords.is_empty() {
+        0.0
     } else {
-        (keyword_hits as f64 / intent.keywords.len() as f64) * 100.0
+        (keyword_hits as f64 / keywords.len() as f64) * 100.0
+    };
+    let task_description_relevance = cosine_similarity(task_text, &metadata_text) * 100.0;
+    let relevance = if keywords.is_empty() {
+        task_description_relevance
+    } else {
+        (0.35 * keyword_relevance + 0.65 * task_description_relevance).clamp(0.0, 100.0)
     };
 
     // Community signal: positive reviews boost, negative reviews penalize
@@ -571,7 +584,7 @@ fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &Pa
 
     let risk = signal.risk_penalty();
     let price_penalty = if result.price.is_free() { 0.0 } else { 5.0 };
-    let task_type_adjustment = match strict_task_data_type(intent.task_type.as_deref()) {
+    let task_type_adjustment = match required_data_type(intent) {
         Some(expected_type) if result.data_type == expected_type => 20.0,
         Some(_) => -40.0,
         None => 0.0,
@@ -587,11 +600,70 @@ fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &Pa
         + task_type_adjustment
 }
 
+fn normalized_intent_keywords(intent: &ParsedIntent) -> Vec<String> {
+    let mut seen = HashSet::new();
+    intent
+        .keywords
+        .iter()
+        .map(|keyword| keyword.trim().to_lowercase())
+        .filter(|keyword| !keyword.is_empty())
+        .filter(|keyword| seen.insert(keyword.clone()))
+        .collect()
+}
+
+fn build_search_query(intent: &ParsedIntent) -> String {
+    let keywords = normalized_intent_keywords(intent);
+    if keywords.is_empty() {
+        intent.raw_query.clone()
+    } else {
+        keywords.join(" ")
+    }
+}
+
 fn profile_with_task_type(mut profile: QueryProfile, task_type: Option<&str>) -> QueryProfile {
     if let Some(task_type) = task_type.map(str::trim).filter(|s| !s.is_empty()) {
         profile.task_type = Some(task_type.to_string());
     }
     profile
+}
+
+fn apply_intent_hard_filters(
+    results: &mut Vec<SearchResult>,
+    profile: &QueryProfile,
+    metadata_by_cid: &HashMap<&str, &DatasetMetadata>,
+) {
+    if let Some(required_type) = required_data_type(profile) {
+        results.retain(|result| result.data_type == required_type);
+    }
+
+    if let Some(required_resolution) = required_min_resolution(profile) {
+        results.retain(|result| {
+            let metadata = metadata_by_cid.get(result.cid.0.as_str()).copied();
+            candidate_resolution(result, metadata)
+                .map(|resolution| resolution.satisfies(&required_resolution))
+                .unwrap_or(false)
+        });
+    }
+}
+
+fn required_data_type(profile: &QueryProfile) -> Option<data_core::types::DataType> {
+    sample_unit_data_type(&profile.data_standard.sample_unit)
+        .or_else(|| strict_task_data_type(profile.task_type.as_deref()))
+}
+
+fn sample_unit_data_type(sample_unit: &str) -> Option<data_core::types::DataType> {
+    use data_core::types::DataType;
+
+    match sample_unit.trim().to_lowercase().as_str() {
+        "image" | "images" | "photo" | "photos" | "picture" | "pictures" => {
+            Some(DataType::Image)
+        }
+        "video" | "videos" => Some(DataType::Video),
+        "audio" => Some(DataType::Audio),
+        "text" | "document" | "documents" => Some(DataType::Text),
+        "tabular" | "table" | "tables" | "csv" => Some(DataType::Tabular),
+        _ => None,
+    }
 }
 
 fn strict_task_data_type(task_type: Option<&str>) -> Option<data_core::types::DataType> {
@@ -610,6 +682,108 @@ fn strict_task_data_type(task_type: Option<&str>) -> Option<data_core::types::Da
         Some(task_type) if task_type == "video_classification" => Some(DataType::Video),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolutionConstraint {
+    min_long_side: Option<u32>,
+    min_short_side: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpatialResolution {
+    long_side: u32,
+    short_side: u32,
+}
+
+impl SpatialResolution {
+    fn from_dimensions(width: u32, height: u32) -> Option<Self> {
+        let long_side = width.max(height);
+        let short_side = width.min(height);
+        if long_side == 0 || short_side == 0 {
+            None
+        } else {
+            Some(Self {
+                long_side,
+                short_side,
+            })
+        }
+    }
+
+    fn from_scan_height(height: u32) -> Option<Self> {
+        if height == 0 {
+            None
+        } else {
+            Some(Self {
+                long_side: height,
+                short_side: height,
+            })
+        }
+    }
+
+    fn satisfies(&self, constraint: &ResolutionConstraint) -> bool {
+        self.short_side >= constraint.min_short_side
+            && constraint
+                .min_long_side
+                .map(|min_long_side| self.long_side >= min_long_side)
+                .unwrap_or(true)
+    }
+}
+
+fn required_min_resolution(profile: &QueryProfile) -> Option<ResolutionConstraint> {
+    profile
+        .data_standard
+        .metadata_fields
+        .iter()
+        .find(|field| field.name.eq_ignore_ascii_case("resolution"))
+        .and_then(|field| parse_resolution_constraint(&field.value))
+}
+
+fn parse_resolution_constraint(value: &str) -> Option<ResolutionConstraint> {
+    let value = value.trim().to_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Some((left, right)) = split_resolution_dims(&value) {
+        let width = left.parse::<u32>().ok()?;
+        let height = right.parse::<u32>().ok()?;
+        let long_side = width.max(height);
+        let short_side = width.min(height);
+        if long_side == 0 || short_side == 0 {
+            return None;
+        }
+        return Some(ResolutionConstraint {
+            min_long_side: Some(long_side),
+            min_short_side: short_side,
+        });
+    }
+
+    let digits = value
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    if value.ends_with('p') {
+        let short_side = digits.parse::<u32>().ok()?;
+        if short_side == 0 {
+            return None;
+        }
+        return Some(ResolutionConstraint {
+            min_long_side: None,
+            min_short_side: short_side,
+        });
+    }
+
+    None
+}
+
+fn split_resolution_dims(value: &str) -> Option<(&str, &str)> {
+    for separator in ['x', 'X', '*'] {
+        if let Some((left, right)) = value.split_once(separator) {
+            return Some((left.trim(), right.trim()));
+        }
+    }
+    None
 }
 
 fn compose_coarse_score(
@@ -804,6 +978,62 @@ fn compute_metadata_quality(result: &SearchResult, metadata: Option<&DatasetMeta
         + 0.30 * stats_score
         + 0.15 * provenance_score)
         .clamp(0.0, 100.0)
+}
+
+fn candidate_resolution(
+    result: &SearchResult,
+    metadata: Option<&DatasetMetadata>,
+) -> Option<SpatialResolution> {
+    metadata
+        .and_then(|metadata| {
+            metadata
+                .video_meta
+                .as_ref()
+                .and_then(|video_meta| {
+                    SpatialResolution::from_dimensions(video_meta.width, video_meta.height)
+                })
+                .or_else(|| parse_resolution_from_text(&build_dataset_text(result, Some(metadata))))
+        })
+        .or_else(|| parse_resolution_from_text(&build_dataset_text(result, None)))
+}
+
+fn parse_resolution_from_text(text: &str) -> Option<SpatialResolution> {
+    let normalized = text.to_lowercase();
+    let mut best = None;
+
+    for token in normalized
+        .split(|character: char| !(character.is_ascii_alphanumeric() || matches!(character, 'x' | '*')))
+        .filter(|token| !token.is_empty())
+    {
+        let candidate = if let Some((left, right)) = split_resolution_dims(token) {
+            match (left.parse::<u32>().ok(), right.parse::<u32>().ok()) {
+                (Some(width), Some(height)) => SpatialResolution::from_dimensions(width, height),
+                _ => None,
+            }
+        } else if let Some(height) = token
+            .strip_suffix('p')
+            .and_then(|value| value.parse::<u32>().ok())
+        {
+            SpatialResolution::from_scan_height(height)
+        } else {
+            None
+        };
+
+        if let Some(candidate) = candidate {
+            if best
+                .map(|current: SpatialResolution| {
+                    candidate.long_side > current.long_side
+                        || (candidate.long_side == current.long_side
+                            && candidate.short_side > current.short_side)
+                })
+                .unwrap_or(true)
+            {
+                best = Some(candidate);
+            }
+        }
+    }
+
+    best
 }
 
 fn build_sample_plan(metadata: &DatasetMetadata, config: &DatasetValuationConfig) -> SamplePlan {
