@@ -18,8 +18,10 @@ pub trait ExternalAdapter: Send + Sync {
 // ---------------------------------------------------------------------------
 
 pub struct KaggleAdapter {
+    client: reqwest::Client,
     pub api_base: String,
     enabled: bool,
+    proxy_url: String,
 }
 
 impl Default for KaggleAdapter {
@@ -27,43 +29,22 @@ impl Default for KaggleAdapter {
         let enabled =
             std::env::var("KAGGLE_USERNAME").is_ok() && std::env::var("KAGGLE_KEY").is_ok();
         Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             api_base: "https://www.kaggle.com/api/v1".into(),
             enabled,
+            proxy_url: std::env::var("GUIXU_KAGGLE_PROXY_URL")
+                .unwrap_or_else(|_| "https://www.guixu.org/api/search/kaggle".into()),
         }
     }
 }
 
-#[async_trait::async_trait]
-impl ExternalAdapter for KaggleAdapter {
-    fn name(&self) -> &str {
-        "kaggle"
-    }
-    fn source_type(&self) -> DataSource {
-        DataSource::Kaggle
-    }
-
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        if !self.enabled {
-            return Ok(vec![]);
-        }
-        let username = std::env::var("KAGGLE_USERNAME").unwrap_or_default();
-        let key = std::env::var("KAGGLE_KEY").unwrap_or_default();
-        let url = format!("{}/datasets/list", self.api_base);
-        let resp = tokio::time::timeout(
-            Duration::from_secs(10),
-            reqwest::Client::new()
-                .get(&url)
-                .basic_auth(&username, Some(&key))
-                .query(&[("search", query), ("maxSize", &limit.min(20).to_string())])
-                .send(),
-        )
-        .await
-        .map_err(|_| anyhow!("kaggle: timeout"))??
-        .error_for_status()?
-        .json::<Vec<serde_json::Value>>()
-        .await?;
-
-        Ok(resp
+impl KaggleAdapter {
+    fn parse_items(items: &[serde_json::Value], limit: usize) -> Vec<SearchResult> {
+        items
             .iter()
             .take(limit)
             .filter_map(|item| {
@@ -109,7 +90,53 @@ impl ExternalAdapter for KaggleAdapter {
                     created_at: created,
                 })
             })
-            .collect())
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for KaggleAdapter {
+    fn name(&self) -> &str {
+        "kaggle"
+    }
+    fn source_type(&self) -> DataSource {
+        DataSource::Kaggle
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let resp = if self.enabled {
+            let username = std::env::var("KAGGLE_USERNAME").unwrap_or_default();
+            let key = std::env::var("KAGGLE_KEY").unwrap_or_default();
+            let url = format!("{}/datasets/list", self.api_base);
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client
+                    .get(&url)
+                    .basic_auth(&username, Some(&key))
+                    .query(&[("search", query), ("maxSize", &limit.min(20).to_string())])
+                    .send(),
+            )
+            .await
+            .map_err(|_| anyhow!("kaggle: timeout"))??
+            .error_for_status()?
+            .json::<Vec<serde_json::Value>>()
+            .await?
+        } else {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client
+                    .get(&self.proxy_url)
+                    .query(&[("q", query), ("limit", &limit.min(20).to_string())])
+                    .send(),
+            )
+            .await
+            .map_err(|_| anyhow!("kaggle proxy: timeout"))??
+            .error_for_status()?
+            .json::<Vec<serde_json::Value>>()
+            .await?
+        };
+
+        Ok(Self::parse_items(&resp, limit))
     }
 }
 
@@ -118,55 +145,32 @@ impl ExternalAdapter for KaggleAdapter {
 // ---------------------------------------------------------------------------
 
 pub struct HuggingFaceAdapter {
+    client: reqwest::Client,
     pub api_base: String,
     enabled: bool,
+    proxy_url: String,
 }
 
 impl Default for HuggingFaceAdapter {
     fn default() -> Self {
         let enabled = std::env::var("HF_TOKEN").is_ok();
         Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             api_base: "https://huggingface.co/api".into(),
             enabled,
+            proxy_url: std::env::var("GUIXU_HF_PROXY_URL")
+                .unwrap_or_else(|_| "https://www.guixu.org/api/search/huggingface".into()),
         }
     }
 }
 
-#[async_trait::async_trait]
-impl ExternalAdapter for HuggingFaceAdapter {
-    fn name(&self) -> &str {
-        "huggingface"
-    }
-    fn source_type(&self) -> DataSource {
-        DataSource::HuggingFace
-    }
-
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        if !self.enabled {
-            return Ok(vec![]);
-        }
-        let token = std::env::var("HF_TOKEN").unwrap_or_default();
-        let url = format!("{}/datasets", self.api_base);
-        let resp = tokio::time::timeout(
-            Duration::from_secs(10),
-            reqwest::Client::new()
-                .get(&url)
-                .bearer_auth(&token)
-                .query(&[
-                    ("search", query),
-                    ("limit", &limit.min(100).to_string()),
-                    ("sort", "downloads"),
-                    ("direction", "-1"),
-                ])
-                .send(),
-        )
-        .await
-        .map_err(|_| anyhow!("huggingface: timeout"))??
-        .error_for_status()?
-        .json::<Vec<serde_json::Value>>()
-        .await?;
-
-        Ok(resp
+impl HuggingFaceAdapter {
+    fn parse_items(items: &[serde_json::Value], limit: usize) -> Vec<SearchResult> {
+        items
             .iter()
             .take(limit)
             .filter_map(|item| {
@@ -220,7 +224,57 @@ impl ExternalAdapter for HuggingFaceAdapter {
                     created_at: created,
                 })
             })
-            .collect())
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for HuggingFaceAdapter {
+    fn name(&self) -> &str {
+        "huggingface"
+    }
+    fn source_type(&self) -> DataSource {
+        DataSource::HuggingFace
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let resp = if self.enabled {
+            let token = std::env::var("HF_TOKEN").unwrap_or_default();
+            let url = format!("{}/datasets", self.api_base);
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .query(&[
+                        ("search", query),
+                        ("limit", &limit.min(100).to_string()),
+                        ("sort", "downloads"),
+                        ("direction", "-1"),
+                    ])
+                    .send(),
+            )
+            .await
+            .map_err(|_| anyhow!("huggingface: timeout"))??
+            .error_for_status()?
+            .json::<Vec<serde_json::Value>>()
+            .await?
+        } else {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client
+                    .get(&self.proxy_url)
+                    .query(&[("q", query), ("limit", &limit.min(100).to_string())])
+                    .send(),
+            )
+            .await
+            .map_err(|_| anyhow!("huggingface proxy: timeout"))??
+            .error_for_status()?
+            .json::<Vec<serde_json::Value>>()
+            .await?
+        };
+
+        Ok(Self::parse_items(&resp, limit))
     }
 }
 
@@ -229,13 +283,22 @@ impl ExternalAdapter for HuggingFaceAdapter {
 // ---------------------------------------------------------------------------
 
 pub struct IpfsAdapter {
+    client: reqwest::Client,
     pub gateway_url: String,
+    search_url: String,
 }
 
 impl Default for IpfsAdapter {
     fn default() -> Self {
         Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             gateway_url: "https://ipfs.io".into(),
+            search_url: std::env::var("IPFS_SEARCH_URL")
+                .unwrap_or_else(|_| "https://api.ipfs-search.com/v1/search".into()),
         }
     }
 }
@@ -249,9 +312,70 @@ impl ExternalAdapter for IpfsAdapter {
         DataSource::Ipfs
     }
 
-    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SearchResult>> {
-        // IPFS doesn't have native search — datasets come via P2P DHT.
-        Ok(vec![])
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let page_size = limit.min(100).to_string();
+        let resp = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.client
+                .get(&self.search_url)
+                .query(&[("q", query), ("page_size", &page_size), ("type", "file")])
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow!("ipfs-search: timeout"))??
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+
+        let empty = vec![];
+        let hits = resp
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+
+        Ok(hits
+            .iter()
+            .take(limit)
+            .filter_map(|hit| {
+                let hash = hit.get("hash")?.as_str()?;
+                let title = hit.get("title").and_then(|v| v.as_str()).unwrap_or(hash);
+                let size = hit.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                let desc = hit
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let created = hit
+                    .get("first-seen")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+
+                Some(SearchResult {
+                    cid: DatasetCid(hash.to_string()),
+                    title: title.to_string(),
+                    description: desc,
+                    tags: vec![],
+                    schema: DatasetSchema {
+                        columns: vec![],
+                        row_count: 0,
+                        size_bytes: size,
+                    },
+                    quality: None,
+                    price: Price::free(),
+                    license: License {
+                        spdx_id: "unknown".into(),
+                        commercial_use: false,
+                        derivative_allowed: false,
+                    },
+                    provider: Did(format!("ipfs:{hash}")),
+                    source: DataSource::Ipfs,
+                    market: None,
+                    data_type: infer_data_type_from_title(title),
+                    created_at: created,
+                })
+            })
+            .collect())
     }
 }
 
