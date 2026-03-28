@@ -17,12 +17,12 @@ use crate::intent::{
     MetadataField, QueryProfile, QueryProfiler, UserProfile,
 };
 use crate::sample_eval::{
-    DeepSeekSampleJudge, DeepSeekSampleRequirementsPlanner, DeepSeekSeedRecordJudge,
-    DownloadedSample, LlmSampleJudge, LocalHeuristicProxyScorer, ProxyScreeningReport,
-    RandomSeedSimilarityEvaluator, RandomSeedSimilarityEvaluatorConfig, SampleDownloader,
-    SampleJudgeReport, SampleRecord, SampleRequirements, SampleRequirementsPlanner,
-    SeedRecordJudge, SeedRecordJudgeReport, SeedRecordScore, StagedSampleEvaluator,
-    StagedSampleEvaluatorConfig,
+    ChainedSampleDownloader, DeepSeekSeedRecordJudge, DownloadedSample,
+    GuixuHubSampleDownloader, LlmSampleJudge, LocalHeuristicProxyScorer,
+    ProxyScreeningReport, RandomSeedSimilarityEvaluator, RandomSeedSimilarityEvaluatorConfig,
+    SampleDownloader, SampleJudgeReport, SampleRecord, SampleRequirements,
+    SampleRequirementsPlanner, SeedRecordJudge, SeedRecordJudgeReport, SeedRecordScore,
+    StagedSampleEvaluator, StagedSampleEvaluatorConfig,
 };
 use crate::vector_index::VectorIndex;
 
@@ -159,6 +159,7 @@ fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> Sea
         cid: DatasetCid(format!("cid-{cid_suffix}")),
         title: title.into(),
         description: Some(description.into()),
+        tags: vec![],
         schema: DatasetSchema {
             columns: vec![],
             row_count: 42,
@@ -173,6 +174,7 @@ fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> Sea
         },
         provider: Did(format!("did:key:{cid_suffix}")),
         source: DataSource::Kaggle,
+        market: None,
         data_type: DataType::Tabular,
         created_at: Utc::now(),
     }
@@ -199,12 +201,14 @@ fn ranked_result_from_metadata(
             cid: metadata.cid.clone(),
             title: metadata.title.clone(),
             description: metadata.description.clone(),
+            tags: metadata.tags.clone(),
             schema: metadata.schema.clone(),
             quality: None,
             price: metadata.price.clone(),
             license: metadata.license.clone(),
             provider: metadata.provider.clone(),
             source: DataSource::P2p,
+            market: None,
             data_type: metadata.data_type,
             created_at: metadata.created_at,
         },
@@ -352,6 +356,19 @@ impl SampleDownloader for LocalDirectorySampleDownloader {
             records,
         }))
     }
+}
+
+fn local_and_guixu_hub_sample_downloader(
+    roots_by_cid: HashMap<String, PathBuf>,
+    max_records: usize,
+) -> ChainedSampleDownloader {
+    ChainedSampleDownloader::new(vec![
+        Box::new(LocalDirectorySampleDownloader {
+            roots_by_cid,
+            max_records,
+        }),
+        Box::new(GuixuHubSampleDownloader::default().with_record_limit(max_records)),
+    ])
 }
 
 struct LocalDatasetSpec {
@@ -725,6 +742,7 @@ fn make_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
         VectorIndex,
         IntentParser::new(IntentParserConfig {
             api_key: None,
+            proxy_url: "http://127.0.0.1:1/noop".into(),
             ..IntentParserConfig::default()
         }),
         adapters,
@@ -754,6 +772,7 @@ fn load_live_intent_parser_config() -> IntentParserConfig {
         api_key: Some(api_key),
         api_base,
         model,
+        proxy_url: String::new(),
         timeout: std::time::Duration::from_secs(30),
     }
 }
@@ -857,6 +876,76 @@ async fn spawn_mock_deepseek_server(
     (format!("http://{addr}"), request_rx, server)
 }
 
+async fn spawn_mock_guixu_sample_server(
+    listing_id: &str,
+    sample_zip: Vec<u8>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let listing_id = listing_id.to_string();
+    let sample_download_url = format!("http://{addr}/sample.zip");
+
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            let request_line = request.lines().next().unwrap_or_default();
+
+            if request_line.contains(&format!(
+                "GET /api/download?id={listing_id}&type=sample HTTP/1.1"
+            )) {
+                let body = serde_json::json!({
+                    "downloadUrl": sample_download_url,
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                continue;
+            }
+
+            if request_line.contains("GET /sample.zip HTTP/1.1") {
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/zip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    sample_zip.len()
+                );
+                socket.write_all(headers.as_bytes()).await.unwrap();
+                socket.write_all(&sample_zip).await.unwrap();
+                continue;
+            }
+
+            let body = "{\"error\":\"not found\"}";
+            let response = format!(
+                "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    (format!("http://{addr}"), server)
+}
+
+fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+
+    let cursor = std::io::Cursor::new(Vec::<u8>::new());
+    let mut writer = zip::ZipWriter::new(cursor);
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    for (path, bytes) in entries {
+        writer.start_file(path, options).unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+
+    writer.finish().unwrap().into_inner()
+}
+
 async fn read_http_request(socket: &mut tokio::net::TcpStream) -> String {
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 2048];
@@ -903,20 +992,28 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[tokio::test]
 async fn intent_parser_requires_llm_api_configuration() {
+    // Without a local API key the parser falls back to the proxy.
+    // Point the proxy at an unreachable address so the test stays offline.
     let parser = IntentParser::new(IntentParserConfig {
         api_key: None,
+        proxy_url: "http://127.0.0.1:1/noop".into(),
         ..IntentParserConfig::default()
     });
     let query = "Build a high-quality classifier to detect cats";
     let error = parser.profile(query).await.unwrap_err();
 
-    assert!(error.to_string().contains("missing DEEPSEEK_API_KEY"));
+    // Should be a network / proxy error, NOT "missing DEEPSEEK_API_KEY".
+    assert!(
+        !error.to_string().contains("missing DEEPSEEK_API_KEY"),
+        "expected proxy fallback, got: {error}"
+    );
 }
 
 #[tokio::test]
 async fn intent_parser_trait_propagates_missing_api_key_error() {
     let parser = IntentParser::new(IntentParserConfig {
         api_key: None,
+        proxy_url: "http://127.0.0.1:1/noop".into(),
         ..IntentParserConfig::default()
     });
     let profiler: &dyn QueryProfiler = &parser;
@@ -925,8 +1022,11 @@ async fn intent_parser_trait_propagates_missing_api_key_error() {
     let via_inherent = parser.profile(query).await.unwrap_err();
     let via_trait = profiler.profile(query).await.unwrap_err();
 
-    assert_eq!(via_inherent.to_string(), via_trait.to_string());
-    assert!(via_trait.to_string().contains("missing DEEPSEEK_API_KEY"));
+    // Both paths should hit the proxy fallback and fail with the same kind of error.
+    assert!(!via_inherent
+        .to_string()
+        .contains("missing DEEPSEEK_API_KEY"));
+    assert!(!via_trait.to_string().contains("missing DEEPSEEK_API_KEY"));
 }
 
 #[tokio::test]
@@ -937,6 +1037,7 @@ async fn intent_parser_uses_deepseek_when_configured() {
         api_base: "https://api.deepseek.com".into(),
         model: "deepseek-chat".into(),
         timeout: std::time::Duration::from_secs(5),
+        ..IntentParserConfig::default()
     });
     let user_profile = UserProfile {
         cpu: crate::intent::CpuProfile {
@@ -1257,6 +1358,7 @@ async fn value_search_output_removes_candidates_with_mismatched_data_type_before
             },
         ],
         errors: vec![],
+        profile: None,
     };
 
     let output = engine
@@ -1319,6 +1421,7 @@ async fn staged_sample_evaluator_short_circuits_low_similarity_samples() {
     let search_output = SearchOutput {
         results: vec![ranked_result_from_metadata(&metadata, 90.0)],
         errors: vec![],
+        profile: None,
     };
     let llm_calls = Arc::new(AtomicUsize::new(0));
     let evaluator = StagedSampleEvaluator::with_config(
@@ -1416,6 +1519,7 @@ async fn staged_sample_evaluator_blends_high_similarity_samples_with_llm_score()
     let search_output = SearchOutput {
         results: vec![ranked_result_from_metadata(&metadata, 90.0)],
         errors: vec![],
+        profile: None,
     };
     let llm_calls = Arc::new(AtomicUsize::new(0));
     let evaluator = StagedSampleEvaluator::with_config(
@@ -1525,6 +1629,7 @@ async fn value_search_output_re_evaluates_only_top_five_candidates_by_default() 
             .map(|(index, metadata)| ranked_result_from_metadata(metadata, 100.0 - index as f64))
             .collect(),
         errors: vec![],
+        profile: None,
     };
     let llm_calls = Arc::new(AtomicUsize::new(0));
     let evaluator = StagedSampleEvaluator::with_config(
@@ -1617,6 +1722,82 @@ fn local_sample_records_attach_matching_images_when_available() {
 }
 
 #[tokio::test]
+async fn guixu_hub_sample_downloader_downloads_and_extracts_sample_archive() {
+    let sample_zip = build_test_zip(&[
+        (
+            "annotations/sample-01.xml",
+            br#"<annotation><object><name>helmet</name></object></annotation>"#,
+        ),
+        ("images/sample-01.jpg", b"fake-jpeg-bytes"),
+    ]);
+    let (api_base, server) = spawn_mock_guixu_sample_server("listing-1", sample_zip).await;
+    let tempdir = tempfile::tempdir().unwrap();
+    let downloader = GuixuHubSampleDownloader::new(format!("{api_base}/api/download"))
+        .with_extract_root(tempdir.path())
+        .with_record_limit(4);
+
+    let metadata = make_detailed_image_metadata(
+        "guixu-hub-sample",
+        "Guixu Hub Sample",
+        "Remote sample archive",
+        &["helmet"],
+        &["sample_id", "label"],
+        100,
+        1_024,
+        "1280x720",
+    );
+    let result = SearchResult {
+        cid: DatasetCid("guixu-hub:listing-1".into()),
+        title: "Guixu Hub Sample".into(),
+        description: Some("Sample listing".into()),
+        tags: vec!["helmet".into()],
+        schema: metadata.schema.clone(),
+        quality: None,
+        price: Price::free(),
+        license: License {
+            spdx_id: "proprietary".into(),
+            commercial_use: false,
+            derivative_allowed: false,
+        },
+        provider: Did("guixu:hub:listing-1".into()),
+        source: DataSource::GuixuHub,
+        market: None,
+        data_type: DataType::Image,
+        created_at: Utc::now(),
+    };
+    let plan = crate::engine::SamplePlan {
+        sample_fraction: 0.01,
+        estimated_rows: 4,
+        estimated_bytes: 4_096,
+        max_rows: 4,
+        max_bytes: 4_096,
+        time_budget_secs: 30,
+    };
+
+    let sample = downloader
+        .download_sample(&result, &metadata, &plan)
+        .await
+        .unwrap()
+        .expect("expected Guixu Hub sample");
+
+    server.await.unwrap();
+
+    assert_eq!(sample.sampled_rows, 1);
+    assert!(sample.summary.unwrap_or_default().contains("listing-1"));
+    assert_eq!(sample.records[0].id, "annotations/sample-01.xml");
+    assert!(sample.records[0].content.contains("helmet"));
+
+    let image_path = sample.records[0].metadata["local_image_path"]
+        .as_str()
+        .expect("expected extracted image path");
+    assert!(Path::new(image_path).is_file());
+    assert_eq!(
+        sample.records[0].metadata["local_image_mime_type"].as_str(),
+        Some("image/jpeg")
+    );
+}
+
+#[tokio::test]
 async fn random_seed_similarity_evaluator_averages_seed_scores_and_low_anchor_penalties() {
     use crate::engine::{DatasetSelectionTask, DatasetValuationConfig, SearchOutput};
 
@@ -1646,6 +1827,7 @@ async fn random_seed_similarity_evaluator_averages_seed_scores_and_low_anchor_pe
     let search_output = SearchOutput {
         results: vec![ranked_result_from_metadata(&metadata, 95.0)],
         errors: vec![],
+        profile: None,
     };
     let seed_calls = Arc::new(AtomicUsize::new(0));
     let evaluator = RandomSeedSimilarityEvaluator::with_config(
@@ -1743,6 +1925,7 @@ async fn backend_e2e_nl_query_to_rank_scores() {
             api_key: Some("test-key".into()),
             api_base,
             model: "deepseek-chat".into(),
+            proxy_url: String::new(),
             timeout: std::time::Duration::from_secs(5),
         }),
         vec![],
@@ -1839,6 +2022,7 @@ async fn backend_e2e_nl_query_to_keyword_search_and_tcv_valuation() {
         api_key: Some("test-key".into()),
         api_base,
         model: "deepseek-chat".into(),
+        proxy_url: String::new(),
         timeout: std::time::Duration::from_secs(5),
     });
     let profile = parser.profile(query).await.unwrap();
@@ -2197,12 +2381,25 @@ async fn deepseek_live_nl_query_to_scored_datasets() {
         )
         .await
         .expect("live search failed");
+    let evaluator = RandomSeedSimilarityEvaluator::with_config(
+        Box::new(ChainedSampleDownloader::new(vec![Box::new(
+            GuixuHubSampleDownloader::default().with_record_limit(6),
+        )])),
+        Box::new(DeepSeekSeedRecordJudge::new(config.clone()).with_record_char_limit(600)),
+        RandomSeedSimilarityEvaluatorConfig {
+            seed_record_count: 4,
+            low_score_threshold: 35.0,
+            high_score_threshold: 75.0,
+            override_final_below_score: 20.0,
+            selection_seed: 2026,
+        },
+    );
     let selection_output: DatasetSelectionOutput = engine
         .value_search_output(
             &search_output,
             &local_metadata,
             None,
-            None,
+            Some(&evaluator),
             &DatasetSelectionTask::from(&profile),
             &DatasetValuationConfig::default(),
         )
@@ -2325,10 +2522,7 @@ async fn deepseek_local_guixu_data_top5_sample_reranking() {
         .await
         .expect("local guixu search failed");
     let evaluator = RandomSeedSimilarityEvaluator::with_config(
-        Box::new(LocalDirectorySampleDownloader {
-            roots_by_cid,
-            max_records: 6,
-        }),
+        Box::new(local_and_guixu_hub_sample_downloader(roots_by_cid, 6)),
         Box::new(DeepSeekSeedRecordJudge::new(config.clone()).with_record_char_limit(600)),
         RandomSeedSimilarityEvaluatorConfig {
             seed_record_count: 4,
@@ -2453,7 +2647,8 @@ async fn search_wrapper_propagates_intent_parser_error_without_api_key() {
         .await
         .unwrap_err();
 
-    assert!(error.to_string().contains("missing DEEPSEEK_API_KEY"));
+    // With proxy fallback the error is a connection failure, not "missing DEEPSEEK_API_KEY".
+    assert!(!error.to_string().contains("missing DEEPSEEK_API_KEY"));
 }
 
 #[tokio::test]
@@ -2475,10 +2670,15 @@ async fn search_with_task_type_prefers_results_matching_requested_modality() {
         ],
     })]);
 
+    let profile = QueryProfile {
+        raw_query: "cat".into(),
+        task_type: Some("time_series_prediction".into()),
+        keywords: vec!["cat".into()],
+        ..Default::default()
+    };
     let output = engine
-        .search_with_task_type(
-            "cat",
-            Some("time_series_prediction"),
+        .search_with_profile(
+            &profile,
             &SearchFilters::default(),
             &[],
             &neutral_signal_fetcher(),
@@ -2500,7 +2700,7 @@ async fn search_with_task_type_prefers_results_matching_requested_modality() {
 // ===========================================================================
 
 /// Every DataSource variant must have exactly one adapter in default_adapters
-/// (except P2p and DataGov which are handled outside the adapter system).
+/// (except P2p which is handled outside the adapter system).
 #[test]
 fn default_adapters_covers_all_expected_sources() {
     let adapters = adapters::default_adapters();
@@ -2517,6 +2717,7 @@ fn default_adapters_covers_all_expected_sources() {
     assert!(names.contains(&"bittorrent"), "missing bittorrent adapter");
     assert!(names.contains(&"postgresql"), "missing postgresql adapter");
     assert!(names.contains(&"duckdb"), "missing duckdb adapter");
+    assert!(names.contains(&"guixu_hub"), "missing guixu_hub adapter");
     assert!(names.contains(&"local_file"), "missing local_file adapter");
     assert!(
         names.contains(&"google_dataset_search"),
@@ -2544,6 +2745,7 @@ fn default_adapters_covers_all_expected_sources() {
     assert!(sources.contains(&DataSource::BitTorrent));
     assert!(sources.contains(&DataSource::PostgreSql));
     assert!(sources.contains(&DataSource::DuckDb));
+    assert!(sources.contains(&DataSource::GuixuHub));
     assert!(sources.contains(&DataSource::LocalFile));
     assert!(sources.contains(&DataSource::GoogleDatasetSearch));
     assert!(sources.contains(&DataSource::DataCiteCommons));
@@ -2603,11 +2805,11 @@ fn datasource_serde_roundtrip() {
         (DataSource::P2p, "\"p2p\""),
         (DataSource::Kaggle, "\"kaggle\""),
         (DataSource::HuggingFace, "\"huggingface\""),
-        (DataSource::DataGov, "\"datagov\""),
         (DataSource::Ipfs, "\"ipfs\""),
         (DataSource::BitTorrent, "\"bittorrent\""),
         (DataSource::PostgreSql, "\"postgresql\""),
         (DataSource::DuckDb, "\"duckdb\""),
+        (DataSource::GuixuHub, "\"guixuhub\""),
         (DataSource::LocalFile, "\"localfile\""),
         (DataSource::GoogleDatasetSearch, "\"googledatasetsearch\""),
         (DataSource::DataCiteCommons, "\"datacitecommons\""),
@@ -2655,6 +2857,13 @@ fn datacite_adapter_source_type_and_name() {
     assert!(matches!(adapter.source_type(), DataSource::DataCiteCommons));
 }
 
+#[test]
+fn guixu_hub_adapter_source_type_and_name() {
+    let adapter = adapters::GuixuHubAdapter::default();
+    assert_eq!(adapter.name(), "guixu_hub");
+    assert!(matches!(adapter.source_type(), DataSource::GuixuHub));
+}
+
 /// Search engine should propagate results from new adapters through ranking.
 #[tokio::test]
 async fn search_engine_includes_new_adapter_results() {
@@ -2673,6 +2882,7 @@ async fn search_engine_includes_new_adapter_results() {
                 cid: DatasetCid("gds-001".into()),
                 title: "Climate Change Dataset".into(),
                 description: Some("from Google".into()),
+                tags: vec![],
                 schema: DatasetSchema {
                     columns: vec![],
                     row_count: 1000,
@@ -2687,6 +2897,7 @@ async fn search_engine_includes_new_adapter_results() {
                 },
                 provider: Did("gds:example.com".into()),
                 source: DataSource::GoogleDatasetSearch,
+                market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
             }])
@@ -2707,6 +2918,7 @@ async fn search_engine_includes_new_adapter_results() {
                 cid: DatasetCid("10.5281/zenodo.123".into()),
                 title: "Global Temperature Records".into(),
                 description: Some("from DataCite".into()),
+                tags: vec![],
                 schema: DatasetSchema {
                     columns: vec![],
                     row_count: 500,
@@ -2721,6 +2933,7 @@ async fn search_engine_includes_new_adapter_results() {
                 },
                 provider: Did("doi:10.5281/zenodo.123".into()),
                 source: DataSource::DataCiteCommons,
+                market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
             }])
@@ -2728,9 +2941,14 @@ async fn search_engine_includes_new_adapter_results() {
     }
 
     let engine = make_engine(vec![Box::new(GdsStub), Box::new(DcStub)]);
+    let profile = QueryProfile {
+        raw_query: "climate".into(),
+        keywords: vec!["climate".into()],
+        ..Default::default()
+    };
     let output = engine
-        .search(
-            "climate",
+        .search_with_profile(
+            &profile,
             &SearchFilters::default(),
             &[],
             &neutral_signal_fetcher(),
@@ -2772,6 +2990,7 @@ async fn source_filter_works_for_new_sources() {
                 cid: DatasetCid("gds-filter".into()),
                 title: "Filtered Dataset".into(),
                 description: None,
+                tags: vec![],
                 schema: DatasetSchema {
                     columns: vec![],
                     row_count: 10,
@@ -2786,6 +3005,7 @@ async fn source_filter_works_for_new_sources() {
                 },
                 provider: Did("gds:test".into()),
                 source: DataSource::GoogleDatasetSearch,
+                market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
             }])
@@ -2793,6 +3013,11 @@ async fn source_filter_works_for_new_sources() {
     }
 
     let engine = make_engine(vec![Box::new(GdsStub)]);
+    let profile = QueryProfile {
+        raw_query: "test".into(),
+        keywords: vec!["test".into()],
+        ..Default::default()
+    };
 
     // Filter for GoogleDatasetSearch — should keep the result
     let filters_match = SearchFilters {
@@ -2800,7 +3025,7 @@ async fn source_filter_works_for_new_sources() {
         ..Default::default()
     };
     let output = engine
-        .search("test", &filters_match, &[], &neutral_signal_fetcher(), 10)
+        .search_with_profile(&profile, &filters_match, &[], &neutral_signal_fetcher(), 10)
         .await
         .unwrap();
     assert_eq!(output.results.len(), 1);
@@ -2811,7 +3036,7 @@ async fn source_filter_works_for_new_sources() {
         ..Default::default()
     };
     let output = engine
-        .search("test", &filters_miss, &[], &neutral_signal_fetcher(), 10)
+        .search_with_profile(&profile, &filters_miss, &[], &neutral_signal_fetcher(), 10)
         .await
         .unwrap();
     assert_eq!(output.results.len(), 0);
@@ -2988,9 +3213,14 @@ async fn local_file_adapter_matches_by_column_name() {
 async fn search_result_includes_data_type() {
     let engine = make_engine(vec![]);
     let meta = vec![make_metadata("1", "video_clips", "video data", &["video"])];
+    let profile = QueryProfile {
+        raw_query: "video".into(),
+        keywords: vec!["video".into()],
+        ..Default::default()
+    };
     let output = engine
-        .search(
-            "video",
+        .search_with_profile(
+            &profile,
             &SearchFilters::default(),
             &meta,
             &neutral_signal_fetcher(),

@@ -7,7 +7,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "dataset_search".into(),
-            description: "Search datasets across Kaggle, HuggingFace, IPFS, BitTorrent, PostgreSQL, DuckDB and P2P network".into(),
+            description: "Search datasets across Guixu Hub, Kaggle, HuggingFace, IPFS, BitTorrent, PostgreSQL, DuckDB, local files and the P2P network".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -24,7 +24,22 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                             "max_price": { "type": "number" },
                             "license": { "type": "string" },
                             "min_quality": { "type": "number" },
-                            "source": { "type": "string", "enum": ["kaggle", "huggingface", "ipfs", "bittorrent", "postgresql", "duckdb", "p2p"] }
+                            "source": {
+                                "type": "string",
+                                "enum": [
+                                    "guixuhub",
+                                    "kaggle",
+                                    "huggingface",
+                                    "ipfs",
+                                    "bittorrent",
+                                    "postgresql",
+                                    "duckdb",
+                                    "localfile",
+                                    "googledatasetsearch",
+                                    "datacitecommons",
+                                    "p2p"
+                                ]
+                            }
                         }
                     },
                     "limit": { "type": "integer", "default": 10 }
