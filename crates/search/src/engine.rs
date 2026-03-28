@@ -73,8 +73,11 @@ impl SearchEngine {
     ) -> Result<SearchOutput> {
         let profile = self.intent_parser.profile(query).await?;
         let profile = profile_with_task_type(profile, task_type);
-        self.search_with_profile(&profile, filters, local_metadata, signal_fetcher, limit)
-            .await
+        let mut output = self
+            .search_with_profile(&profile, filters, local_metadata, signal_fetcher, limit)
+            .await?;
+        output.profile = Some(profile);
+        Ok(output)
     }
 
     /// Search entry point when the caller already has a structured query profile.
@@ -164,6 +167,7 @@ impl SearchEngine {
         Ok(SearchOutput {
             results: ranked,
             errors,
+            profile: None,
         })
     }
 
@@ -253,6 +257,9 @@ pub struct RankedResult {
 pub struct SearchOutput {
     pub results: Vec<RankedResult>,
     pub errors: Vec<String>,
+    /// The structured intent profile derived from the query (if available).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<QueryProfile>,
 }
 
 /// Backward-compatible alias for the structured query profile type.

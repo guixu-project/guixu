@@ -97,10 +97,20 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         })
         .collect();
 
-    let response = json!({
+    let mut response = json!({
         "results": output,
         "errors": search_output.errors,
     });
+
+    if let Some(profile) = &search_output.profile {
+        response["intent"] = json!({
+            "task_type": profile.task_type,
+            "task_description": profile.task_description,
+            "target_entity": profile.target_entity,
+            "keywords": profile.keywords,
+            "data_standard": profile.data_standard,
+        });
+    }
 
     Ok(serde_json::to_string_pretty(&response)?)
 }

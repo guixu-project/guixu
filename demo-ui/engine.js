@@ -135,6 +135,14 @@ class GuixuEngine {
     const results = Array.isArray(data) ? data : (data?.results || []);
     const serverErrors = Array.isArray(data) ? [] : (data?.errors || []);
 
+    // Log intent parsing result
+    const intent = data?.intent;
+    if (intent) {
+      this.log('[I]', `Intent parsed → task_type=${intent.task_type || '—'}, entity=${intent.target_entity || '—'}, keywords=[${(intent.keywords || []).join(', ')}]`);
+      if (intent.task_description) this.log('[I]', `Task: ${intent.task_description}`);
+      this.addLedger('intent', `query="${query}" → keywords=[${(intent.keywords || []).join(', ')}]`);
+    }
+
     if (serverErrors.length > 0) {
       serverErrors.forEach(e => this.log('[!]', `adapter error: ${e}`));
     }
@@ -165,7 +173,31 @@ class GuixuEngine {
         _raw: r,
       }));
       const sources = [...new Set(this.datasets.map(d => d.source))];
-      this.log('[S]', `${this.datasets.length} results from ${sources.length} sources`);
+      const rawCount = results.length;
+
+      // Log deduplication
+      const uniqueCids = new Set(this.datasets.map(d => d.cid));
+      if (uniqueCids.size < rawCount) {
+        this.log('[S]', `Dedup: ${rawCount} → ${uniqueCids.size} (removed ${rawCount - uniqueCids.size} duplicates)`);
+      }
+
+      // Log modality filtering
+      if (intent?.task_type) {
+        const types = [...new Set(this.datasets.map(d => d.dataType))];
+        this.log('[S]', `Modality filter: task_type=${intent.task_type} → kept types=[${types.join(', ')}]`);
+      }
+
+      // Log per-source breakdown
+      const perSource = {};
+      this.datasets.forEach(d => { perSource[d.sourceLabel] = (perSource[d.sourceLabel] || 0) + 1; });
+      const breakdown = Object.entries(perSource).map(([s, n]) => `${s}:${n}`).join(', ');
+      this.log('[S]', `${this.datasets.length} results from ${sources.length} sources (${breakdown})`);
+
+      // Log TCV-lite ranking
+      if (this.datasets.length > 1 && this.datasets[0]._raw.rank_score) {
+        this.log('[R]', `Ranked by TCV-lite: #1 score=${this.datasets[0]._raw.rank_score}, #${this.datasets.length} score=${this.datasets[this.datasets.length-1]._raw.rank_score}`);
+      }
+
       this.addLedger('search', `query="${query}" > ${this.datasets.length} results`);
       return { datasets: this.datasets, sources };
     }
@@ -209,6 +241,7 @@ class GuixuEngine {
             risk: t.risk_penalty,
           };
           tcvScore = t.tcv_score;
+          this.log('[E]', `${d.title}: server TCV (P2P store)`);
         }
       }
 
@@ -223,6 +256,7 @@ class GuixuEngine {
           community: d.community.reviews > 0 ? d.community.positive_rate * 80 : 30,
           risk: d.community.negative_rate * 100 || 0,
         };
+        this.log('[E]', `${d.title}: client-side TCV estimate (${d.sourceLabel})`);
       }
       if (tcvScore === undefined) tcvScore = computeTCV(tcvComps);
 
@@ -254,8 +288,15 @@ class GuixuEngine {
       const paid = data.price_paid || 0;
       const gasCost = m.gasCost;
       this.totalCost += paid + gasCost;
+      // Log budget check
+      if (data.budget_check) this.log('[P]', `Budget check: ${data.budget_check}`);
+      // Log protocol selection reasoning
+      if (data.protocol_selection_reason) this.log('[P]', `Protocol selection: ${data.protocol_selection_reason}`);
       this.log('[P]', `${data.payment_protocol} $${paid}`);
-      this.log('[D]', `Delivery: ${data.delivery?.method || 'local'}`);
+      // Log delivery resolution
+      const deliveryMethod = data.delivery?.method || 'local';
+      const deliveryPath = data.delivery?.file_path || data.delivery?.download_path || '';
+      this.log('[D]', `Delivery: ${deliveryMethod}${deliveryPath ? ' → ' + deliveryPath : ''}`);
       const txId = data.tx_id || randomHash();
       this.addLedger('purchase', `${dataset.title} — $${(paid + gasCost).toFixed(4)}`, { txId });
       return {
