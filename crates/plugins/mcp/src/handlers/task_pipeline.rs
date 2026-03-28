@@ -63,6 +63,7 @@ fn compact_intent(profile: &QueryProfile) -> Value {
     json!({
         "task_type": profile.task_type,
         "task_description": profile.task_description,
+        "budget": profile.budget,
         "target_entity": profile.target_entity,
         "keywords": profile.keywords,
         "data_standard": {
@@ -511,7 +512,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
     let budget = evaluate_args
         .get("budget")
         .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+        .unwrap_or(profile.budget);
     let task_description = profile
         .task_description
         .clone()
