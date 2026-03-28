@@ -41,34 +41,8 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // --- Logging: stderr (human) + file (JSON, daily rotation) ---
-    let log_dir = NodeConfig::config_dir().join("logs");
-    std::fs::create_dir_all(&log_dir).ok();
-
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "guixu.log");
-    let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
-
-    tracing_subscriber::registry()
-        // stderr: compact human-readable
-        .with(
-            fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_target(false)
-                .compact(),
-        )
-        // file: structured JSON, all fields
-        .with(
-            fmt::layer()
-                .with_writer(file_writer)
-                .json()
-                .with_span_list(false),
-        )
-        .with(env_filter)
-        .init();
-
     let cli = Cli::parse();
+    init_logging(&cli.command);
 
     match cli.command {
         Commands::Init { data_dir } => cmd_init(data_dir)?,
@@ -77,6 +51,45 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn init_logging(command: &Commands) {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let stderr_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .compact();
+
+    let use_stderr_only = matches!(command, Commands::Mcp { mode } if mode == "codex");
+    if use_stderr_only {
+        tracing_subscriber::registry()
+            .with(stderr_layer)
+            .with(env_filter)
+            .init();
+        return;
+    }
+
+    let log_dir = NodeConfig::config_dir().join("logs");
+    if std::fs::create_dir_all(&log_dir).is_ok() {
+        let file_appender = tracing_appender::rolling::daily(&log_dir, "guixu.log");
+        let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::registry()
+            .with(stderr_layer)
+            .with(
+                fmt::layer()
+                    .with_writer(file_writer)
+                    .json()
+                    .with_span_list(false),
+            )
+            .with(env_filter)
+            .init();
+    } else {
+        eprintln!("warning: file logging unavailable, falling back to stderr-only logging");
+        tracing_subscriber::registry()
+            .with(stderr_layer)
+            .with(env_filter)
+            .init();
+    }
 }
 
 fn cmd_init(data_dir: Option<String>) -> Result<()> {
@@ -210,6 +223,11 @@ async fn cmd_start() -> Result<()> {
 }
 
 async fn cmd_mcp(mode: String) -> Result<()> {
+    if mode == "codex" {
+        let state = Arc::new(AppState::for_codex().await?);
+        return data_mcp_server::server::run_stdio(state).await;
+    }
+
     let (config, identity) = load_config_and_identity()?;
     let node_mode = if mode == "full" {
         NodeMode::Full
