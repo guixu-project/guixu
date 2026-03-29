@@ -1,3 +1,4 @@
+use base64::Engine;
 use chrono::Utc;
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::{DatasetMetadata, Provenance};
@@ -17,7 +18,7 @@ use crate::intent::{
     MetadataField, QueryProfile, QueryProfiler, UserProfile,
 };
 use crate::sample_eval::{
-    ChainedSampleDownloader, DeepSeekSeedRecordJudge, DownloadedSample,
+    ChainedSampleDownloader, DownloadedSample, GeminiImageSeedRecordJudge,
     GuixuHubSampleDownloader, LlmSampleJudge, LocalHeuristicProxyScorer,
     ProxyScreeningReport, RandomSeedSimilarityEvaluator, RandomSeedSimilarityEvaluatorConfig,
     SampleDownloader, SampleJudgeReport, SampleRecord, SampleRequirements,
@@ -252,6 +253,22 @@ impl SampleDownloader for StaticSampleDownloader {
         _plan: &crate::engine::SamplePlan,
     ) -> anyhow::Result<Option<DownloadedSample>> {
         Ok(self.sample.clone())
+    }
+}
+
+struct SampleMapDownloader {
+    samples_by_cid: HashMap<String, DownloadedSample>,
+}
+
+#[async_trait::async_trait]
+impl SampleDownloader for SampleMapDownloader {
+    async fn download_sample(
+        &self,
+        result: &SearchResult,
+        _metadata: &DatasetMetadata,
+        _plan: &crate::engine::SamplePlan,
+    ) -> anyhow::Result<Option<DownloadedSample>> {
+        Ok(self.samples_by_cid.get(&result.cid.0).cloned())
     }
 }
 
@@ -928,6 +945,57 @@ async fn spawn_mock_guixu_sample_server(
     });
 
     (format!("http://{addr}"), server)
+}
+
+async fn spawn_mock_gemini_eval_server(
+    results: Vec<serde_json::Value>,
+) -> (
+    String,
+    Arc<tokio::sync::Mutex<Vec<String>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let requests_clone = requests.clone();
+
+    let server = tokio::spawn(async move {
+        for result in results {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            requests_clone.lock().await.push(request.clone());
+
+            let request_line = request.lines().next().unwrap_or_default();
+            if !request_line.contains("POST /api/search/gemini HTTP/1.1") {
+                let body = "{\"error\":\"not found\"}";
+                let response = format!(
+                    "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                continue;
+            }
+
+            let raw = match &result {
+                serde_json::Value::String(value) => value.clone(),
+                _ => result.to_string(),
+            };
+            let body = serde_json::json!({
+                "result": result,
+                "raw": raw,
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    (format!("http://{addr}/api/search/gemini"), requests, server)
 }
 
 fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -1798,6 +1866,113 @@ async fn guixu_hub_sample_downloader_downloads_and_extracts_sample_archive() {
 }
 
 #[tokio::test]
+async fn gemini_image_seed_record_judge_posts_base64_images_for_scoring() {
+    let (api_url, requests, server) = spawn_mock_gemini_eval_server(vec![
+        serde_json::json!(88),
+        serde_json::json!("12"),
+    ])
+    .await;
+    let tempdir = tempfile::tempdir().unwrap();
+    let image_a = tempdir.path().join("sample-a.jpg");
+    let image_b = tempdir.path().join("sample-b.png");
+    std::fs::write(&image_a, b"fake-jpeg-bytes").unwrap();
+    std::fs::write(&image_b, b"fake-png-bytes").unwrap();
+
+    let metadata = make_detailed_image_metadata(
+        "gemini-ppe",
+        "Gemini PPE Candidate",
+        "Worker images for helmet compliance evaluation",
+        &["helmet", "ppe", "worker"],
+        &["sample_id", "label", "image_path"],
+        100,
+        1_024,
+        "1280x720",
+    );
+    let result = ranked_result_from_metadata(&metadata, 90.0).result;
+    let task = crate::engine::DatasetSelectionTask {
+        task_description:
+            "check whether the people in the image are wearing safety helmets correctly".into(),
+        task_type: "classification".into(),
+        required_columns: vec!["image_path".into(), "label".into()],
+        target_entity: Some("people".into()),
+        required_data_type: Some(DataType::Image),
+    };
+    let sample = DownloadedSample {
+        records: vec![
+            SampleRecord {
+                id: "row-a".into(),
+                content: "worker with visible helmet annotation".into(),
+                metadata: serde_json::json!({
+                    "local_image_path": image_a.display().to_string(),
+                    "local_image_mime_type": "image/jpeg",
+                }),
+            },
+            SampleRecord {
+                id: "row-b".into(),
+                content: "person without clear helmet annotation".into(),
+                metadata: serde_json::json!({
+                    "local_image_path": image_b.display().to_string(),
+                    "local_image_mime_type": "image/png",
+                }),
+            },
+        ],
+        sampled_rows: 2,
+        sampled_bytes: 2_048,
+        summary: Some("two image records".into()),
+    };
+    let judge = GeminiImageSeedRecordJudge::new(api_url).with_record_char_limit(120);
+
+    let report = judge
+        .judge_records(&result, &metadata, &task, &sample, &sample.records)
+        .await
+        .unwrap();
+
+    server.await.unwrap();
+    let captured = requests.lock().await.clone();
+
+    assert_eq!(report.scored_records.len(), 2);
+    assert_eq!(report.scored_records[0].record_id, "row-a");
+    assert!((report.scored_records[0].utility_score - 88.0).abs() < f64::EPSILON);
+    assert_eq!(report.scored_records[1].record_id, "row-b");
+    assert!((report.scored_records[1].utility_score - 12.0).abs() < f64::EPSILON);
+
+    assert_eq!(captured.len(), 2);
+    let first_body = captured[0]
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("first request body missing");
+    let first_json: serde_json::Value = serde_json::from_str(first_body).unwrap();
+    assert!(first_json["task"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Reply with only a number"));
+    assert_eq!(first_json["image"]["mimeType"].as_str(), Some("image/jpeg"));
+    assert_eq!(
+        first_json["image"]["data"].as_str(),
+        Some(
+            base64::engine::general_purpose::STANDARD
+                .encode(b"fake-jpeg-bytes")
+                .as_str()
+        )
+    );
+
+    let second_body = captured[1]
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("second request body missing");
+    let second_json: serde_json::Value = serde_json::from_str(second_body).unwrap();
+    assert_eq!(second_json["image"]["mimeType"].as_str(), Some("image/png"));
+    assert_eq!(
+        second_json["image"]["data"].as_str(),
+        Some(
+            base64::engine::general_purpose::STANDARD
+                .encode(b"fake-png-bytes")
+                .as_str()
+        )
+    );
+}
+
+#[tokio::test]
 async fn random_seed_similarity_evaluator_averages_seed_scores_and_low_anchor_penalties() {
     use crate::engine::{DatasetSelectionTask, DatasetValuationConfig, SearchOutput};
 
@@ -2114,7 +2289,154 @@ async fn backend_e2e_nl_query_to_keyword_search_and_tcv_valuation() {
 
     assert_eq!(report.schema_fit, 100.0);
     assert_eq!(report.verdict, TcvVerdict::StrongPositive);
-    assert!(report.tcv_score > 60.0);
+    assert!(report.tcv_score > 80.0);
+}
+
+#[tokio::test]
+async fn backend_e2e_nl_query_to_sample_reranked_selection_with_gemini_images() {
+    use crate::engine::{DatasetSelectionTask, DatasetValuationConfig};
+
+    let query = "check whether the people in the image are wearing safety helmets correctly";
+    let (deepseek_api_base, request_rx, deepseek_server) = spawn_mock_deepseek_server(
+        r#"{
+            "task_type": "classification",
+            "task_description": "Determine whether the people in each image are wearing safety helmets correctly.",
+            "target_entity": "people",
+            "keywords": ["helmet", "worker", "safety"],
+            "data_standard": {
+                "sample_unit": "image",
+                "metadata_fields": [
+                    {"name": "min_sample_num", "value": "1000"},
+                    {"name": "resolution", "value": "720p"}
+                ],
+                "canonical_columns": ["image_path", "label"],
+                "extra_columns": ["bbox"]
+            }
+        }"#,
+    )
+    .await;
+    let (gemini_api_url, gemini_requests, gemini_server) =
+        spawn_mock_gemini_eval_server(vec![serde_json::json!(92)]).await;
+
+    let parser = IntentParser::new(IntentParserConfig {
+        api_key: Some("test-key".into()),
+        api_base: deepseek_api_base,
+        model: "deepseek-chat".into(),
+        proxy_url: String::new(),
+        timeout: std::time::Duration::from_secs(5),
+    });
+    let engine = make_engine_with_parser(parser, vec![]);
+
+    let strong_metadata = make_detailed_image_metadata(
+        "ppe-strong",
+        "People Safety Helmet Compliance Images",
+        "Images of people wearing safety helmets correctly and incorrectly, with compliance labels and image paths.",
+        &["helmet", "people", "worker", "ppe", "compliance", "safety"],
+        &["sample_id", "image_path", "label", "bbox"],
+        2_000,
+        12_000_000,
+        "1280x720",
+    );
+    let weak_metadata = make_detailed_image_metadata(
+        "ppe-weak",
+        "Construction Scene Background Images",
+        "Generic construction scene images with weak supervision and inconsistent annotations.",
+        &["construction", "background", "scene", "generic"],
+        &["sample_id", "image_path", "label", "bbox"],
+        2_000,
+        12_000_000,
+        "1280x720",
+    );
+    let _weak_metadata = weak_metadata;
+    let local_metadata = vec![strong_metadata.clone()];
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let strong_image = tempdir.path().join("strong.jpg");
+    let weak_image = tempdir.path().join("weak.jpg");
+    std::fs::write(&strong_image, b"strong-helmet-image").unwrap();
+    std::fs::write(&weak_image, b"weak-helmet-image").unwrap();
+
+    let strong_sample = DownloadedSample {
+        records: vec![SampleRecord {
+            id: "strong-row".into(),
+            content: "worker wearing safety helmet correctly".into(),
+            metadata: serde_json::json!({
+                "local_image_path": strong_image.display().to_string(),
+                "local_image_mime_type": "image/jpeg",
+            }),
+        }],
+        sampled_rows: 1,
+        sampled_bytes: 1_024,
+        summary: Some("strong helmet compliance sample".into()),
+    };
+    let _weak_image = weak_image;
+
+    let search_output = engine
+        .search(
+            query,
+            &SearchFilters::default(),
+            &local_metadata,
+            &neutral_signal_fetcher(),
+            10,
+        )
+        .await
+        .unwrap();
+    let evaluator = RandomSeedSimilarityEvaluator::with_config(
+        Box::new(SampleMapDownloader {
+            samples_by_cid: HashMap::from([(strong_metadata.cid.0.clone(), strong_sample)]),
+        }),
+        Box::new(GeminiImageSeedRecordJudge::new(gemini_api_url).with_record_char_limit(120)),
+        RandomSeedSimilarityEvaluatorConfig {
+            seed_record_count: 1,
+            low_score_threshold: 35.0,
+            high_score_threshold: 75.0,
+            override_final_below_score: 20.0,
+            selection_seed: 2026,
+        },
+    );
+    let selection_output = engine
+        .value_search_output(
+            &search_output,
+            &local_metadata,
+            None,
+            Some(&evaluator),
+            &DatasetSelectionTask::from(search_output.profile.as_ref().unwrap()),
+            &DatasetValuationConfig::default(),
+        )
+        .await
+        .unwrap();
+
+    let parser_request = request_rx.await.unwrap();
+    deepseek_server.await.unwrap();
+    gemini_server.await.unwrap();
+    let captured_gemini_requests = gemini_requests.lock().await.clone();
+
+    assert!(parser_request.contains("POST /chat/completions"));
+    assert!(parser_request.contains(query));
+    assert_eq!(captured_gemini_requests.len(), 1);
+    assert_eq!(
+        selection_output
+            .selected
+            .as_ref()
+            .expect("expected selected dataset")
+            .result
+            .title,
+        "People Safety Helmet Compliance Images"
+    );
+    let proxy = selection_output
+        .selected
+        .as_ref()
+        .unwrap()
+        .proxy_utility
+        .as_ref()
+        .expect("expected proxy utility");
+    assert!(proxy.utility_score > 90.0);
+    assert!(selection_output
+        .selected
+        .as_ref()
+        .unwrap()
+        .sample_plan
+        .is_some());
 }
 
 #[tokio::test]
@@ -2229,7 +2551,7 @@ async fn deepseek_live_nl_query_to_rank_scores() {
 }
 
 #[tokio::test]
-#[ignore] // requires DeepSeek credentials + network: cargo test -p data-search deepseek_live_nl_query_to_scored_datasets -- --ignored --nocapture
+#[ignore] // requires DeepSeek credentials for intent parsing + Gemini image eval API + network
 async fn deepseek_live_nl_query_to_scored_datasets() {
     use crate::engine::{DatasetSelectionOutput, DatasetSelectionTask, DatasetValuationConfig};
 
@@ -2385,7 +2707,7 @@ async fn deepseek_live_nl_query_to_scored_datasets() {
         Box::new(ChainedSampleDownloader::new(vec![Box::new(
             GuixuHubSampleDownloader::default().with_record_limit(6),
         )])),
-        Box::new(DeepSeekSeedRecordJudge::new(config.clone()).with_record_char_limit(600)),
+        Box::new(GeminiImageSeedRecordJudge::from_env().with_record_char_limit(600)),
         RandomSeedSimilarityEvaluatorConfig {
             seed_record_count: 4,
             low_score_threshold: 35.0,
@@ -2489,7 +2811,7 @@ async fn deepseek_live_nl_query_to_scored_datasets() {
 }
 
 #[tokio::test]
-#[ignore] // requires /data/pyc/guixu-data + DeepSeek credentials + network
+#[ignore] // requires /data/pyc/guixu-data + DeepSeek credentials for intent parsing + Gemini image eval API
 async fn deepseek_local_guixu_data_top5_sample_reranking() {
     use crate::engine::{DatasetSelectionOutput, DatasetSelectionTask, DatasetValuationConfig};
 
@@ -2523,7 +2845,7 @@ async fn deepseek_local_guixu_data_top5_sample_reranking() {
         .expect("local guixu search failed");
     let evaluator = RandomSeedSimilarityEvaluator::with_config(
         Box::new(local_and_guixu_hub_sample_downloader(roots_by_cid, 6)),
-        Box::new(DeepSeekSeedRecordJudge::new(config.clone()).with_record_char_limit(600)),
+        Box::new(GeminiImageSeedRecordJudge::from_env().with_record_char_limit(600)),
         RandomSeedSimilarityEvaluatorConfig {
             seed_record_count: 4,
             low_score_threshold: 35.0,

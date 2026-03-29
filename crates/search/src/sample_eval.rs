@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use base64::Engine;
 use data_core::metadata::DatasetMetadata;
 use data_core::types::{DataSource, SearchResult};
 use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
@@ -1475,6 +1476,135 @@ impl LlmSampleJudge for DeepSeekSampleJudge {
     }
 }
 
+/// Gemini image-eval backed judge for the random seed subset.
+pub struct GeminiImageSeedRecordJudge {
+    client: Client,
+    api_url: String,
+    max_record_chars: usize,
+}
+
+impl Default for GeminiImageSeedRecordJudge {
+    fn default() -> Self {
+        Self::from_env()
+    }
+}
+
+impl GeminiImageSeedRecordJudge {
+    pub fn from_env() -> Self {
+        let api_url = std::env::var("GUIXU_GEMINI_EVAL_API_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:3000/api/search/gemini".into());
+        Self::new(api_url)
+    }
+
+    pub fn new(api_url: impl Into<String>) -> Self {
+        Self {
+            client: Client::builder()
+                .connect_timeout(Duration::from_secs(3))
+                .timeout(Duration::from_secs(30))
+                .user_agent("guixu/0.1")
+                .build()
+                .unwrap_or_else(|_| Client::new()),
+            api_url: normalize_gemini_eval_api_url(api_url.into()),
+            max_record_chars: 800,
+        }
+    }
+
+    pub fn with_record_char_limit(mut self, max_record_chars: usize) -> Self {
+        self.max_record_chars = max_record_chars.max(64);
+        self
+    }
+
+    async fn judge_record(
+        &self,
+        result: &SearchResult,
+        metadata: &DatasetMetadata,
+        task: &DatasetSelectionTask,
+        record: &SampleRecord,
+    ) -> Result<SeedRecordScore> {
+        let image_path = sample_record_image_path(record)
+            .ok_or_else(|| anyhow!("sample record {} missing local_image_path", record.id))?;
+        let image_bytes = std::fs::read(&image_path)
+            .with_context(|| format!("read sample image {}", image_path.display()))?;
+        let mime_type = record
+            .metadata
+            .get("local_image_mime_type")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| guess_image_mime_type(&image_path).to_string());
+        let request = GeminiImageEvalRequest {
+            task: build_gemini_image_eval_task(
+                result,
+                metadata,
+                task,
+                record,
+                self.max_record_chars,
+            ),
+            image: GeminiImageEvalImage {
+                mime_type,
+                data: base64::engine::general_purpose::STANDARD.encode(image_bytes),
+            },
+        };
+        let response = self
+            .client
+            .post(&self.api_url)
+            .json(&request)
+            .send()
+            .await
+            .with_context(|| format!("send Gemini image evaluation request for {}", record.id))?
+            .error_for_status()
+            .with_context(|| format!("Gemini image evaluation returned error for {}", record.id))?
+            .json::<GeminiImageEvalResponse>()
+            .await
+            .with_context(|| format!("parse Gemini image evaluation response for {}", record.id))?;
+        let utility_score = parse_gemini_numeric_result(&response).ok_or_else(|| {
+            anyhow!(
+                "Gemini image evaluation did not return a numeric score for {}: {}",
+                record.id,
+                if response.raw.trim().is_empty() {
+                    response.result.to_string()
+                } else {
+                    response.raw.clone()
+                }
+            )
+        })?;
+
+        Ok(SeedRecordScore {
+            record_id: record.id.clone(),
+            utility_score: utility_score.clamp(0.0, 100.0),
+            rationale: if response.raw.trim().is_empty() {
+                format!("gemini image score {:.1}", utility_score)
+            } else {
+                response.raw
+            },
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl SeedRecordJudge for GeminiImageSeedRecordJudge {
+    async fn judge_records(
+        &self,
+        result: &SearchResult,
+        metadata: &DatasetMetadata,
+        task: &DatasetSelectionTask,
+        _sample: &DownloadedSample,
+        records: &[SampleRecord],
+    ) -> Result<SeedRecordJudgeReport> {
+        let mut scored_records = Vec::with_capacity(records.len());
+        for record in records {
+            scored_records.push(self.judge_record(result, metadata, task, record).await?);
+        }
+
+        Ok(SeedRecordJudgeReport {
+            summary: format!(
+                "scored {} image seed records via Gemini image evaluation API",
+                scored_records.len()
+            ),
+            scored_records,
+        })
+    }
+}
+
 /// DeepSeek-backed judge for the random seed subset.
 pub struct DeepSeekSeedRecordJudge {
     llm: DeepSeekJsonClient,
@@ -1641,6 +1771,26 @@ struct DeepSeekChoiceMessage {
     content: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct GeminiImageEvalRequest {
+    task: String,
+    image: GeminiImageEvalImage,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiImageEvalImage {
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    data: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiImageEvalResponse {
+    result: serde_json::Value,
+    #[serde(default)]
+    raw: String,
+}
+
 const SEED_RECORD_JUDGE_SYSTEM_PROMPT: &str = r#"You score individual sample records from a candidate dataset.
 Return valid json only with this schema:
 {
@@ -1741,6 +1891,24 @@ fn build_seed_record_judge_user_prompt(
     ))
 }
 
+fn build_gemini_image_eval_task(
+    result: &SearchResult,
+    metadata: &DatasetMetadata,
+    task: &DatasetSelectionTask,
+    record: &SampleRecord,
+    max_record_chars: usize,
+) -> String {
+    format!(
+        "Task description: {}\nTask type: {}\nCandidate dataset: {}\nDataset data type: {:?}\nTarget entity: {}\nRecord annotation/context: {}\nEvaluate the attached image itself. Return only a number from 0 to 100, where 100 means this image is highly relevant and useful for selecting this dataset for the task, and 0 means it is off-task, ambiguous, or low-signal. Reply with only a number.",
+        task.task_description,
+        task.task_type,
+        result.title,
+        metadata.data_type,
+        task.target_entity.as_deref().unwrap_or("<none>"),
+        truncate_for_prompt(&record.content, max_record_chars),
+    )
+}
+
 fn build_sample_judge_user_prompt(
     result: &SearchResult,
     metadata: &DatasetMetadata,
@@ -1780,4 +1948,48 @@ fn truncate_for_prompt(text: &str, max_chars: usize) -> String {
     }
 
     text.chars().take(max_chars).collect::<String>()
+}
+
+fn normalize_gemini_eval_api_url(api_url: String) -> String {
+    if api_url.trim().is_empty() {
+        "http://127.0.0.1:3000/api/search/gemini".into()
+    } else if api_url.starts_with("http://") || api_url.starts_with("https://") {
+        api_url
+    } else if api_url.starts_with('/') {
+        format!("http://127.0.0.1:3000{api_url}")
+    } else {
+        api_url
+    }
+}
+
+fn sample_record_image_path(record: &SampleRecord) -> Option<PathBuf> {
+    record
+        .metadata
+        .get("local_image_path")
+        .and_then(|value| value.as_str())
+        .map(PathBuf::from)
+}
+
+fn parse_gemini_numeric_result(response: &GeminiImageEvalResponse) -> Option<f64> {
+    match &response.result {
+        serde_json::Value::Number(value) => value.as_f64(),
+        serde_json::Value::String(value) => parse_numeric_text(value),
+        _ => parse_numeric_text(&response.raw),
+    }
+    .or_else(|| parse_numeric_text(&response.raw))
+}
+
+fn parse_numeric_text(text: &str) -> Option<f64> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<f64>().ok().or_else(|| {
+        trimmed
+            .split(|character: char| {
+                !(character.is_ascii_digit() || character == '.' || character == '-' || character == '+')
+            })
+            .find(|token| token.chars().any(|character| character.is_ascii_digit()))
+            .and_then(|token| token.parse::<f64>().ok())
+    })
 }
