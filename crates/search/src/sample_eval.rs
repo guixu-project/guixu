@@ -15,7 +15,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{
-    DatasetSelectionTask, ProxyUtilityApplyMode, ProxyUtilityReport, SampleEvaluator, SamplePlan,
+    DatasetSelectionTask, ProxyUtilityApplyMode, ProxyUtilityReport, SampleEvaluationOutcome,
+    SampleEvaluator, SamplePlan,
 };
 use crate::intent::IntentParserConfig;
 
@@ -36,6 +37,29 @@ pub struct DownloadedSample {
     pub sampled_rows: u64,
     pub sampled_bytes: u64,
     pub summary: Option<String>,
+}
+
+/// Outcome of trying to fetch a small sample for a dataset candidate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SampleDownloadOutcome {
+    pub sample: Option<DownloadedSample>,
+    pub unavailable_reason: Option<String>,
+}
+
+impl SampleDownloadOutcome {
+    pub fn available(sample: DownloadedSample) -> Self {
+        Self {
+            sample: Some(sample),
+            unavailable_reason: None,
+        }
+    }
+
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            sample: None,
+            unavailable_reason: Some(reason.into()),
+        }
+    }
 }
 
 /// Big-model plan for what evidence a useful sample should contain.
@@ -102,7 +126,7 @@ pub trait SampleDownloader: Send + Sync {
         result: &SearchResult,
         metadata: &DatasetMetadata,
         plan: &SamplePlan,
-    ) -> Result<Option<DownloadedSample>>;
+    ) -> Result<SampleDownloadOutcome>;
 }
 
 /// Default placeholder until dataset-specific sample download is implemented.
@@ -115,8 +139,10 @@ impl SampleDownloader for NoopSampleDownloader {
         _result: &SearchResult,
         _metadata: &DatasetMetadata,
         _plan: &SamplePlan,
-    ) -> Result<Option<DownloadedSample>> {
-        Ok(None)
+    ) -> Result<SampleDownloadOutcome> {
+        Ok(SampleDownloadOutcome::unavailable(
+            "no sample downloader is configured for this dataset source",
+        ))
     }
 }
 
@@ -138,13 +164,23 @@ impl SampleDownloader for ChainedSampleDownloader {
         result: &SearchResult,
         metadata: &DatasetMetadata,
         plan: &SamplePlan,
-    ) -> Result<Option<DownloadedSample>> {
+    ) -> Result<SampleDownloadOutcome> {
+        let mut reasons = Vec::new();
         for downloader in &self.downloaders {
-            if let Some(sample) = downloader.download_sample(result, metadata, plan).await? {
-                return Ok(Some(sample));
+            let outcome = downloader.download_sample(result, metadata, plan).await?;
+            if let Some(sample) = outcome.sample {
+                return Ok(SampleDownloadOutcome::available(sample));
+            }
+            if let Some(reason) = outcome.unavailable_reason {
+                reasons.push(reason);
             }
         }
-        Ok(None)
+        let reason = if reasons.is_empty() {
+            "all sample downloaders returned no usable sample".into()
+        } else {
+            reasons.join(" | ")
+        };
+        Ok(SampleDownloadOutcome::unavailable(reason))
     }
 }
 
@@ -212,17 +248,23 @@ impl SampleDownloader for GuixuHubSampleDownloader {
         result: &SearchResult,
         _metadata: &DatasetMetadata,
         plan: &SamplePlan,
-    ) -> Result<Option<DownloadedSample>> {
+    ) -> Result<SampleDownloadOutcome> {
         if result.source != DataSource::GuixuHub {
-            return Ok(None);
+            return Ok(SampleDownloadOutcome::unavailable(
+                "sample download skipped: source is not Guixu Hub",
+            ));
         }
 
         let Some(listing_id) = guixu_hub_listing_id(result) else {
-            return Ok(None);
+            return Ok(SampleDownloadOutcome::unavailable(
+                "sample download skipped: Guixu Hub listing id missing from search result",
+            ));
         };
         let sample_url = self.fetch_sample_url(&listing_id).await?;
         if sample_url.trim().is_empty() {
-            return Ok(None);
+            return Ok(SampleDownloadOutcome::unavailable(format!(
+                "sample download skipped: Guixu Hub listing {listing_id} returned an empty sample URL"
+            )));
         }
 
         let response = self
@@ -239,13 +281,12 @@ impl SampleDownloader for GuixuHubSampleDownloader {
             .await
             .with_context(|| format!("read Guixu Hub sample archive for {listing_id}"))?;
         if archive_bytes.is_empty() {
-            return Ok(None);
+            return Ok(SampleDownloadOutcome::unavailable(format!(
+                "sample download failed: Guixu Hub listing {listing_id} returned an empty archive"
+            )));
         }
 
-        let max_records = self
-            .max_records
-            .min(plan.max_rows.max(1) as usize)
-            .max(1);
+        let max_records = self.max_records.min(plan.max_rows.max(1) as usize).max(1);
         let extracted_root = build_guixu_sample_extract_root(&self.extract_root, &listing_id);
 
         let sample = parse_guixu_hub_sample_archive(
@@ -267,9 +308,11 @@ impl SampleDownloader for GuixuHubSampleDownloader {
         })?;
 
         if sample.records.is_empty() {
-            Ok(None)
+            Ok(SampleDownloadOutcome::unavailable(format!(
+                "sample parse failed: Guixu Hub listing {listing_id} contained no recognizable image or text records"
+            )))
         } else {
-            Ok(Some(sample))
+            Ok(SampleDownloadOutcome::available(sample))
         }
     }
 }
@@ -441,18 +484,24 @@ impl SampleEvaluator for StagedSampleEvaluator {
         metadata: &DatasetMetadata,
         task: &DatasetSelectionTask,
         plan: &SamplePlan,
-    ) -> Result<Option<ProxyUtilityReport>> {
+    ) -> Result<SampleEvaluationOutcome> {
         let requirements = self.requirements_for_task(task).await?;
-        let Some(sample) = self
+        let download = self
             .downloader
             .download_sample(result, metadata, plan)
-            .await?
-        else {
-            return Ok(None);
+            .await?;
+        let Some(sample) = download.sample else {
+            return Ok(SampleEvaluationOutcome::no_score(
+                download
+                    .unavailable_reason
+                    .unwrap_or_else(|| "sample download returned no usable sample".into()),
+            ));
         };
 
         if sample.records.is_empty() {
-            return Ok(None);
+            return Ok(SampleEvaluationOutcome::no_score(
+                "sample parse failed: downloaded sample contained no usable records",
+            ));
         }
 
         let screening = self
@@ -463,7 +512,7 @@ impl SampleEvaluator for StagedSampleEvaluator {
             let utility_score = ((screening.similarity_score / 100.0)
                 * self.config.rejected_similarity_max_score)
                 .clamp(0.0, self.config.rejected_similarity_max_score);
-            return Ok(Some(ProxyUtilityReport {
+            return Ok(SampleEvaluationOutcome::scored(ProxyUtilityReport {
                 utility_score,
                 apply_mode: ProxyUtilityApplyMode::OverrideFinal,
                 proxy_metric_name: "proxy_requirement_similarity".into(),
@@ -483,7 +532,7 @@ impl SampleEvaluator for StagedSampleEvaluator {
             .judge_sample(result, metadata, task, &requirements, &sample, &screening)
             .await?;
 
-        Ok(Some(ProxyUtilityReport {
+        Ok(SampleEvaluationOutcome::scored(ProxyUtilityReport {
             utility_score: judgement.utility_score.clamp(0.0, 100.0),
             apply_mode: ProxyUtilityApplyMode::Blend,
             proxy_metric_name: "proxy_requirement_similarity".into(),
@@ -549,22 +598,31 @@ impl SampleEvaluator for RandomSeedSimilarityEvaluator {
         metadata: &DatasetMetadata,
         task: &DatasetSelectionTask,
         plan: &SamplePlan,
-    ) -> Result<Option<ProxyUtilityReport>> {
-        let Some(sample) = self
+    ) -> Result<SampleEvaluationOutcome> {
+        let download = self
             .downloader
             .download_sample(result, metadata, plan)
-            .await?
-        else {
-            return Ok(None);
+            .await?;
+        let Some(sample) = download.sample else {
+            return Ok(SampleEvaluationOutcome::no_score(
+                download
+                    .unavailable_reason
+                    .unwrap_or_else(|| "sample download returned no usable sample".into()),
+            ));
         };
         if sample.records.is_empty() {
-            return Ok(None);
+            return Ok(SampleEvaluationOutcome::no_score(
+                "sample parse failed: downloaded sample contained no usable records",
+            ));
         }
 
-        let seed_indices =
-            select_seed_indices(result, task, &sample.records, &self.config).into_iter().collect::<HashSet<_>>();
+        let seed_indices = select_seed_indices(result, task, &sample.records, &self.config)
+            .into_iter()
+            .collect::<HashSet<_>>();
         if seed_indices.is_empty() {
-            return Ok(None);
+            return Ok(SampleEvaluationOutcome::no_score(
+                "sample evaluation skipped: no seed records were selected from the sample",
+            ));
         }
 
         let seed_records = sample
@@ -579,7 +637,9 @@ impl SampleEvaluator for RandomSeedSimilarityEvaluator {
             .await?;
         let scored_seed_records = resolve_scored_seed_records(&seed_records, &judged)?;
         if scored_seed_records.is_empty() {
-            return Ok(None);
+            return Ok(SampleEvaluationOutcome::no_score(
+                "sample evaluation failed: seed-record judge returned no usable scores",
+            ));
         }
 
         let mut low_score_anchors = scored_seed_records
@@ -601,6 +661,29 @@ impl SampleEvaluator for RandomSeedSimilarityEvaluator {
             .filter(|record| record.utility_score >= self.config.high_score_threshold)
             .cloned()
             .collect::<Vec<_>>();
+        let high_anchor_fallback = scored_seed_records.iter().max_by(|left, right| {
+            left.utility_score
+                .partial_cmp(&right.utility_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let high_anchor_avg = if high_score_anchors.is_empty() {
+            high_anchor_fallback
+                .map(|record| record.utility_score)
+                .unwrap_or(50.0)
+        } else {
+            average_or_zero(
+                &high_score_anchors
+                    .iter()
+                    .map(|record| record.utility_score)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let low_anchor_avg = average_or_zero(
+            &low_score_anchors
+                .iter()
+                .map(|record| record.utility_score)
+                .collect::<Vec<_>>(),
+        );
 
         let seed_ids = scored_seed_records
             .iter()
@@ -612,16 +695,69 @@ impl SampleEvaluator for RandomSeedSimilarityEvaluator {
             .collect::<Vec<_>>();
         let mut propagated_scores = Vec::new();
         let mut low_anchor_similarities = Vec::new();
+        let mut high_anchor_similarities = Vec::new();
+        let mut uncertain_records = Vec::new();
 
         for record in &sample.records {
             if seed_ids.contains(&record.id) {
                 continue;
             }
-            let low_similarity = average_similarity_to_low_score_anchors(record, &low_score_anchors);
-            let inferred_score = (100.0 - low_similarity).clamp(0.0, 100.0);
-            all_scores.push(inferred_score);
-            propagated_scores.push(inferred_score);
+            let low_similarity =
+                average_similarity_to_low_score_anchors(record, &low_score_anchors);
+            let high_similarity =
+                average_similarity_to_high_score_anchors(record, &high_score_anchors);
+
             low_anchor_similarities.push(low_similarity);
+            high_anchor_similarities.push(high_similarity);
+
+            if should_propagate_from_anchor(
+                low_similarity,
+                high_similarity,
+                !low_score_anchors.is_empty(),
+            ) {
+                let inferred_score = low_anchor_avg.clamp(0.0, 100.0);
+                all_scores.push(inferred_score);
+                propagated_scores.push(inferred_score);
+                continue;
+            }
+
+            if should_propagate_from_anchor(
+                high_similarity,
+                low_similarity,
+                !high_score_anchors.is_empty(),
+            ) {
+                let inferred_score = high_anchor_avg.clamp(0.0, 100.0);
+                all_scores.push(inferred_score);
+                propagated_scores.push(inferred_score);
+                continue;
+            }
+
+            uncertain_records.push(record.clone());
+        }
+
+        let mut rejudged_scores = Vec::new();
+        let mut rejudge_summary = String::new();
+        if !uncertain_records.is_empty() {
+            let rejudged = self
+                .judge
+                .judge_records(result, metadata, task, &sample, &uncertain_records)
+                .await?;
+            rejudge_summary = rejudged.summary.clone();
+            let scored_rejudged_records =
+                resolve_scored_seed_records(&uncertain_records, &rejudged)?;
+            let scored_by_id = scored_rejudged_records
+                .iter()
+                .map(|record| (record.record.id.as_str(), record.utility_score))
+                .collect::<HashMap<_, _>>();
+
+            for record in &uncertain_records {
+                let inferred_score = scored_by_id
+                    .get(record.id.as_str())
+                    .copied()
+                    .unwrap_or(50.0);
+                all_scores.push(inferred_score);
+                rejudged_scores.push(inferred_score);
+            }
         }
 
         let utility_score = average_or_zero(&all_scores).clamp(0.0, 100.0);
@@ -631,6 +767,7 @@ impl SampleEvaluator for RandomSeedSimilarityEvaluator {
             ProxyUtilityApplyMode::Blend
         };
         let avg_low_anchor_similarity = average_or_zero(&low_anchor_similarities);
+        let avg_high_anchor_similarity = average_or_zero(&high_anchor_similarities);
         let seed_avg = average_or_zero(
             &scored_seed_records
                 .iter()
@@ -638,8 +775,9 @@ impl SampleEvaluator for RandomSeedSimilarityEvaluator {
                 .collect::<Vec<_>>(),
         );
         let propagated_avg = average_or_zero(&propagated_scores);
+        let rejudged_avg = average_or_zero(&rejudged_scores);
 
-        Ok(Some(ProxyUtilityReport {
+        Ok(SampleEvaluationOutcome::scored(ProxyUtilityReport {
             utility_score,
             apply_mode,
             proxy_metric_name: "avg_low_score_anchor_similarity".into(),
@@ -647,11 +785,13 @@ impl SampleEvaluator for RandomSeedSimilarityEvaluator {
             sampled_rows: sample.sampled_rows,
             sampled_bytes: sample.sampled_bytes,
             notes: Some(format!(
-                "seed_records={}, high_score_anchors={}, low_score_anchors={}, seed_avg={seed_avg:.1}, propagated_avg={propagated_avg:.1}, summary={}, low_anchor_ids={}, high_anchor_ids={}, seed_rationales={}",
+                "seed_records={}, high_score_anchors={}, low_score_anchors={}, uncertain_rejudged={}, seed_avg={seed_avg:.1}, propagated_avg={propagated_avg:.1}, rejudged_avg={rejudged_avg:.1}, avg_low_similarity={avg_low_anchor_similarity:.1}, avg_high_similarity={avg_high_anchor_similarity:.1}, summary={}, rejudge_summary={}, low_anchor_ids={}, high_anchor_ids={}, seed_rationales={}",
                 scored_seed_records.len(),
                 high_score_anchors.len(),
                 low_score_anchors.len(),
+                uncertain_records.len(),
                 judged.summary,
+                rejudge_summary,
                 summarize_scored_seed_ids(&low_score_anchors),
                 summarize_scored_seed_ids(&high_score_anchors),
                 summarize_scored_seed_rationales(&scored_seed_records),
@@ -764,16 +904,43 @@ fn average_similarity_to_low_score_anchors(
     record: &SampleRecord,
     low_score_anchors: &[ScoredSeedSampleRecord],
 ) -> f64 {
-    if low_score_anchors.is_empty() {
+    average_similarity_to_anchor_set(record, low_score_anchors)
+}
+
+fn average_similarity_to_high_score_anchors(
+    record: &SampleRecord,
+    high_score_anchors: &[ScoredSeedSampleRecord],
+) -> f64 {
+    average_similarity_to_anchor_set(record, high_score_anchors)
+}
+
+fn average_similarity_to_anchor_set(
+    record: &SampleRecord,
+    anchors: &[ScoredSeedSampleRecord],
+) -> f64 {
+    if anchors.is_empty() {
         return 0.0;
     }
 
     let record_text = build_record_text(record);
-    low_score_anchors
+    anchors
         .iter()
         .map(|anchor| cosine_similarity(&record_text, &build_record_text(&anchor.record)) * 100.0)
         .sum::<f64>()
-        / low_score_anchors.len() as f64
+        / anchors.len() as f64
+}
+
+fn should_propagate_from_anchor(
+    primary_similarity: f64,
+    secondary_similarity: f64,
+    anchor_exists: bool,
+) -> bool {
+    const MIN_ANCHOR_SIMILARITY: f64 = 55.0;
+    const MIN_SIMILARITY_GAP: f64 = 8.0;
+
+    anchor_exists
+        && primary_similarity >= MIN_ANCHOR_SIMILARITY
+        && primary_similarity >= secondary_similarity + MIN_SIMILARITY_GAP
 }
 
 fn guixu_hub_listing_id(result: &SearchResult) -> Option<String> {
@@ -812,7 +979,11 @@ impl GuixuHubSampleDownloader {
 fn build_guixu_sample_extract_root(base: &Path, listing_id: &str) -> PathBuf {
     let mut hasher = DefaultHasher::new();
     listing_id.hash(&mut hasher);
-    base.join(format!("{}-{:016x}", sanitize_path_component(listing_id), hasher.finish()))
+    base.join(format!(
+        "{}-{:016x}",
+        sanitize_path_component(listing_id),
+        hasher.finish()
+    ))
 }
 
 fn sanitize_path_component(input: &str) -> String {
@@ -855,7 +1026,10 @@ fn parse_guixu_hub_sample_archive(
             continue;
         }
         let name = file.name().to_string();
-        let Some(file_name) = Path::new(&name).file_name().and_then(|value| value.to_str()) else {
+        let Some(file_name) = Path::new(&name)
+            .file_name()
+            .and_then(|value| value.to_str())
+        else {
             continue;
         };
         let lower_name = file_name.to_ascii_lowercase();
@@ -997,7 +1171,10 @@ fn parse_guixu_hub_sample_blob(
             .with_context(|| format!("write sample image {}", image_path.display()))?;
         SampleRecord {
             id: guessed_name.to_string(),
-            content: format!("image sample {} from Guixu Hub listing {}", guessed_name, listing_id),
+            content: format!(
+                "image sample {} from Guixu Hub listing {}",
+                guessed_name, listing_id
+            ),
             metadata: serde_json::json!({
                 "listing_id": listing_id,
                 "kind": "image",
@@ -1026,7 +1203,9 @@ fn parse_guixu_hub_sample_blob(
     Ok(DownloadedSample {
         sampled_rows: 1,
         sampled_bytes: blob_bytes.len() as u64,
-        summary: Some(format!("downloaded direct Guixu Hub sample blob for listing {listing_id}")),
+        summary: Some(format!(
+            "downloaded direct Guixu Hub sample blob for listing {listing_id}"
+        )),
         records: vec![sample_record],
     })
 }
@@ -1122,7 +1301,9 @@ fn summarize_sample_entry(path: &str, bytes: &[u8], max_text_chars: usize) -> St
                 format!("xml labels: {}", labels.join(" "))
             }
         }
-        "json" | "jsonl" | "csv" | "tsv" | "txt" => text.lines().take(8).collect::<Vec<_>>().join(" "),
+        "json" | "jsonl" | "csv" | "tsv" | "txt" => {
+            text.lines().take(8).collect::<Vec<_>>().join(" ")
+        }
         "md" => text.lines().take(12).collect::<Vec<_>>().join(" "),
         _ => text.lines().take(8).collect::<Vec<_>>().join(" "),
     };
@@ -1987,7 +2168,10 @@ fn parse_numeric_text(text: &str) -> Option<f64> {
     trimmed.parse::<f64>().ok().or_else(|| {
         trimmed
             .split(|character: char| {
-                !(character.is_ascii_digit() || character == '.' || character == '-' || character == '+')
+                !(character.is_ascii_digit()
+                    || character == '.'
+                    || character == '-'
+                    || character == '+')
             })
             .find(|token| token.chars().any(|character| character.is_ascii_digit()))
             .and_then(|token| token.parse::<f64>().ok())

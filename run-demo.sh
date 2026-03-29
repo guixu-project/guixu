@@ -4,6 +4,14 @@ cd "$(dirname "$0")"
 
 PORT="${1:-3927}"
 
+# Load local demo settings if present (for API keys such as DEEPSEEK_API_KEY).
+if [ -f "local/settings.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "local/settings.env"
+  set +a
+fi
+
 # Ensure cargo/rustc shims from rustup are visible in this shell.
 ensure_rust_env() {
   if [ -f "$HOME/.cargo/env" ]; then
@@ -139,7 +147,9 @@ setup_cargo_mirror
 install_deps
 
 # Build
-if [ ! -f target/release/data-node ] || [ "$(find crates -name '*.rs' -newer target/release/data-node 2>/dev/null | head -1)" ]; then
+if [ ! -f target/release/data-node ] \
+  || [ "$(find crates -name '*.rs' -newer target/release/data-node -print -quit 2>/dev/null)" ] \
+  || [ "$(find demo-ui -type f -newer target/release/data-node -print -quit 2>/dev/null)" ]; then
   echo "Building..."
   cargo_cmd build --release
 fi

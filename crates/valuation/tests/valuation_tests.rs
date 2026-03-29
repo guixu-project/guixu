@@ -399,12 +399,7 @@ mod paid_evaluator_tests {
         ];
 
         let report = eval
-            .select_portfolio(
-                &candidates,
-                &PortfolioConstraints {
-                    max_budget: 0.70,
-                },
-            )
+            .select_portfolio(&candidates, &PortfolioConstraints { max_budget: 0.70 })
             .await
             .unwrap();
 
@@ -429,10 +424,16 @@ mod paid_evaluator_tests {
         let no_free: &[(&DatasetMetadata, &QualityScore)] = &[];
 
         let high_value = make_metadata("high-value", &[("text", "utf8"), ("label", "int64")], 0.55);
-        let lower_value_a =
-            make_metadata("lower-value-a", &[("text", "utf8"), ("label", "int64")], 0.30);
-        let lower_value_b =
-            make_metadata("lower-value-b", &[("text", "utf8"), ("label", "int64")], 0.30);
+        let lower_value_a = make_metadata(
+            "lower-value-a",
+            &[("text", "utf8"), ("label", "int64")],
+            0.30,
+        );
+        let lower_value_b = make_metadata(
+            "lower-value-b",
+            &[("text", "utf8"), ("label", "int64")],
+            0.30,
+        );
         let quality_high = make_quality(90.0);
         let quality_a = make_quality(40.0);
         let quality_b = make_quality(30.0);
@@ -459,12 +460,7 @@ mod paid_evaluator_tests {
         ];
 
         let report = eval
-            .select_portfolio(
-                &candidates,
-                &PortfolioConstraints {
-                    max_budget: 0.60,
-                },
-            )
+            .select_portfolio(&candidates, &PortfolioConstraints { max_budget: 0.60 })
             .await
             .unwrap();
 

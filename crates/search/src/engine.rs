@@ -1,14 +1,20 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use data_attestation::{fetch_buyer_reviews, summarize_reviews, BaseChainClient, ChainConfig};
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::DatasetMetadata;
-use data_core::types::{DataType, SearchResult};
+use data_core::types::{DataSource, DataType, SearchResult};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
 use crate::adapters::ExternalAdapter;
-use crate::intent::{IntentParser, QueryProfile};
+use crate::intent::{load_setting_env_value, IntentParser, IntentParserConfig, QueryProfile};
 use crate::vector_index::VectorIndex;
+
+pub const ON_CHAIN_SCORE_NEUTRAL: f64 = 50.0;
+pub const ON_CHAIN_COARSE_ADJUST_WEIGHT: f64 = 0.10;
+const ON_CHAIN_TRADE_SATURATION: u64 = 50;
+const ON_CHAIN_SENTIMENT_SAMPLE_LIMIT: usize = 20;
 
 /// Search filters that can be applied to results.
 #[derive(Debug, Clone, Default)]
@@ -32,6 +38,25 @@ pub struct SearchEngine {
     vector_index: VectorIndex,
     intent_parser: IntentParser,
     adapters: Vec<Box<dyn ExternalAdapter>>,
+}
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    let parts = error
+        .chain()
+        .map(|cause| cause.to_string())
+        .filter(|message| !message.trim().is_empty())
+        .fold(Vec::<String>::new(), |mut acc, message| {
+            if acc.last() != Some(&message) {
+                acc.push(message);
+            }
+            acc
+        });
+
+    if parts.is_empty() {
+        "unknown sample evaluation error".into()
+    } else {
+        parts.join(" | caused by: ")
+    }
 }
 
 impl SearchEngine {
@@ -137,11 +162,7 @@ impl SearchEngine {
             });
         }
 
-        let pre_intent_filtered = all.clone();
         apply_intent_hard_filters(&mut all, profile, &local_metadata_by_cid);
-        if all.is_empty() {
-            all = pre_intent_filtered;
-        }
 
         // Deduplicate by CID
         let mut seen = HashSet::new();
@@ -273,12 +294,24 @@ impl SearchEngine {
             let scale_score = compute_scale_score(config, &ranked.result, metadata.as_ref());
             let balance_score = compute_balance_score(task, &ranked.result, metadata.as_ref());
             let metadata_quality = compute_metadata_quality(&ranked.result, metadata.as_ref());
+            let on_chain_score = match compute_on_chain_score(&ranked.result).await {
+                Ok(score) => score,
+                Err(error) => {
+                    warn!(
+                        cid = %ranked.result.cid.0,
+                        error = %error,
+                        "on-chain scoring failed; falling back to neutral"
+                    );
+                    ON_CHAIN_SCORE_NEUTRAL
+                }
+            };
             let coarse_score = compose_coarse_score(
                 task_similarity,
                 schema_fit,
                 scale_score,
                 balance_score,
                 metadata_quality,
+                on_chain_score,
             );
 
             candidates.push(CandidateState {
@@ -292,9 +325,11 @@ impl SearchEngine {
                     scale_score,
                     balance_score,
                     metadata_quality,
+                    on_chain_score,
                     metadata_resolved: metadata.is_some(),
                     sample_plan: None,
                     proxy_utility: None,
+                    sample_failure_reason: None,
                     explanation: String::new(),
                 },
             });
@@ -308,11 +343,20 @@ impl SearchEngine {
         });
 
         let shortlist = config.coarse_top_k.min(candidates.len());
+        if sample_evaluator.is_some() {
+            for candidate in candidates.iter_mut().skip(shortlist) {
+                candidate.valuation.sample_failure_reason = Some(format!(
+                    "sample evaluation skipped: outside coarse top-{shortlist} shortlist"
+                ));
+            }
+        }
         for candidate in candidates.iter_mut().take(shortlist) {
             let Some(sample_evaluator) = sample_evaluator else {
                 break;
             };
             let Some(metadata) = candidate.metadata.as_ref() else {
+                candidate.valuation.sample_failure_reason =
+                    Some("sample evaluation skipped: resolved metadata unavailable".into());
                 errors.push(format!(
                     "sample evaluation skipped for {}: metadata unavailable",
                     candidate.valuation.result.cid.0
@@ -321,7 +365,17 @@ impl SearchEngine {
             };
 
             let plan = build_sample_plan(metadata, config);
-            if plan.estimated_rows == 0 || plan.sample_fraction == 0.0 {
+            if plan.sample_fraction == 0.0
+                || (plan.estimated_rows == 0
+                    && !supports_sampling_without_shape_estimate(&candidate.valuation.result))
+            {
+                candidate.valuation.sample_failure_reason = Some(if plan.sample_fraction == 0.0 {
+                    "sample evaluation skipped: sampling plan resolved to zero sample fraction"
+                        .into()
+                } else {
+                    "sample evaluation skipped: dataset shape unavailable for sample download"
+                        .into()
+                });
                 continue;
             }
 
@@ -330,23 +384,34 @@ impl SearchEngine {
                 .evaluate_sample(&candidate.valuation.result, metadata, task, &plan)
                 .await
             {
-                Ok(Some(proxy_utility)) => {
-                    candidate.valuation.final_score = match proxy_utility.apply_mode {
-                        ProxyUtilityApplyMode::Blend => blend_scores(
-                            candidate.valuation.coarse_score,
-                            proxy_utility.utility_score,
-                            config.metadata_weight,
-                            config.utility_weight,
-                        ),
-                        ProxyUtilityApplyMode::OverrideFinal => proxy_utility.utility_score,
-                    };
-                    candidate.valuation.proxy_utility = Some(proxy_utility);
+                Ok(outcome) => {
+                    if let Some(proxy_utility) = outcome.proxy_utility {
+                        candidate.valuation.sample_failure_reason = None;
+                        candidate.valuation.final_score = match proxy_utility.apply_mode {
+                            ProxyUtilityApplyMode::Blend => blend_scores(
+                                candidate.valuation.coarse_score,
+                                proxy_utility.utility_score,
+                                config.metadata_weight,
+                                config.utility_weight,
+                            ),
+                            ProxyUtilityApplyMode::OverrideFinal => proxy_utility.utility_score,
+                        };
+                        candidate.valuation.proxy_utility = Some(proxy_utility);
+                    } else {
+                        candidate.valuation.sample_failure_reason =
+                            Some(outcome.no_score_reason.unwrap_or_else(|| {
+                                "sample evaluation returned no usable score".into()
+                            }));
+                    }
                 }
-                Ok(None) => {}
-                Err(error) => errors.push(format!(
-                    "sample evaluation failed for {}: {error}",
-                    candidate.valuation.result.cid.0
-                )),
+                Err(error) => {
+                    let formatted = format_error_chain(&error);
+                    candidate.valuation.sample_failure_reason = Some(formatted.clone());
+                    errors.push(format!(
+                        "sample evaluation failed for {}: {}",
+                        candidate.valuation.result.cid.0, formatted
+                    ));
+                }
             }
         }
 
@@ -547,6 +612,29 @@ pub struct ProxyUtilityReport {
     pub notes: Option<String>,
 }
 
+/// Outcome of a sample-evaluation attempt, including an optional no-score reason.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SampleEvaluationOutcome {
+    pub proxy_utility: Option<ProxyUtilityReport>,
+    pub no_score_reason: Option<String>,
+}
+
+impl SampleEvaluationOutcome {
+    pub fn scored(proxy_utility: ProxyUtilityReport) -> Self {
+        Self {
+            proxy_utility: Some(proxy_utility),
+            no_score_reason: None,
+        }
+    }
+
+    pub fn no_score(reason: impl Into<String>) -> Self {
+        Self {
+            proxy_utility: None,
+            no_score_reason: Some(reason.into()),
+        }
+    }
+}
+
 /// Full valuation record for a candidate dataset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetValuation {
@@ -558,10 +646,34 @@ pub struct DatasetValuation {
     pub scale_score: f64,
     pub balance_score: f64,
     pub metadata_quality: f64,
+    pub on_chain_score: f64,
     pub metadata_resolved: bool,
     pub sample_plan: Option<SamplePlan>,
     pub proxy_utility: Option<ProxyUtilityReport>,
+    pub sample_failure_reason: Option<String>,
     pub explanation: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OnChainScoreInputs {
+    trade_count: u64,
+    avg_rating: f64,
+    positive_reviews: u64,
+    neutral_reviews: u64,
+    negative_reviews: u64,
+}
+
+impl OnChainScoreInputs {
+    fn review_count(&self) -> u64 {
+        self.positive_reviews + self.neutral_reviews + self.negative_reviews
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewSentiment {
+    Positive,
+    Neutral,
+    Negative,
 }
 
 /// End-to-end output for search + valuation + best-dataset selection.
@@ -588,7 +700,7 @@ pub trait SampleEvaluator: Send + Sync {
         metadata: &DatasetMetadata,
         task: &DatasetSelectionTask,
         plan: &SamplePlan,
-    ) -> Result<Option<ProxyUtilityReport>>;
+    ) -> Result<SampleEvaluationOutcome>;
 }
 
 /// Backward-compatible alias for the structured query profile type.
@@ -690,19 +802,10 @@ fn profile_with_task_type(mut profile: QueryProfile, task_type: Option<&str>) ->
 fn apply_intent_hard_filters(
     results: &mut Vec<SearchResult>,
     profile: &QueryProfile,
-    metadata_by_cid: &HashMap<&str, &DatasetMetadata>,
+    _metadata_by_cid: &HashMap<&str, &DatasetMetadata>,
 ) {
     if let Some(required_type) = required_data_type(profile) {
         results.retain(|result| result.data_type == required_type);
-    }
-
-    if let Some(required_resolution) = required_min_resolution(profile) {
-        results.retain(|result| {
-            let metadata = metadata_by_cid.get(result.cid.0.as_str()).copied();
-            candidate_resolution(result, metadata)
-                .map(|resolution| resolution.satisfies(&required_resolution))
-                .unwrap_or(false)
-        });
     }
 }
 
@@ -742,121 +845,351 @@ fn strict_task_data_type(task_type: Option<&str>) -> Option<data_core::types::Da
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ResolutionConstraint {
-    min_long_side: Option<u32>,
-    min_short_side: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SpatialResolution {
-    long_side: u32,
-    short_side: u32,
-}
-
-impl SpatialResolution {
-    fn from_dimensions(width: u32, height: u32) -> Option<Self> {
-        let long_side = width.max(height);
-        let short_side = width.min(height);
-        if long_side == 0 || short_side == 0 {
-            None
-        } else {
-            Some(Self {
-                long_side,
-                short_side,
-            })
-        }
-    }
-
-    fn from_scan_height(height: u32) -> Option<Self> {
-        if height == 0 {
-            None
-        } else {
-            Some(Self {
-                long_side: height,
-                short_side: height,
-            })
-        }
-    }
-
-    fn satisfies(&self, constraint: &ResolutionConstraint) -> bool {
-        self.short_side >= constraint.min_short_side
-            && constraint
-                .min_long_side
-                .map(|min_long_side| self.long_side >= min_long_side)
-                .unwrap_or(true)
-    }
-}
-
-fn required_min_resolution(profile: &QueryProfile) -> Option<ResolutionConstraint> {
-    profile
-        .data_standard
-        .metadata_fields
-        .iter()
-        .find(|field| field.name.eq_ignore_ascii_case("resolution"))
-        .and_then(|field| parse_resolution_constraint(&field.value))
-}
-
-fn parse_resolution_constraint(value: &str) -> Option<ResolutionConstraint> {
-    let value = value.trim().to_lowercase();
-    if value.is_empty() {
-        return None;
-    }
-
-    if let Some((left, right)) = split_resolution_dims(&value) {
-        let width = left.parse::<u32>().ok()?;
-        let height = right.parse::<u32>().ok()?;
-        let long_side = width.max(height);
-        let short_side = width.min(height);
-        if long_side == 0 || short_side == 0 {
-            return None;
-        }
-        return Some(ResolutionConstraint {
-            min_long_side: Some(long_side),
-            min_short_side: short_side,
-        });
-    }
-
-    let digits = value
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>();
-    if value.ends_with('p') {
-        let short_side = digits.parse::<u32>().ok()?;
-        if short_side == 0 {
-            return None;
-        }
-        return Some(ResolutionConstraint {
-            min_long_side: None,
-            min_short_side: short_side,
-        });
-    }
-
-    None
-}
-
-fn split_resolution_dims(value: &str) -> Option<(&str, &str)> {
-    for separator in ['x', 'X', '*'] {
-        if let Some((left, right)) = value.split_once(separator) {
-            return Some((left.trim(), right.trim()));
-        }
-    }
-    None
-}
-
 fn compose_coarse_score(
     task_similarity: f64,
     schema_fit: f64,
     scale_score: f64,
     balance_score: f64,
     metadata_quality: f64,
+    on_chain_score: f64,
 ) -> f64 {
     (0.55 * task_similarity
         + 0.15 * schema_fit
         + 0.15 * scale_score
         + 0.10 * balance_score
-        + 0.05 * metadata_quality)
+        + 0.05 * metadata_quality
+        + ON_CHAIN_COARSE_ADJUST_WEIGHT * (on_chain_score - ON_CHAIN_SCORE_NEUTRAL))
         .clamp(0.0, 100.0)
+}
+
+async fn compute_on_chain_score(result: &SearchResult) -> Result<f64> {
+    if result.source != DataSource::GuixuHub {
+        return Ok(ON_CHAIN_SCORE_NEUTRAL);
+    }
+
+    let trade_count = result
+        .market
+        .as_ref()
+        .map(|market| market.trade_count)
+        .unwrap_or(0);
+    let mut inputs = OnChainScoreInputs {
+        trade_count,
+        ..Default::default()
+    };
+
+    let Some(listing_id) = guixu_listing_id(result) else {
+        return Ok(score_on_chain_signal(&inputs));
+    };
+
+    match fetch_guixu_review_inputs(listing_id).await {
+        Ok(review_inputs) => {
+            inputs.avg_rating = review_inputs.avg_rating;
+            inputs.positive_reviews = review_inputs.positive_reviews;
+            inputs.neutral_reviews = review_inputs.neutral_reviews;
+            inputs.negative_reviews = review_inputs.negative_reviews;
+        }
+        Err(error) => {
+            warn!(
+                cid = %result.cid.0,
+                listing_id,
+                error = %error,
+                "guixu review fetch failed; using trade-only on-chain signal"
+            );
+        }
+    }
+
+    Ok(score_on_chain_signal(&inputs))
+}
+
+fn guixu_listing_id(result: &SearchResult) -> Option<&str> {
+    result
+        .cid
+        .0
+        .strip_prefix("guixu-hub:")
+        .or_else(|| result.provider.0.strip_prefix("guixu:hub:"))
+}
+
+async fn fetch_guixu_review_inputs(listing_id: &str) -> Result<OnChainScoreInputs> {
+    let Some(contract_address) = env_or_setting("GUIXU_BASE_CONTRACT_ADDRESS")
+        .or_else(|| env_or_setting("GUIXU_CONTRACT_ADDRESS"))
+    else {
+        return Ok(OnChainScoreInputs::default());
+    };
+
+    let network = env_or_setting("GUIXU_BASE_NETWORK").unwrap_or_else(|| "mainnet".to_string());
+    let config = match network.trim().to_lowercase().as_str() {
+        "mainnet" | "base" => ChainConfig::base_mainnet(&contract_address),
+        "sepolia" | "base-sepolia" => ChainConfig::base_sepolia(&contract_address),
+        other => {
+            warn!(
+                network = other,
+                "unsupported GUIXU_BASE_NETWORK; falling back to Base mainnet"
+            );
+            ChainConfig::base_mainnet(&contract_address)
+        }
+    };
+
+    let client = BaseChainClient::new(config);
+    let reviews = fetch_buyer_reviews(&client, listing_id)
+        .await
+        .with_context(|| format!("fetch buyer reviews for listing {listing_id}"))?;
+
+    if reviews.is_empty() {
+        return Ok(OnChainScoreInputs::default());
+    }
+
+    let summary = summarize_reviews(listing_id, &reviews);
+    let classified = classify_review_sentiments(&reviews).await;
+    Ok(OnChainScoreInputs {
+        trade_count: 0,
+        avg_rating: summary.avg_rating,
+        positive_reviews: classified.positive_reviews,
+        neutral_reviews: classified.neutral_reviews,
+        negative_reviews: classified.negative_reviews,
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+struct ClassifiedReviewCounts {
+    positive_reviews: u64,
+    neutral_reviews: u64,
+    negative_reviews: u64,
+}
+
+impl ClassifiedReviewCounts {
+    fn push(&mut self, sentiment: ReviewSentiment) {
+        match sentiment {
+            ReviewSentiment::Positive => self.positive_reviews += 1,
+            ReviewSentiment::Neutral => self.neutral_reviews += 1,
+            ReviewSentiment::Negative => self.negative_reviews += 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CommentClassificationItem {
+    id: usize,
+    rating: u8,
+    comment: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepSeekSentimentPayload {
+    items: Vec<DeepSeekSentimentItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepSeekSentimentItem {
+    id: usize,
+    sentiment: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepSeekChatResponse {
+    choices: Vec<DeepSeekChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepSeekChoice {
+    message: DeepSeekChoiceMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepSeekChoiceMessage {
+    content: Option<String>,
+}
+
+async fn classify_review_sentiments(
+    reviews: &[data_attestation::BuyerReview],
+) -> ClassifiedReviewCounts {
+    let mut fallback_counts = ClassifiedReviewCounts::default();
+    let mut comment_items = Vec::new();
+    let mut fallback_by_id = HashMap::new();
+
+    for (id, review) in reviews.iter().enumerate() {
+        let fallback = sentiment_from_rating(review.rating);
+        let comment = review.comment.trim();
+        if comment.is_empty() || comment_items.len() >= ON_CHAIN_SENTIMENT_SAMPLE_LIMIT {
+            fallback_counts.push(fallback);
+            continue;
+        }
+
+        fallback_by_id.insert(id, fallback);
+        comment_items.push(CommentClassificationItem {
+            id,
+            rating: review.rating,
+            comment: comment.to_string(),
+        });
+    }
+
+    if comment_items.is_empty() {
+        return fallback_counts;
+    }
+
+    match classify_comment_sentiments_with_deepseek(&comment_items).await {
+        Ok(classified) => {
+            for item in comment_items {
+                let sentiment = classified
+                    .get(&item.id)
+                    .copied()
+                    .unwrap_or_else(|| fallback_by_id[&item.id]);
+                fallback_counts.push(sentiment);
+            }
+            fallback_counts
+        }
+        Err(error) => {
+            warn!(error = %error, "DeepSeek review sentiment classification failed; falling back to ratings");
+            for item in comment_items {
+                fallback_counts.push(fallback_by_id[&item.id]);
+            }
+            fallback_counts
+        }
+    }
+}
+
+async fn classify_comment_sentiments_with_deepseek(
+    items: &[CommentClassificationItem],
+) -> Result<HashMap<usize, ReviewSentiment>> {
+    let config = IntentParserConfig::from_env();
+    let api_key = config
+        .api_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("missing DEEPSEEK_API_KEY"))?;
+    let endpoint = format!("{}/chat/completions", config.api_base.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(config.timeout)
+        .user_agent("guixu/0.1")
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let items_json =
+        serde_json::to_string(items).context("serialize review comments for DeepSeek request")?;
+    let prompt = format!(
+        "Classify each buyer review comment about a dataset purchase. Return JSON only with this exact schema: {{\"items\":[{{\"id\":0,\"sentiment\":\"positive|neutral|negative\"}}]}}. Use the comment as the primary signal and the numeric rating only as a weak hint. Mark complaints about poor quality, missing data, scams, bad seller behavior, or mismatched content as negative. Mark praise, satisfaction, successful delivery, or recommendation as positive. Mark factual, mixed, or unclear comments as neutral.\n\nReviews:\n{items_json}"
+    );
+    let response = client
+        .post(endpoint)
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": config.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You classify buyer review comments for dataset marketplace transactions and must return strict JSON."
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "response_format": { "type": "json_object" }
+        }))
+        .send()
+        .await
+        .context("send DeepSeek on-chain review classification request")?
+        .error_for_status()
+        .context("DeepSeek on-chain review classification returned error status")?
+        .json::<DeepSeekChatResponse>()
+        .await
+        .context("parse DeepSeek on-chain review classification response")?;
+
+    let content = response
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.message.content)
+        .map(|content| content.trim().to_string())
+        .filter(|content| !content.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("DeepSeek returned an empty on-chain review payload"))?;
+    let payload: DeepSeekSentimentPayload = serde_json::from_str(&content)
+        .with_context(|| format!("parse DeepSeek on-chain review JSON: {content}"))?;
+
+    Ok(payload
+        .items
+        .into_iter()
+        .filter_map(|item| {
+            parse_review_sentiment(&item.sentiment).map(|sentiment| (item.id, sentiment))
+        })
+        .collect())
+}
+
+fn sentiment_from_rating(rating: u8) -> ReviewSentiment {
+    match rating {
+        4..=5 => ReviewSentiment::Positive,
+        0..=2 => ReviewSentiment::Negative,
+        _ => ReviewSentiment::Neutral,
+    }
+}
+
+fn parse_review_sentiment(raw: &str) -> Option<ReviewSentiment> {
+    let normalized = raw.trim().to_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.contains("positive") || normalized.contains("好评") || normalized.contains("满意")
+    {
+        Some(ReviewSentiment::Positive)
+    } else if normalized.contains("negative")
+        || normalized.contains("差评")
+        || normalized.contains("不满")
+    {
+        Some(ReviewSentiment::Negative)
+    } else if normalized.contains("neutral") || normalized.contains("中性") {
+        Some(ReviewSentiment::Neutral)
+    } else {
+        None
+    }
+}
+
+fn score_on_chain_signal(inputs: &OnChainScoreInputs) -> f64 {
+    let review_count = inputs.review_count();
+    if inputs.trade_count == 0 && review_count == 0 {
+        return ON_CHAIN_SCORE_NEUTRAL;
+    }
+
+    let trade_score = if inputs.trade_count == 0 {
+        ON_CHAIN_SCORE_NEUTRAL
+    } else {
+        let activity = saturating_log_score(inputs.trade_count, ON_CHAIN_TRADE_SATURATION) / 100.0;
+        (ON_CHAIN_SCORE_NEUTRAL + 35.0 * activity).clamp(ON_CHAIN_SCORE_NEUTRAL, 85.0)
+    };
+
+    let sentiment_score = if review_count == 0 {
+        ON_CHAIN_SCORE_NEUTRAL
+    } else {
+        let sentiment_bias =
+            (inputs.positive_reviews as f64 - inputs.negative_reviews as f64) / review_count as f64;
+        let rating_bias = if inputs.avg_rating > 0.0 {
+            ((inputs.avg_rating - 3.0) / 2.0).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+        let confidence = 1.0 - (1.0 / (1.0 + review_count as f64 * 0.4));
+        let base = (ON_CHAIN_SCORE_NEUTRAL + 45.0 * (0.7 * sentiment_bias + 0.3 * rating_bias))
+            .clamp(0.0, 100.0);
+        (ON_CHAIN_SCORE_NEUTRAL * (1.0 - confidence) + base * confidence).clamp(0.0, 100.0)
+    };
+
+    match (inputs.trade_count > 0, review_count > 0) {
+        (true, true) => (0.30 * trade_score + 0.70 * sentiment_score).clamp(0.0, 100.0),
+        (true, false) => trade_score,
+        (false, true) => sentiment_score,
+        (false, false) => ON_CHAIN_SCORE_NEUTRAL,
+    }
+}
+
+fn env_or_setting(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            load_setting_env_value(key)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
 }
 
 fn blend_scores(
@@ -1038,64 +1371,6 @@ fn compute_metadata_quality(result: &SearchResult, metadata: Option<&DatasetMeta
         .clamp(0.0, 100.0)
 }
 
-fn candidate_resolution(
-    result: &SearchResult,
-    metadata: Option<&DatasetMetadata>,
-) -> Option<SpatialResolution> {
-    metadata
-        .and_then(|metadata| {
-            metadata
-                .video_meta
-                .as_ref()
-                .and_then(|video_meta| {
-                    SpatialResolution::from_dimensions(video_meta.width, video_meta.height)
-                })
-                .or_else(|| parse_resolution_from_text(&build_dataset_text(result, Some(metadata))))
-        })
-        .or_else(|| parse_resolution_from_text(&build_dataset_text(result, None)))
-}
-
-fn parse_resolution_from_text(text: &str) -> Option<SpatialResolution> {
-    let normalized = text.to_lowercase();
-    let mut best = None;
-
-    for token in normalized
-        .split(|character: char| {
-            !(character.is_ascii_alphanumeric() || matches!(character, 'x' | '*'))
-        })
-        .filter(|token| !token.is_empty())
-    {
-        let candidate = if let Some((left, right)) = split_resolution_dims(token) {
-            match (left.parse::<u32>().ok(), right.parse::<u32>().ok()) {
-                (Some(width), Some(height)) => SpatialResolution::from_dimensions(width, height),
-                _ => None,
-            }
-        } else if let Some(height) = token
-            .strip_suffix('p')
-            .and_then(|value| value.parse::<u32>().ok())
-        {
-            SpatialResolution::from_scan_height(height)
-        } else {
-            None
-        };
-
-        if let Some(candidate) = candidate {
-            if best
-                .map(|current: SpatialResolution| {
-                    candidate.long_side > current.long_side
-                        || (candidate.long_side == current.long_side
-                            && candidate.short_side > current.short_side)
-                })
-                .unwrap_or(true)
-            {
-                best = Some(candidate);
-            }
-        }
-    }
-
-    best
-}
-
 fn build_sample_plan(metadata: &DatasetMetadata, config: &DatasetValuationConfig) -> SamplePlan {
     if config.coarse_top_k == 0
         || config.sample_fraction <= 0.0
@@ -1153,6 +1428,10 @@ fn build_sample_plan(metadata: &DatasetMetadata, config: &DatasetValuationConfig
     }
 }
 
+fn supports_sampling_without_shape_estimate(result: &SearchResult) -> bool {
+    matches!(result.source, DataSource::GuixuHub)
+}
+
 fn build_valuation_explanation(valuation: &DatasetValuation) -> String {
     let mut parts = vec![
         format!("coarse={:.1}", valuation.coarse_score),
@@ -1161,6 +1440,7 @@ fn build_valuation_explanation(valuation: &DatasetValuation) -> String {
         format!("scale={:.1}", valuation.scale_score),
         format!("balance={:.1}", valuation.balance_score),
         format!("meta={:.1}", valuation.metadata_quality),
+        format!("onchain={:.1}", valuation.on_chain_score),
     ];
 
     if let Some(plan) = &valuation.sample_plan {
@@ -1180,6 +1460,9 @@ fn build_valuation_explanation(valuation: &DatasetValuation) -> String {
             proxy_utility.proxy_metric_value,
             proxy_utility.utility_score
         ));
+    }
+    if let Some(reason) = &valuation.sample_failure_reason {
+        parts.push(format!("sample_reason={reason}"));
     }
 
     parts.push(format!("final={:.1}", valuation.final_score));
@@ -1421,4 +1704,66 @@ fn market_signal_score(result: &SearchResult) -> f64 {
     let reviews = (market.review_count as f64 + 1.0).ln();
     let trades = (market.trade_count as f64 + 1.0).ln();
     ((downloads * 20.0) + (reviews * 25.0) + (trades * 35.0)).clamp(0.0, 100.0)
+}
+
+#[cfg(test)]
+mod engine_unit_tests {
+    use super::{
+        compose_coarse_score, score_on_chain_signal, OnChainScoreInputs,
+        ON_CHAIN_COARSE_ADJUST_WEIGHT, ON_CHAIN_SCORE_NEUTRAL,
+    };
+
+    #[test]
+    fn coarse_score_keeps_neutral_on_chain_signal_aligned() {
+        let baseline = 0.55 * 82.0 + 0.15 * 74.0 + 0.15 * 68.0 + 0.10 * 57.0 + 0.05 * 91.0;
+        let coarse = compose_coarse_score(82.0, 74.0, 68.0, 57.0, 91.0, ON_CHAIN_SCORE_NEUTRAL);
+        assert!((coarse - baseline).abs() < 1e-6);
+    }
+
+    #[test]
+    fn coarse_score_applies_centered_on_chain_adjustment() {
+        let neutral = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, ON_CHAIN_SCORE_NEUTRAL);
+        let boosted = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, 90.0);
+        let penalized = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, 10.0);
+
+        assert!((boosted - neutral - ON_CHAIN_COARSE_ADJUST_WEIGHT * 40.0).abs() < 1e-6);
+        assert!((neutral - penalized - ON_CHAIN_COARSE_ADJUST_WEIGHT * 40.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn on_chain_signal_is_neutral_without_trade_or_reviews() {
+        assert_eq!(
+            score_on_chain_signal(&OnChainScoreInputs::default()),
+            ON_CHAIN_SCORE_NEUTRAL
+        );
+    }
+
+    #[test]
+    fn on_chain_signal_rewards_positive_trade_activity() {
+        let score = score_on_chain_signal(&OnChainScoreInputs {
+            trade_count: 36,
+            avg_rating: 4.8,
+            positive_reviews: 8,
+            neutral_reviews: 1,
+            negative_reviews: 0,
+        });
+
+        assert!(
+            score > 70.0,
+            "expected strong positive on-chain score, got {score}"
+        );
+    }
+
+    #[test]
+    fn on_chain_signal_penalizes_negative_reviews() {
+        let score = score_on_chain_signal(&OnChainScoreInputs {
+            trade_count: 28,
+            avg_rating: 1.4,
+            positive_reviews: 1,
+            neutral_reviews: 0,
+            negative_reviews: 9,
+        });
+
+        assert!(score < 40.0, "expected low on-chain score, got {score}");
+    }
 }

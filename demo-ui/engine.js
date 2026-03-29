@@ -59,6 +59,11 @@ function randomHash() {
 
 function shortHash(h) { return h.slice(0, 10) + '...' + h.slice(-6); }
 
+function parseNumber(value, fallback = 0) {
+  const num = typeof value === 'number' ? value : parseFloat(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
 function prettySourceName(source) {
   const map = {
     p2p: 'P2P',
@@ -171,6 +176,45 @@ function estimateExternalTCV(dataset, taskDesc, taskType, requiredCols) {
   };
 }
 
+function normalizeTcvReport(tcv) {
+  return {
+    schema_fit: parseNumber(tcv?.schema_fit),
+    temporal_fit: parseNumber(tcv?.temporal_fit),
+    info_gain: parseNumber(tcv?.information_gain ?? tcv?.info_gain),
+    quality: parseNumber(tcv?.quality_score ?? tcv?.quality),
+    community: parseNumber(tcv?.community_signal ?? tcv?.community),
+    risk: parseNumber(tcv?.risk_penalty ?? tcv?.risk),
+  };
+}
+
+function normalizeFinalBreakdown(breakdown) {
+  if (!breakdown || !Array.isArray(breakdown.components)) return null;
+  const proxyUtility = breakdown.proxy_utility
+    ? {
+        utilityScore: parseNumber(breakdown.proxy_utility.utility_score),
+        applyMode: breakdown.proxy_utility.apply_mode || '',
+        proxyMetricName: breakdown.proxy_utility.proxy_metric_name || '',
+        proxyMetricValue: parseNumber(breakdown.proxy_utility.proxy_metric_value),
+        sampledRows: parseNumber(breakdown.proxy_utility.sampled_rows),
+        sampledBytes: parseNumber(breakdown.proxy_utility.sampled_bytes),
+        notes: breakdown.proxy_utility.notes || '',
+      }
+    : null;
+  return {
+    formula: breakdown.formula || '',
+    rawFinalScore: parseNumber(breakdown.raw_final_score),
+    coarseScore: parseNumber(breakdown.coarse_score),
+    hasSampleScore: Boolean(breakdown.has_sample_score),
+    components: breakdown.components.map(component => ({
+      id: component.id || 'component',
+      label: component.label || 'Component',
+      value: parseNumber(component.value),
+      contribution: parseNumber(component.contribution),
+    })),
+    proxyUtility,
+  };
+}
+
 class GuixuEngine {
   constructor() {
     this.mode = 'base-x402';
@@ -179,6 +223,7 @@ class GuixuEngine {
     this.datasets = [];
     this.selectedDataset = null;
     this.logs = [];
+    this.lastSearchContext = null;
   }
 
   getMode() { return MODES[this.mode]; }
@@ -214,14 +259,21 @@ class GuixuEngine {
       return json.result;
     } catch (e) {
       clearTimeout(timeout);
-      this._lastError = e.message || String(e);
+      this._lastError = e?.name === 'AbortError'
+        ? `request timed out after ${Math.round(timeoutMs / 1000)}s`
+        : (e.message || String(e));
       return null;
     }
   }
 
   async callTool(name, args) {
-    const BT_TOOLS = ['dataset_bt_download', 'dataset_bt_preview'];
-    const timeoutMs = BT_TOOLS.includes(name) ? 120000 : 30000;
+    const TOOL_TIMEOUTS = {
+      dataset_bt_download: 120000,
+      dataset_bt_preview: 120000,
+      task_pipeline: 180000,
+      dataset_purchase: 60000,
+    };
+    const timeoutMs = TOOL_TIMEOUTS[name] || 30000;
     const result = await this.rpc('tools/call', { name, arguments: args }, timeoutMs);
     if (result && result.content && result.content[0]) {
       try { return JSON.parse(result.content[0].text); } catch { return result.content[0].text; }
@@ -238,6 +290,7 @@ class GuixuEngine {
     this._lastError = null;
     const params = { query, filters, limit: 10 };
     if (taskType) params.task_type = taskType;
+    this.lastSearchContext = { query, taskType, sourceFilter, limit: params.limit };
     const data = await this.callTool('dataset_search', params);
 
     // Response is { results: [...], errors: [...] } or legacy array
@@ -298,9 +351,9 @@ class GuixuEngine {
       const breakdown = Object.entries(perSource).map(([s, n]) => `${s}:${n}`).join(', ');
       this.log('[S]', `${this.datasets.length} results from ${sources.length} sources (${breakdown})`);
 
-      // Log TCV-lite ranking
+      // Log search ranking
       if (this.datasets.length > 1 && this.datasets[0]._raw.rank_score) {
-        this.log('[R]', `Ranked by TCV-lite: #1 score=${this.datasets[0]._raw.rank_score}, #${this.datasets.length} score=${this.datasets[this.datasets.length-1]._raw.rank_score}`);
+        this.log('[R]', `Ranked by search score: #1=${this.datasets[0]._raw.rank_score}, #${this.datasets.length}=${this.datasets[this.datasets.length-1]._raw.rank_score}`);
       }
       if (!sourceFilter && sources.length === 1 && sources[0] === 'bittorrent') {
         this.log(
@@ -320,14 +373,138 @@ class GuixuEngine {
     return { datasets: [], sources: [] };
   }
 
+  buildDatasetFallback(candidate) {
+    const source = candidate.source ? String(candidate.source).toLowerCase().replace(/\s/g, '') : 'p2p';
+    const sizeBytes = candidate.schema?.size_bytes || 0;
+    return {
+      cid: candidate.cid,
+      title: candidate.title || 'Dataset',
+      description: candidate.description || '',
+      source,
+      sourceLabel: prettySourceName(source),
+      dataType: candidate.data_type || 'tabular',
+      schema: {
+        columns: Array.from({ length: candidate.schema?.columns || 0 }, (_, i) => `col_${i}`),
+        rows: candidate.schema?.rows || 0,
+        sizeBytes,
+        size: formatBytes(sizeBytes),
+      },
+      price: typeof candidate.price === 'object' ? candidate.price.amount : (candidate.price || 0),
+      rankScore: 0,
+      seeders: parseSeeders(candidate.description),
+      community: {
+        reviews: candidate.community_feedback?.total_reviews || 0,
+        avg_relevance: parseNumber(candidate.community_feedback?.avg_relevance),
+        positive_rate: parseNumber(candidate.community_feedback?.positive_rate),
+        negative_rate: parseNumber(candidate.community_feedback?.negative_rate),
+        task_signals: [],
+      },
+      tcv: null,
+      _raw: candidate,
+    };
+  }
+
+  async evaluateWithPipeline(taskDesc, taskType, effectiveRequiredCols) {
+    const searchContext = this.lastSearchContext || { query: taskDesc, taskType, sourceFilter: '', limit: 10 };
+    const filters = {};
+    if (searchContext.sourceFilter) filters.source = searchContext.sourceFilter;
+
+    const data = await this.callTool('task_pipeline', {
+      raw_query: searchContext.query,
+      task_type: taskType,
+      stop_after: 'dataset_evaluate',
+      search: {
+        limit: searchContext.limit || 10,
+        filters,
+      },
+      evaluate: {
+        top_k: Math.max(this.datasets.length, 1),
+        budget: 10,
+        required_columns: effectiveRequiredCols,
+      },
+    });
+
+    const pipelineErrors = Array.isArray(data?.errors) ? data.errors : [];
+    const candidates = Array.isArray(data?.evaluated_candidates) ? data.evaluated_candidates : [];
+    if (candidates.length === 0) {
+      if (this._lastError) {
+        this.log('[!]', `Sample pipeline request failed: ${this._lastError}`);
+      }
+      pipelineErrors.slice(0, 5).forEach(error => {
+        this.log('[!]', `Sample pipeline: ${error}`);
+      });
+      return null;
+    }
+
+    const datasetByCid = new Map(this.datasets.map(dataset => [dataset.cid, dataset]));
+    const results = candidates.map(candidate => {
+      const base = datasetByCid.get(candidate.cid) || this.buildDatasetFallback(candidate);
+      const tcvComps = normalizeTcvReport(candidate.tcv);
+      const tcvScore = parseNumber(candidate.tcv_score, computeTCV(tcvComps));
+      const finalScore = parseNumber(candidate.final_score, tcvScore);
+      const finalBreakdown = normalizeFinalBreakdown(candidate.final_score_breakdown);
+      const sampleScored = Boolean(
+        candidate.sample_scored
+          || finalBreakdown?.hasSampleScore
+          || finalBreakdown?.proxyUtility,
+      );
+      return {
+        ...base,
+        tcv: tcvComps,
+        tcvScore,
+        finalScore,
+        coarseScore: parseNumber(candidate.coarse_score, finalScore),
+        rawFinalScore: parseNumber(candidate.raw_final_score, finalScore),
+        sampleScored,
+        hasFinalValue: sampleScored,
+        finalBreakdown,
+        evaluationMode: candidate.evaluation_mode || 'selection_pipeline',
+        selectionExplanation: candidate.selection_explanation || '',
+        sampleFailureReason: candidate.sample_failure_reason || '',
+        pipelineErrors,
+        verdict: tcvVerdict(finalScore),
+      };
+    });
+
+    results.sort((left, right) => {
+      if (left.hasFinalValue !== right.hasFinalValue) {
+        return left.hasFinalValue ? -1 : 1;
+      }
+      return right.finalScore - left.finalScore;
+    });
+    results.forEach((result, index) => {
+      const prefix = index === 0 ? '[*]' : '[.]';
+      this.log(
+        prefix,
+        `${result.title}: final=${result.finalScore.toFixed(1)} (${result.verdict.text})`,
+      );
+      if (!result.sampleScored && result.sampleFailureReason) {
+        this.log('[i]', `${result.title}: sample not scored — ${result.sampleFailureReason}`);
+      }
+      this.addLedger('evaluate', `${result.title} > final ${result.finalScore.toFixed(1)}`);
+    });
+    pipelineErrors.slice(0, 5).forEach(error => {
+      this.log('[!]', `Sample pipeline: ${error}`);
+    });
+    this.selectedDataset = results[0];
+    this.log('[+]', `Best pick: ${results[0].title}`);
+    return results;
+  }
+
   // Step 3: Evaluate
   async evaluate(taskDesc, taskType, requiredCols) {
-    this.log('[E]', `dataset_evaluate() x ${this.datasets.length}`);
+    this.log('[E]', `task_pipeline(dataset_evaluate) x ${this.datasets.length}`);
 
-    const results = [];
     const effectiveRequiredCols = requiredCols && requiredCols.length > 0
       ? requiredCols
       : inferRequiredColumns(taskDesc, taskType);
+    const pipelineResults = await this.evaluateWithPipeline(taskDesc, taskType, effectiveRequiredCols);
+    if (pipelineResults) {
+      return pipelineResults;
+    }
+
+    this.log('[E]', 'Falling back to per-dataset final value estimation');
+    const results = [];
     for (const d of this.datasets) {
       let tcvComps = d.tcv;
       let tcvScore;
@@ -354,25 +531,45 @@ class GuixuEngine {
             risk: t.risk_penalty,
           };
           tcvScore = t.tcv_score;
-          this.log('[E]', `${d.title}: server TCV (P2P store)`);
+          this.log('[E]', `${d.title}: server-side value estimate (P2P store)`);
         }
       }
 
-      // Client-side TCV for external datasets (BT, Kaggle, HF, etc.)
+      // Client-side value estimate for external datasets (BT, Kaggle, HF, etc.)
       if (!tcvComps) {
         tcvComps = d.tcv || estimateExternalTCV(d, taskDesc, taskType, effectiveRequiredCols);
-        this.log('[E]', `${d.title}: client-side TCV estimate (${d.sourceLabel})`);
+        this.log('[E]', `${d.title}: client-side value estimate (${d.sourceLabel})`);
       }
       if (tcvScore === undefined) tcvScore = computeTCV(tcvComps);
 
       const verdict = tcvVerdict(tcvScore);
-      results.push({ ...d, tcv: tcvComps, tcvScore, verdict });
+      results.push({
+        ...d,
+        tcv: tcvComps,
+        tcvScore,
+        finalScore: tcvScore,
+        coarseScore: tcvScore,
+        rawFinalScore: tcvScore,
+        sampleScored: false,
+        hasFinalValue: false,
+        finalBreakdown: null,
+        evaluationMode: 'per_dataset_tcv',
+        selectionExplanation: '',
+        sampleFailureReason: '',
+        pipelineErrors: [],
+        verdict,
+      });
     }
 
-    results.sort((a, b) => b.tcvScore - a.tcvScore);
+    results.sort((a, b) => {
+      if (a.hasFinalValue !== b.hasFinalValue) {
+        return a.hasFinalValue ? -1 : 1;
+      }
+      return b.finalScore - a.finalScore;
+    });
     results.forEach((r, i) => {
-      this.log(i === 0 ? '[*]' : '[.]', `${r.title}: TCV=${r.tcvScore.toFixed(1)} (${r.verdict.text})`);
-      this.addLedger('evaluate', `${r.title} > TCV ${r.tcvScore.toFixed(1)}`);
+      this.log(i === 0 ? '[*]' : '[.]', `${r.title}: final=${r.finalScore.toFixed(1)} (${r.verdict.text})`);
+      this.addLedger('evaluate', `${r.title} > final ${r.finalScore.toFixed(1)}`);
     });
     this.selectedDataset = results[0];
     this.log('[+]', `Best pick: ${results[0].title}`);

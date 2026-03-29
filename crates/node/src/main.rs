@@ -7,6 +7,7 @@ use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use data_core::config::{NodeConfig, NodeMode};
+use data_core::env::load_local_settings;
 use data_core::identity::NodeIdentity;
 use data_core::types::AccessMode;
 use data_mcp_server::server::AppState;
@@ -43,6 +44,10 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Err(error) = load_local_settings() {
+        eprintln!("warning: failed to load local/settings.env: {error}");
+    }
+
     let cli = Cli::parse();
     init_logging(&cli.command);
 
