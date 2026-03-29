@@ -63,14 +63,16 @@ fn compact_intent(profile: &QueryProfile) -> Value {
     json!({
         "task_type": profile.task_type,
         "task_description": profile.task_description,
-        "budget": profile.budget,
         "target_entity": profile.target_entity,
         "keywords": profile.keywords,
         "data_standard": {
             "sample_unit": profile.data_standard.sample_unit,
+            "budget": profile.data_standard.budget,
+            "max_latency_secs": profile.data_standard.max_latency_secs,
+            "min_dataset_size_bytes": profile.data_standard.min_dataset_size_bytes,
+            "max_dataset_size_bytes": profile.data_standard.max_dataset_size_bytes,
             "canonical_columns": profile.data_standard.canonical_columns,
             "extra_columns": profile.data_standard.extra_columns,
-            "metadata_fields": profile.data_standard.metadata_fields,
         }
     })
 }
@@ -105,6 +107,43 @@ fn compact_selected_dataset(result: &Value) -> Value {
 
 fn parse_json_or_text(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| json!({ "text": raw }))
+}
+
+fn parse_budget_amount_str(value: &str) -> Option<f64> {
+    let mut number = String::new();
+    let mut started = false;
+    let mut seen_dot = false;
+
+    for ch in value.chars() {
+        if ch.is_ascii_digit() {
+            number.push(ch);
+            started = true;
+            continue;
+        }
+        if ch == '.' && started && !seen_dot {
+            number.push(ch);
+            seen_dot = true;
+            continue;
+        }
+        if ch == ',' && started {
+            continue;
+        }
+        if started {
+            break;
+        }
+    }
+
+    if number.is_empty() {
+        None
+    } else {
+        number.parse::<f64>().ok()
+    }
+}
+
+fn parse_budget_amount(value: Option<&Value>) -> Option<f64> {
+    let raw = value?;
+    raw.as_f64()
+        .or_else(|| raw.as_str().and_then(parse_budget_amount_str))
 }
 
 fn collect_search_filters(search_args: &Value) -> (SearchFilters, usize) {
@@ -297,7 +336,6 @@ fn report_verdict(report: &Value) -> Value {
 fn build_normalized_results(results: &[Value], profile: &QueryProfile) -> Vec<Value> {
     let standard = json!({
         "sample_unit": profile.data_standard.sample_unit,
-        "metadata_fields": profile.data_standard.metadata_fields,
         "canonical_columns": profile.data_standard.canonical_columns,
         "extra_columns": profile.data_standard.extra_columns,
     });
@@ -512,10 +550,9 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
     }
 
     let required_columns = evaluate_required_columns(&evaluate_args, &profile);
-    let budget = evaluate_args
-        .get("budget")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(profile.budget);
+    let budget = parse_budget_amount(evaluate_args.get("budget"))
+        .or_else(|| parse_budget_amount_str(&profile.data_standard.budget))
+        .unwrap_or(0.0);
     let task_description = profile
         .task_description
         .clone()
@@ -625,7 +662,10 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_percentage, heuristic_report, parse_stop_after, StopAfter};
+    use super::{
+        compact_intent, extract_percentage, heuristic_report, parse_stop_after, StopAfter,
+    };
+    use data_search::intent::QueryProfile;
     use serde_json::json;
 
     #[test]
@@ -676,5 +716,32 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(stop_after, StopAfter::DatasetSearch);
+    }
+
+    #[test]
+    fn compact_intent_includes_transfer_constraints() {
+        let profile = QueryProfile {
+            raw_query: "find cat dataset".into(),
+            data_standard: data_search::intent::DataStandard {
+                budget: "$20".into(),
+                max_latency_secs: 45.0,
+                min_dataset_size_bytes: 500_000_000,
+                max_dataset_size_bytes: 562_500_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let compact = compact_intent(&profile);
+        assert_eq!(compact["data_standard"]["budget"], "$20");
+        assert_eq!(compact["data_standard"]["max_latency_secs"], 45.0);
+        assert_eq!(
+            compact["data_standard"]["min_dataset_size_bytes"],
+            500_000_000
+        );
+        assert_eq!(
+            compact["data_standard"]["max_dataset_size_bytes"],
+            562_500_000
+        );
     }
 }

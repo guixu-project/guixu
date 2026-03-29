@@ -7,8 +7,8 @@ use serde::Serialize;
 use crate::adapters::{self, ExternalAdapter};
 use crate::engine::{SearchEngine, SearchFilters, SignalFetcher};
 use crate::intent::{
-    retrieve_related_memories_for_test, DataStandard, IntentParser, IntentParserConfig,
-    QueryProfile, QueryProfiler, UserProfile,
+    retrieve_related_memories_for_test, IntentParser, IntentParserConfig, QueryProfile,
+    QueryProfiler, UserProfile,
 };
 use crate::vector_index::VectorIndex;
 
@@ -19,10 +19,13 @@ fn dump_json<T: Serialize>(label: &str, value: &T) {
 
 fn dump_profile_fields(profile: &QueryProfile) {
     println!(
-        "profile.fields: task_type={:?}, task_description={:?}, budget={:?}, target_entity={:?}, keywords={:?}, user_profile={:?}",
+        "profile.fields: task_type={:?}, task_description={:?}, budget={:?}, max_latency_secs={:?}, min_dataset_size_bytes={:?}, max_dataset_size_bytes={:?}, target_entity={:?}, keywords={:?}, user_profile={:?}",
         profile.task_type,
         profile.task_description,
-        profile.budget,
+        profile.data_standard.budget,
+        profile.data_standard.max_latency_secs,
+        profile.data_standard.min_dataset_size_bytes,
+        profile.data_standard.max_dataset_size_bytes,
         profile.target_entity,
         profile.keywords,
         profile.user_profile
@@ -234,7 +237,8 @@ async fn intent_parser_uses_deepseek_when_configured() {
         .profile_from_deepseek_content(
             query,
             &user_profile,
-            r#"{"task_type":"classification","task_description":"Detect whether cats are present in input images with high-quality accuracy.","budget":25,"target_entity":"cats","keywords":["cats","classifier","vision"]}"#,
+            12_500_000,
+            r#"{"task_type":"classification","task_description":"Detect whether cats are present in input images with high-quality accuracy.","budget":"$25","target_entity":"cats","keywords":["cats","classifier","vision"]}"#,
         )
         .unwrap();
 
@@ -274,7 +278,10 @@ async fn intent_parser_uses_deepseek_when_configured() {
         profile.task_description.as_deref(),
         Some("Detect whether cats are present in input images with high-quality accuracy.")
     );
-    assert_eq!(profile.budget, 25.0);
+    assert_eq!(profile.data_standard.budget, "$25");
+    assert_eq!(profile.data_standard.max_latency_secs, 30.0);
+    assert_eq!(profile.data_standard.min_dataset_size_bytes, 0);
+    assert_eq!(profile.data_standard.max_dataset_size_bytes, 375_000_000);
     assert_eq!(profile.target_entity.as_deref(), Some("cats"));
     assert_eq!(profile.keywords, vec!["cats", "classifier", "vision"]);
     assert_eq!(profile.user_profile, user_profile);
@@ -288,11 +295,63 @@ fn profile_from_deepseek_content_defaults_budget_to_zero() {
         .profile_from_deepseek_content(
             "find a cat dataset",
             &user_profile,
+            10_000_000,
             r#"{"task_type":"classification","task_description":"Find cat datasets.","target_entity":"cats","keywords":["cats"]}"#,
         )
         .unwrap();
 
-    assert_eq!(profile.budget, 0.0);
+    assert_eq!(profile.data_standard.budget, "0 USD");
+    assert_eq!(profile.data_standard.max_latency_secs, 30.0);
+    assert_eq!(profile.data_standard.max_dataset_size_bytes, 300_000_000);
+}
+
+#[test]
+fn profile_from_deepseek_content_extracts_transfer_constraints_from_query() {
+    let parser = IntentParser::default();
+    let user_profile = UserProfile::default();
+    let profile = parser
+        .profile_from_deepseek_content(
+            "find a cat dataset within 45 seconds and at least 500MB",
+            &user_profile,
+            12_500_000,
+            r#"{"task_type":"classification","task_description":"Find cat datasets.","max_latency_secs":45,"target_entity":"cats","keywords":["cats"]}"#,
+        )
+        .unwrap();
+
+    assert_eq!(profile.data_standard.max_latency_secs, 45.0);
+    assert_eq!(profile.data_standard.min_dataset_size_bytes, 500_000_000);
+    assert_eq!(profile.data_standard.max_dataset_size_bytes, 562_500_000);
+}
+
+#[test]
+fn profile_from_deepseek_content_accepts_null_nested_max_latency_secs() {
+    let parser = IntentParser::default();
+    let user_profile = UserProfile::default();
+    let profile = parser
+        .profile_from_deepseek_content(
+            "check whether Caesar is in the image taken from monitor",
+            &user_profile,
+            12_500_000,
+            r#"{
+                "task_type": "classification",
+                "task_description": "Build an image classifier to detect whether the user's cat named Caesar appears in photos taken by their house monitor",
+                "target_entity": "cat",
+                "keywords": ["cat"],
+                "data_standard": {
+                    "sample_unit": "image",
+                    "budget": "0 USD",
+                    "max_latency_secs": null,
+                    "min_dataset_size_bytes": 0,
+                    "max_dataset_size_bytes": 0,
+                    "canonical_columns": ["sample_id", "label"],
+                    "extra_columns": ["timestamp"]
+                }
+            }"#,
+        )
+        .unwrap();
+
+    assert_eq!(profile.data_standard.budget, "0 USD");
+    assert_eq!(profile.data_standard.max_latency_secs, 30.0);
 }
 
 #[test]
@@ -346,9 +405,7 @@ async fn search_with_profile_matches_local_metadata() {
             "detect".into(),
             "cats".into(),
         ],
-        budget: 0.0,
-        user_profile: UserProfile::default(),
-        data_standard: DataStandard::default(),
+        ..Default::default()
     };
 
     let output = engine
@@ -396,9 +453,7 @@ async fn search_with_profile_deduplicates_local_and_external_results_by_cid() {
         ),
         target_entity: Some("cats".into()),
         keywords: vec!["cats".into(), "classifier".into()],
-        budget: 0.0,
-        user_profile: UserProfile::default(),
-        data_standard: DataStandard::default(),
+        ..Default::default()
     };
 
     let output = engine
