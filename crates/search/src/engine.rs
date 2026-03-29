@@ -137,7 +137,11 @@ impl SearchEngine {
             });
         }
 
+        let pre_intent_filtered = all.clone();
         apply_intent_hard_filters(&mut all, profile, &local_metadata_by_cid);
+        if all.is_empty() {
+            all = pre_intent_filtered;
+        }
 
         // Deduplicate by CID
         let mut seen = HashSet::new();

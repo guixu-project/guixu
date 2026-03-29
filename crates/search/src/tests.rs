@@ -1330,6 +1330,7 @@ async fn search_with_profile_filters_out_wrong_type_and_low_resolution_datasets(
             "detect".into(),
             "cats".into(),
         ],
+        budget: 0.0,
         user_profile: UserProfile::default(),
         data_standard: make_data_standard("image", "720p"),
     };
@@ -1355,6 +1356,58 @@ async fn search_with_profile_filters_out_wrong_type_and_low_resolution_datasets(
         .map(|ranked| ranked.result.title.as_str())
         .collect();
     assert_eq!(titles, vec!["Cat HD Image Dataset"]);
+}
+
+#[tokio::test]
+async fn search_with_profile_falls_back_when_hard_filters_remove_everything() {
+    let engine = make_engine(vec![]);
+    let local_metadata = vec![with_data_type_and_resolution(
+        make_metadata(
+            "cats-lowres",
+            "Cat Low Resolution Dataset",
+            "Blurry cat images for classification",
+            &["cats", "classification", "images"],
+        ),
+        DataType::Image,
+        "640x480",
+    )];
+    let profile = QueryProfile {
+        raw_query: "Build a high-quality classifier to detect cats".into(),
+        task_type: Some("classification".into()),
+        task_description: Some(
+            "Perform a classification task focused on cats with a high-quality requirement based on the user request: Build a high-quality classifier to detect cats"
+                .into(),
+        ),
+        target_entity: Some("cats".into()),
+        keywords: vec![
+            "build".into(),
+            "high-quality".into(),
+            "classifier".into(),
+            "detect".into(),
+            "cats".into(),
+        ],
+        budget: 0.0,
+        user_profile: UserProfile::default(),
+        data_standard: make_data_standard("image", "720p"),
+    };
+
+    let output = engine
+        .search_with_profile(
+            &profile,
+            &SearchFilters::default(),
+            &local_metadata,
+            &neutral_signal_fetcher(),
+            10,
+        )
+        .await
+        .unwrap();
+
+    let titles: Vec<&str> = output
+        .results
+        .iter()
+        .map(|ranked| ranked.result.title.as_str())
+        .collect();
+    assert_eq!(titles, vec!["Cat Low Resolution Dataset"]);
 }
 
 #[tokio::test]
@@ -1421,6 +1474,7 @@ async fn value_search_output_removes_candidates_with_mismatched_data_type_before
         ),
         target_entity: Some("cat".into()),
         keywords: vec!["cat".into(), "monitor".into()],
+        budget: 0.0,
         user_profile: UserProfile::default(),
         data_standard: make_data_standard("image", "720p"),
     };
@@ -1505,6 +1559,7 @@ async fn staged_sample_evaluator_short_circuits_low_similarity_samples() {
         ),
         target_entity: Some("cat".into()),
         keywords: vec!["cat".into(), "monitor".into()],
+        budget: 0.0,
         user_profile: UserProfile::default(),
         data_standard: make_data_standard("image", "720p"),
     };
@@ -1603,6 +1658,7 @@ async fn staged_sample_evaluator_blends_high_similarity_samples_with_llm_score()
         ),
         target_entity: Some("cat".into()),
         keywords: vec!["cat".into(), "monitor".into()],
+        budget: 0.0,
         user_profile: UserProfile::default(),
         data_standard: make_data_standard("image", "720p"),
     };
@@ -1694,6 +1750,7 @@ async fn value_search_output_re_evaluates_only_top_five_candidates_by_default() 
         ),
         target_entity: Some("cat".into()),
         keywords: vec!["cat".into(), "monitor".into()],
+        budget: 0.0,
         user_profile: UserProfile::default(),
         data_standard: make_data_standard("image", "720p"),
     };
@@ -2018,6 +2075,7 @@ async fn random_seed_similarity_evaluator_averages_seed_scores_and_low_anchor_pe
         ),
         target_entity: Some("worker".into()),
         keywords: vec!["worker".into(), "helmet".into(), "factory".into()],
+        budget: 0.0,
         user_profile: UserProfile::default(),
         data_standard: make_data_standard("image", "720p"),
     };

@@ -242,18 +242,12 @@ class GuixuEngine {
 
     // Response is { results: [...], errors: [...] } or legacy array
     const results = Array.isArray(data) ? data : (data?.results || []);
-    const serverErrors = Array.isArray(data) ? [] : (data?.errors || []);
-
     // Log intent parsing result
     const intent = data?.intent;
     if (intent) {
       this.log('[I]', `Intent parsed → task_type=${intent.task_type || '—'}, entity=${intent.target_entity || '—'}, keywords=[${(intent.keywords || []).join(', ')}]`);
       if (intent.task_description) this.log('[I]', `Task: ${intent.task_description}`);
       this.addLedger('intent', `query="${query}" → keywords=[${(intent.keywords || []).join(', ')}]`);
-    }
-
-    if (serverErrors.length > 0) {
-      serverErrors.forEach(e => this.log('[!]', `adapter error: ${e}`));
     }
 
     if (results.length > 0) {
@@ -320,9 +314,7 @@ class GuixuEngine {
 
     // 0 results — show error reason
     this.datasets = [];
-    const reason = serverErrors.length > 0
-      ? serverErrors.join('; ')
-      : (this._lastError || 'no matching datasets found');
+    const reason = this._lastError || 'no matching datasets found';
     this.log('[!]', `0 results (${reason})`);
     this.addLedger('search', `query="${query}" > 0 results`);
     return { datasets: [], sources: [] };
