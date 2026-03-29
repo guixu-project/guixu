@@ -363,17 +363,17 @@ Rules:
 - After resolving private entities to public categories via memories, the private name (e.g. "caesar") must NOT appear in keywords.
 - Maximum 5 keywords. Fewer is better. If one keyword suffices, use one.
 - When in doubt about whether to include a keyword, leave it out.
-- data_standard carries hard dataset constraints that will be used to filter search results before scoring.
+- data_standard.sample_unit is the only hard dataset constraint used for search filtering before scoring.
 - data_standard.sample_unit must encode the required per-sample modality using broad units such as image, video, text, tabular, or audio.
 - If the user is asking for an image classifier or image detector, sample_unit should normally be "image".
 - data_standard.metadata_fields must always include exactly these fields: min_sample_num, resolution.
-- data_standard.metadata_fields.resolution is the minimum acceptable per-sample resolution or clarity requirement and should be a concrete floor such as "720p", "1080p", or "1024x1024" when the user implies the samples must be clear, sharp, or not blurry.
-- If the user requests that images should not be blurry or should be high quality, prefer a concrete resolution floor instead of leaving resolution empty.
+- data_standard.metadata_fields.resolution is descriptive metadata for downstream scoring or explanation only; it must NOT be treated as a hard search filter.
+- If the user requests that images should not be blurry or should be high quality, prefer a concrete resolution hint instead of leaving resolution empty.
 - data_standard.canonical_columns must always include exactly these fields: sample_id, label.
 - data_standard.extra_columns must always include exactly these fields: timestamp.
 - metadata_fields values may be empty strings when the query does not provide the information.
 - canonical_columns and extra_columns must be string arrays, not objects.
-- If you do not have enough information for a hard constraint, leave that specific field empty rather than inventing it.
+- If you do not have enough information for the hard constraint sample_unit, leave it empty rather than inventing it.
 Examples:
   Query: "write an image classifier that checks whether my cat is in the photo taken by my house monitor"
   Good keywords: ["cat"]
@@ -542,7 +542,7 @@ fn fallback_task_description(query: &str) -> String {
     query.trim().to_string()
 }
 
-fn load_setting_env_value(key: &str) -> Option<String> {
+pub(crate) fn load_setting_env_value(key: &str) -> Option<String> {
     let path = resolve_setting_env_path()?;
     let contents = std::fs::read_to_string(path).ok()?;
     contents.lines().find_map(|line| {
@@ -626,9 +626,11 @@ fn resolve_setting_env_path() -> Option<PathBuf> {
     .flatten()
     {
         for ancestor in base.ancestors() {
-            let candidate = ancestor.join("local").join("setting.env");
-            if candidate.is_file() {
-                return Some(candidate);
+            for file_name in ["settings.env", "setting.env"] {
+                let candidate = ancestor.join("local").join(file_name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
     }

@@ -19,8 +19,8 @@ use crate::intent::{
 };
 use crate::sample_eval::{
     ChainedSampleDownloader, DownloadedSample, GeminiImageSeedRecordJudge,
-    GuixuHubSampleDownloader, LlmSampleJudge, LocalHeuristicProxyScorer,
-    ProxyScreeningReport, RandomSeedSimilarityEvaluator, RandomSeedSimilarityEvaluatorConfig,
+    GuixuHubSampleDownloader, LlmSampleJudge, LocalHeuristicProxyScorer, ProxyScreeningReport,
+    RandomSeedSimilarityEvaluator, RandomSeedSimilarityEvaluatorConfig, SampleDownloadOutcome,
     SampleDownloader, SampleJudgeReport, SampleRecord, SampleRequirements,
     SampleRequirementsPlanner, SeedRecordJudge, SeedRecordJudgeReport, SeedRecordScore,
     StagedSampleEvaluator, StagedSampleEvaluatorConfig,
@@ -252,8 +252,11 @@ impl SampleDownloader for StaticSampleDownloader {
         _result: &SearchResult,
         _metadata: &DatasetMetadata,
         _plan: &crate::engine::SamplePlan,
-    ) -> anyhow::Result<Option<DownloadedSample>> {
-        Ok(self.sample.clone())
+    ) -> anyhow::Result<SampleDownloadOutcome> {
+        Ok(match self.sample.clone() {
+            Some(sample) => SampleDownloadOutcome::available(sample),
+            None => SampleDownloadOutcome::unavailable("static downloader returned no sample"),
+        })
     }
 }
 
@@ -268,8 +271,13 @@ impl SampleDownloader for SampleMapDownloader {
         result: &SearchResult,
         _metadata: &DatasetMetadata,
         _plan: &crate::engine::SamplePlan,
-    ) -> anyhow::Result<Option<DownloadedSample>> {
-        Ok(self.samples_by_cid.get(&result.cid.0).cloned())
+    ) -> anyhow::Result<SampleDownloadOutcome> {
+        Ok(match self.samples_by_cid.get(&result.cid.0).cloned() {
+            Some(sample) => SampleDownloadOutcome::available(sample),
+            None => {
+                SampleDownloadOutcome::unavailable(format!("no mapped sample for {}", result.cid.0))
+            }
+        })
     }
 }
 
@@ -319,15 +327,14 @@ impl SeedRecordJudge for KeywordSeedJudge {
                 .iter()
                 .map(|record| {
                     let lower = record.content.to_lowercase();
-                    let (utility_score, rationale) = if lower.contains("invoice")
-                        || lower.contains("finance")
-                    {
-                        (10.0, "off-task financial sample")
-                    } else if lower.contains("helmet") || lower.contains("worker") {
-                        (90.0, "strong ppe signal")
-                    } else {
-                        (50.0, "unclear sample")
-                    };
+                    let (utility_score, rationale) =
+                        if lower.contains("invoice") || lower.contains("finance") {
+                            (10.0, "off-task financial sample")
+                        } else if lower.contains("helmet") || lower.contains("worker") {
+                            (90.0, "strong ppe signal")
+                        } else {
+                            (50.0, "unclear sample")
+                        };
                     SeedRecordScore {
                         record_id: record.id.clone(),
                         utility_score,
@@ -351,19 +358,25 @@ impl SampleDownloader for LocalDirectorySampleDownloader {
         result: &SearchResult,
         _metadata: &DatasetMetadata,
         _plan: &crate::engine::SamplePlan,
-    ) -> anyhow::Result<Option<DownloadedSample>> {
+    ) -> anyhow::Result<SampleDownloadOutcome> {
         let Some(root) = self.roots_by_cid.get(&result.cid.0) else {
-            return Ok(None);
+            return Ok(SampleDownloadOutcome::unavailable(format!(
+                "no local sample root for {}",
+                result.cid.0
+            )));
         };
         let records = sample_records_from_local_dataset(root, self.max_records)?;
         if records.is_empty() {
-            return Ok(None);
+            return Ok(SampleDownloadOutcome::unavailable(format!(
+                "local sample root {} contained no usable records",
+                root.display()
+            )));
         }
         let sampled_bytes = records
             .iter()
             .map(|record| record.content.len() as u64)
             .sum::<u64>();
-        Ok(Some(DownloadedSample {
+        Ok(SampleDownloadOutcome::available(DownloadedSample {
             sampled_rows: records.len() as u64,
             sampled_bytes,
             summary: Some(format!(
@@ -594,9 +607,7 @@ fn sample_records_from_local_dataset(
     let mut records = annotation_files
         .into_iter()
         .take(max_records)
-        .filter_map(|path| {
-            sample_record_from_text_file(root, &path, &images_by_stem).transpose()
-        })
+        .filter_map(|path| sample_record_from_text_file(root, &path, &images_by_stem).transpose())
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     if records.is_empty() {
@@ -1004,8 +1015,8 @@ fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
 
     let cursor = std::io::Cursor::new(Vec::<u8>::new());
     let mut writer = zip::ZipWriter::new(cursor);
-    let options =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
 
     for (path, bytes) in entries {
         writer.start_file(path, options).unwrap();
@@ -1281,7 +1292,7 @@ async fn search_with_profile_matches_local_metadata() {
 }
 
 #[tokio::test]
-async fn search_with_profile_filters_out_wrong_type_and_low_resolution_datasets() {
+async fn search_with_profile_filters_out_wrong_type_datasets_only() {
     let engine = make_engine(vec![]);
     let local_metadata = vec![
         with_data_type_and_resolution(
@@ -1355,21 +1366,24 @@ async fn search_with_profile_filters_out_wrong_type_and_low_resolution_datasets(
         .iter()
         .map(|ranked| ranked.result.title.as_str())
         .collect();
-    assert_eq!(titles, vec!["Cat HD Image Dataset"]);
+    assert_eq!(
+        titles,
+        vec!["Cat HD Image Dataset", "Cat Low Resolution Dataset"]
+    );
 }
 
 #[tokio::test]
-async fn search_with_profile_falls_back_when_hard_filters_remove_everything() {
+async fn search_with_profile_returns_no_results_when_type_filter_removes_everything() {
     let engine = make_engine(vec![]);
     let local_metadata = vec![with_data_type_and_resolution(
         make_metadata(
-            "cats-lowres",
-            "Cat Low Resolution Dataset",
-            "Blurry cat images for classification",
-            &["cats", "classification", "images"],
+            "cats-video",
+            "Cat Monitor Video Dataset",
+            "Indoor monitoring video clips of cats",
+            &["cats", "monitoring", "video"],
         ),
-        DataType::Image,
-        "640x480",
+        DataType::Video,
+        "1920x1080",
     )];
     let profile = QueryProfile {
         raw_query: "Build a high-quality classifier to detect cats".into(),
@@ -1402,12 +1416,7 @@ async fn search_with_profile_falls_back_when_hard_filters_remove_everything() {
         .await
         .unwrap();
 
-    let titles: Vec<&str> = output
-        .results
-        .iter()
-        .map(|ranked| ranked.result.title.as_str())
-        .collect();
-    assert_eq!(titles, vec!["Cat Low Resolution Dataset"]);
+    assert!(output.results.is_empty());
 }
 
 #[tokio::test]
@@ -1832,8 +1841,308 @@ async fn value_search_output_re_evaluates_only_top_five_candidates_by_default() 
             .candidates
             .iter()
             .filter(|candidate| candidate.proxy_utility.is_some())
-        .count(),
+            .count(),
         5
+    );
+}
+
+#[tokio::test]
+async fn value_search_output_marks_candidates_outside_shortlist_as_sample_skipped() {
+    use crate::engine::{DatasetSelectionTask, DatasetValuationConfig, SearchOutput};
+
+    let engine = make_engine(vec![]);
+    let profile = QueryProfile {
+        raw_query: "Check whether Caesar is in the image taken by monitor".into(),
+        task_type: Some("classification".into()),
+        task_description: Some(
+            "Determine whether the user's cat appears in monitor images.".into(),
+        ),
+        target_entity: Some("cat".into()),
+        keywords: vec!["cat".into(), "monitor".into()],
+        budget: 0.0,
+        user_profile: UserProfile::default(),
+        data_standard: make_data_standard("image", "720p"),
+    };
+    let task = DatasetSelectionTask::from(&profile);
+
+    let local_metadata = (0..2)
+        .map(|index| {
+            make_detailed_image_metadata(
+                &format!("candidate-skip-{index}"),
+                &format!("Cat Monitor Candidate {index}"),
+                "Indoor monitor image dataset with cat labels",
+                &["cat", "monitor", "classification"],
+                &["sample_id", "label", "camera_id"],
+                2_000 + (index as u64 * 500),
+                8_000_000 + (index as u64 * 1_000_000),
+                "1280x720",
+            )
+        })
+        .collect::<Vec<_>>();
+    let search_output = SearchOutput {
+        results: local_metadata
+            .iter()
+            .enumerate()
+            .map(|(index, metadata)| ranked_result_from_metadata(metadata, 100.0 - index as f64))
+            .collect(),
+        errors: vec![],
+        profile: None,
+    };
+    let evaluator = StagedSampleEvaluator::with_config(
+        Box::new(StaticSampleDownloader {
+            sample: Some(DownloadedSample {
+                records: vec![SampleRecord {
+                    id: "row-1".into(),
+                    content: "indoor monitor frame label cat_present camera hallway".into(),
+                    metadata: serde_json::json!({"camera_id":"cam-01"}),
+                }],
+                sampled_rows: 1,
+                sampled_bytes: 1_024,
+                summary: Some("indoor monitor image sample".into()),
+            }),
+        }),
+        Box::new(StaticRequirementsPlanner {
+            requirements: SampleRequirements {
+                summary:
+                    "Need image samples that show indoor monitor frames with a cat-present label"
+                        .into(),
+                required_signals: vec!["cat".into(), "monitor".into(), "label".into()],
+                preferred_labels: vec!["cat_present".into()],
+                disqualifying_signals: vec![],
+            },
+        }),
+        Box::new(LocalHeuristicProxyScorer),
+        Box::new(CountingJudge {
+            utility_score: 88.0,
+            rationale: "sample matches task".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }),
+        StagedSampleEvaluatorConfig::default(),
+    );
+    let config = DatasetValuationConfig {
+        coarse_top_k: 1,
+        ..DatasetValuationConfig::default()
+    };
+
+    let output = engine
+        .value_search_output(
+            &search_output,
+            &local_metadata,
+            None,
+            Some(&evaluator),
+            &task,
+            &config,
+        )
+        .await
+        .unwrap();
+
+    assert!(output.candidates[0].proxy_utility.is_some());
+    assert!(output.candidates[0].sample_failure_reason.is_none());
+    assert_eq!(
+        output.candidates[1].sample_failure_reason.as_deref(),
+        Some("sample evaluation skipped: outside coarse top-1 shortlist")
+    );
+}
+
+#[tokio::test]
+async fn value_search_output_surfaces_missing_sample_reason() {
+    use crate::engine::{DatasetSelectionTask, DatasetValuationConfig, SearchOutput};
+
+    let engine = make_engine(vec![]);
+    let metadata = make_detailed_image_metadata(
+        "cat-monitor-missing-sample",
+        "Cat Monitor Candidate",
+        "Indoor cat monitor image dataset",
+        &["cat", "monitor", "classification"],
+        &["sample_id", "label", "camera_id"],
+        2_500,
+        9_000_000,
+        "1280x720",
+    );
+    let profile = QueryProfile {
+        raw_query: "Check whether Caesar is in the image taken by monitor".into(),
+        task_type: Some("classification".into()),
+        task_description: Some(
+            "Determine whether the user's cat appears in monitor images.".into(),
+        ),
+        target_entity: Some("cat".into()),
+        keywords: vec!["cat".into(), "monitor".into()],
+        budget: 0.0,
+        user_profile: UserProfile::default(),
+        data_standard: make_data_standard("image", "720p"),
+    };
+    let task = DatasetSelectionTask::from(&profile);
+    let search_output = SearchOutput {
+        results: vec![ranked_result_from_metadata(&metadata, 90.0)],
+        errors: vec![],
+        profile: None,
+    };
+    let evaluator = StagedSampleEvaluator::with_config(
+        Box::new(StaticSampleDownloader { sample: None }),
+        Box::new(StaticRequirementsPlanner {
+            requirements: SampleRequirements {
+                summary:
+                    "Need image samples that show indoor monitor frames with a cat-present label"
+                        .into(),
+                required_signals: vec!["cat".into(), "monitor".into(), "label".into()],
+                preferred_labels: vec!["cat_present".into()],
+                disqualifying_signals: vec![],
+            },
+        }),
+        Box::new(LocalHeuristicProxyScorer),
+        Box::new(CountingJudge {
+            utility_score: 90.0,
+            rationale: "llm should not be called".into(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }),
+        StagedSampleEvaluatorConfig::default(),
+    );
+
+    let output = engine
+        .value_search_output(
+            &search_output,
+            &[metadata],
+            None,
+            Some(&evaluator),
+            &task,
+            &DatasetValuationConfig::default(),
+        )
+        .await
+        .unwrap();
+
+    let selected = output.selected.unwrap();
+    assert!(selected.proxy_utility.is_none());
+    assert_eq!(
+        selected.sample_failure_reason.as_deref(),
+        Some("static downloader returned no sample")
+    );
+}
+
+#[tokio::test]
+async fn value_search_output_allows_guixu_hub_sampling_without_row_count_metadata() {
+    use crate::engine::{DatasetSelectionTask, DatasetValuationConfig, RankedResult, SearchOutput};
+
+    let engine = make_engine(vec![]);
+    let mut metadata = make_detailed_image_metadata(
+        "guixu-hub-zero-shape",
+        "Guixu Hub Zero Shape",
+        "Remote image dataset with a downloadable sample but missing row stats",
+        &["cat", "monitor", "classification"],
+        &["sample_id", "label", "camera_id"],
+        0,
+        0,
+        "1280x720",
+    );
+    metadata.cid = DatasetCid("guixu-hub:listing-zero-shape".into());
+    metadata.provider = Did("guixu:hub:listing-zero-shape".into());
+
+    let profile = QueryProfile {
+        raw_query: "Check whether Caesar is in the image taken by monitor".into(),
+        task_type: Some("classification".into()),
+        task_description: Some(
+            "Determine whether the user's cat appears in monitor images.".into(),
+        ),
+        target_entity: Some("cat".into()),
+        keywords: vec!["cat".into(), "monitor".into()],
+        budget: 0.0,
+        user_profile: UserProfile::default(),
+        data_standard: make_data_standard("image", "720p"),
+    };
+    let task = DatasetSelectionTask::from(&profile);
+    let search_output = SearchOutput {
+        results: vec![RankedResult {
+            result: SearchResult {
+                cid: metadata.cid.clone(),
+                title: metadata.title.clone(),
+                description: metadata.description.clone(),
+                tags: metadata.tags.clone(),
+                schema: metadata.schema.clone(),
+                quality: None,
+                price: metadata.price.clone(),
+                license: metadata.license.clone(),
+                provider: metadata.provider.clone(),
+                source: DataSource::GuixuHub,
+                market: None,
+                data_type: metadata.data_type,
+                created_at: metadata.created_at,
+            },
+            rank_score: 90.0,
+            signal: CommunitySignal {
+                dataset_cid: metadata.cid.clone(),
+                total_reviews: 0,
+                avg_relevance: 0.0,
+                avg_quality: 0.0,
+                positive_rate: 0.0,
+                negative_rate: 0.0,
+                task_signals: vec![],
+            },
+        }],
+        errors: vec![],
+        profile: None,
+    };
+    let llm_calls = Arc::new(AtomicUsize::new(0));
+    let evaluator = StagedSampleEvaluator::with_config(
+        Box::new(StaticSampleDownloader {
+            sample: Some(DownloadedSample {
+                records: vec![SampleRecord {
+                    id: "row-1".into(),
+                    content: "indoor monitor frame label cat_present camera hallway".into(),
+                    metadata: serde_json::json!({"camera_id":"cam-01"}),
+                }],
+                sampled_rows: 1,
+                sampled_bytes: 1_024,
+                summary: Some("indoor monitor image sample".into()),
+            }),
+        }),
+        Box::new(StaticRequirementsPlanner {
+            requirements: SampleRequirements {
+                summary:
+                    "Need image samples that show indoor monitor frames with a cat-present label"
+                        .into(),
+                required_signals: vec!["cat".into(), "monitor".into(), "label".into()],
+                preferred_labels: vec!["cat_present".into()],
+                disqualifying_signals: vec![],
+            },
+        }),
+        Box::new(LocalHeuristicProxyScorer),
+        Box::new(CountingJudge {
+            utility_score: 91.0,
+            rationale: "sample matches task".into(),
+            calls: llm_calls.clone(),
+        }),
+        StagedSampleEvaluatorConfig {
+            proxy_similarity_threshold: 0.0,
+            ..StagedSampleEvaluatorConfig::default()
+        },
+    );
+    let config = DatasetValuationConfig::default();
+
+    let output = engine
+        .value_search_output(
+            &search_output,
+            &[metadata],
+            None,
+            Some(&evaluator),
+            &task,
+            &config,
+        )
+        .await
+        .unwrap();
+
+    let selected = output.selected.expect("selected candidate expected");
+    assert_eq!(selected.result.source, DataSource::GuixuHub);
+    assert_eq!(llm_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        selected.proxy_utility.is_some(),
+        "GuixuHub candidates with unknown row_count should still be sample-scored"
+    );
+    assert_eq!(
+        selected
+            .sample_plan
+            .as_ref()
+            .expect("sample plan expected")
+            .estimated_rows,
+        0
     );
 }
 
@@ -1856,7 +2165,9 @@ fn local_sample_records_attach_matching_images_when_available() {
     std::fs::write(&image_path, b"fake-jpeg").unwrap();
 
     let records = sample_records_from_local_dataset(root, 4).unwrap();
-    let first = records.first().expect("expected at least one sample record");
+    let first = records
+        .first()
+        .expect("expected at least one sample record");
 
     assert_eq!(first.id, "Annotations/sample-01.xml");
     assert_eq!(
@@ -1926,6 +2237,7 @@ async fn guixu_hub_sample_downloader_downloads_and_extracts_sample_archive() {
         .download_sample(&result, &metadata, &plan)
         .await
         .unwrap()
+        .sample
         .expect("expected Guixu Hub sample");
 
     server.await.unwrap();
@@ -1947,11 +2259,8 @@ async fn guixu_hub_sample_downloader_downloads_and_extracts_sample_archive() {
 
 #[tokio::test]
 async fn gemini_image_seed_record_judge_posts_base64_images_for_scoring() {
-    let (api_url, requests, server) = spawn_mock_gemini_eval_server(vec![
-        serde_json::json!(88),
-        serde_json::json!("12"),
-    ])
-    .await;
+    let (api_url, requests, server) =
+        spawn_mock_gemini_eval_server(vec![serde_json::json!(88), serde_json::json!("12")]).await;
     let tempdir = tempfile::tempdir().unwrap();
     let image_a = tempdir.path().join("sample-a.jpg");
     let image_b = tempdir.path().join("sample-b.png");
@@ -2150,9 +2459,113 @@ async fn random_seed_similarity_evaluator_averages_seed_scores_and_low_anchor_pe
     assert_eq!(seed_calls.load(Ordering::SeqCst), 1);
     assert_eq!(proxy.apply_mode, ProxyUtilityApplyMode::Blend);
     assert!((proxy.utility_score - 50.0).abs() < 1e-6);
-    assert!((proxy.proxy_metric_value - 50.0).abs() < 1e-6);
-    assert!(proxy.notes.unwrap_or_default().contains("low_score_anchors=1"));
+    assert!(
+        proxy.proxy_metric_value.is_finite(),
+        "proxy metric value should remain a finite similarity diagnostic"
+    );
+    assert!(proxy
+        .notes
+        .unwrap_or_default()
+        .contains("low_score_anchors=1"));
     assert!((selected.final_score - expected_final).abs() < 1e-6);
+}
+
+#[tokio::test]
+async fn random_seed_similarity_evaluator_rejudges_records_far_from_both_anchor_sets() {
+    use crate::engine::{DatasetSelectionTask, DatasetValuationConfig, SearchOutput};
+
+    let engine = make_engine(vec![]);
+    let metadata = make_detailed_image_metadata(
+        "ppe-random-rejudge",
+        "Factory PPE Rejudge Candidate",
+        "Factory worker images for helmet and safety clothing detection",
+        &["helmet", "ppe", "worker", "classification"],
+        &["sample_id", "label", "image_path"],
+        4_000,
+        15_000_000,
+        "1280x720",
+    );
+    let profile = QueryProfile {
+        raw_query: "detect whether workers wear helmets in factory images".into(),
+        task_type: Some("classification".into()),
+        task_description: Some(
+            "Determine whether workers are wearing safety helmets in factory scenes.".into(),
+        ),
+        target_entity: Some("worker".into()),
+        keywords: vec!["worker".into(), "helmet".into(), "factory".into()],
+        budget: 0.0,
+        user_profile: UserProfile::default(),
+        data_standard: make_data_standard("image", "720p"),
+    };
+    let task = DatasetSelectionTask::from(&profile);
+    let search_output = SearchOutput {
+        results: vec![ranked_result_from_metadata(&metadata, 95.0)],
+        errors: vec![],
+        profile: None,
+    };
+    let seed_calls = Arc::new(AtomicUsize::new(0));
+    let evaluator = RandomSeedSimilarityEvaluator::with_config(
+        Box::new(StaticSampleDownloader {
+            sample: Some(DownloadedSample {
+                records: vec![
+                    SampleRecord {
+                        id: "seed-low".into(),
+                        content: "invoice payroll finance spreadsheet".into(),
+                        metadata: serde_json::json!({"source":"erp"}),
+                    },
+                    SampleRecord {
+                        id: "seed-high".into(),
+                        content: "worker helmet safety vest detection".into(),
+                        metadata: serde_json::json!({"source":"factory"}),
+                    },
+                    SampleRecord {
+                        id: "remain-uncertain".into(),
+                        content: "hallway camera cat monitor night frame".into(),
+                        metadata: serde_json::json!({"source":"monitor"}),
+                    },
+                ],
+                sampled_rows: 3,
+                sampled_bytes: 3_072,
+                summary: Some("mixed sample requiring a second-pass rejudge".into()),
+            }),
+        }),
+        Box::new(KeywordSeedJudge {
+            calls: seed_calls.clone(),
+        }),
+        RandomSeedSimilarityEvaluatorConfig {
+            seed_record_count: 2,
+            low_score_threshold: 35.0,
+            high_score_threshold: 75.0,
+            override_final_below_score: 25.0,
+            selection_seed: 0,
+        },
+    );
+    let config = DatasetValuationConfig::default();
+
+    let output = engine
+        .value_search_output(
+            &search_output,
+            &[metadata],
+            None,
+            Some(&evaluator),
+            &task,
+            &config,
+        )
+        .await
+        .unwrap();
+
+    let selected = output.selected.unwrap();
+    let proxy = selected.proxy_utility.expect("proxy utility expected");
+
+    assert_eq!(seed_calls.load(Ordering::SeqCst), 2);
+    assert!((proxy.utility_score - 50.0).abs() < 1e-6);
+    assert!(
+        proxy
+            .notes
+            .unwrap_or_default()
+            .contains("uncertain_rejudged=1"),
+        "expected notes to record the second-pass rejudge path"
+    );
 }
 
 #[tokio::test]

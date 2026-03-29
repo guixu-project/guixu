@@ -71,7 +71,7 @@
       <div class="step disabled" id="step3">
         <div class="step-header">
           <span class="step-num">3</span>
-          <span>TCV Valuation</span>
+          <span>Metadata + Sample Scores</span>
           <span class="step-status" id="step3Status"></span>
         </div>
         <div class="step-body">
@@ -109,15 +109,13 @@
       <h2>EXPLAINABILITY</h2>
 
       <div class="explain-section" id="tcvBreakdown">
-        <h3>TCV Breakdown</h3>
-        <div class="tcv-formula">
-          TCV = α·SchemaFit + β·TemporalFit + γ·InfoGain + δ·Quality + ε·Community − ζ·Risk
+        <h3>Score Composition</h3>
+        <div class="tcv-formula" id="scoreFormula">
+          Metadata score comes from coarse metadata evaluation. Small-sample score comes from the downloaded sample utility check.
         </div>
         <div id="tcvBars"></div>
-        <div class="tcv-total" id="tcvTotal">
-          <span>Total Score</span>
-          <span id="tcvScore">—</span>
-        </div>
+        <div class="score-summary-grid" id="scoreSummary"></div>
+        <div class="score-meta" id="scoreMeta"></div>
       </div>
 
       <div class="explain-section" id="decisionLog">

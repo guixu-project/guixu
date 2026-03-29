@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 data-core = { workspace = true }
+data-attestation = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
