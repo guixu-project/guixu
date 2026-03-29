@@ -1,13 +1,23 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use data_attestation::{fetch_buyer_reviews, summarize_reviews, BaseChainClient, ChainConfig};
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::DatasetMetadata;
-use data_core::types::SearchResult;
-use serde::Serialize;
+use data_core::types::{DataSource, DataType, SearchResult};
+use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
 use crate::adapters::ExternalAdapter;
-use crate::intent::{IntentParser, QueryProfile};
+use crate::intent::{load_setting_env_value, IntentParser, IntentParserConfig, QueryProfile};
 use crate::vector_index::VectorIndex;
+
+pub const ON_CHAIN_SCORE_NEUTRAL: f64 = 50.0;
+pub const ON_CHAIN_COARSE_ADJUST_WEIGHT: f64 = 0.10;
+const ON_CHAIN_TRADE_SATURATION: u64 = 50;
+const ON_CHAIN_SENTIMENT_SAMPLE_LIMIT: usize = 20;
+const MAX_SELECTION_BUDGET_BUCKETS: usize = 10_000;
+const SELECTION_VALUE_EPSILON: f64 = 1e-6;
 
 /// Search filters that can be applied to results.
 #[derive(Debug, Clone, Default)]
@@ -31,6 +41,25 @@ pub struct SearchEngine {
     vector_index: VectorIndex,
     intent_parser: IntentParser,
     adapters: Vec<Box<dyn ExternalAdapter>>,
+}
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    let parts = error
+        .chain()
+        .map(|cause| cause.to_string())
+        .filter(|message| !message.trim().is_empty())
+        .fold(Vec::<String>::new(), |mut acc, message| {
+            if acc.last() != Some(&message) {
+                acc.push(message);
+            }
+            acc
+        });
+
+    if parts.is_empty() {
+        "unknown sample evaluation error".into()
+    } else {
+        parts.join(" | caused by: ")
+    }
 }
 
 impl SearchEngine {
@@ -98,6 +127,10 @@ impl SearchEngine {
             self.search_external(profile, filters, limit),
         );
 
+        let local_metadata_by_cid: HashMap<&str, &DatasetMetadata> = local_metadata
+            .iter()
+            .map(|metadata| (metadata.cid.0.as_str(), metadata))
+            .collect();
         let mut all: Vec<SearchResult> = local_results.unwrap_or_default();
         all.extend(external_results);
 
@@ -132,23 +165,19 @@ impl SearchEngine {
             });
         }
 
-        // Deduplicate by CID
-        let mut seen = std::collections::HashSet::new();
-        all.retain(|r| seen.insert(r.cid.0.clone()));
+        apply_intent_hard_filters(&mut all, profile, &local_metadata_by_cid);
 
-        if let Some(expected_type) = strict_task_data_type(profile.task_type.as_deref()) {
-            let compatible_count = all.iter().filter(|r| r.data_type == expected_type).count();
-            if compatible_count > 0 {
-                all.retain(|r| r.data_type == expected_type);
-            }
-        }
+        // Deduplicate by CID
+        let mut seen = HashSet::new();
+        all.retain(|r| seen.insert(r.cid.0.clone()));
 
         // Rank with community signal (TCV-lite for search ranking)
         let mut ranked: Vec<RankedResult> = all
             .into_iter()
             .map(|r| {
+                let metadata = local_metadata_by_cid.get(r.cid.0.as_str()).copied();
                 let signal = signal_fetcher(&r.cid.0);
-                let score = rank_with_signal(&r, &signal, profile);
+                let score = rank_with_signal(&r, metadata, &signal, profile);
                 RankedResult {
                     result: r,
                     rank_score: score,
@@ -171,6 +200,287 @@ impl SearchEngine {
         })
     }
 
+    /// Convenience entry point for "search, then value, then pick the best dataset".
+    ///
+    /// The first stage uses only the task description plus dataset metadata/search
+    /// result fields to produce a coarse ranking. The second stage optionally
+    /// resolves richer metadata for external results, plans a bandwidth-aware
+    /// sample, and asks a caller-provided proxy evaluator to score the top-k
+    /// candidates without downloading each full dataset.
+    pub async fn search_and_value(
+        &self,
+        query: &str,
+        filters: &SearchFilters,
+        local_metadata: &[DatasetMetadata],
+        signal_fetcher: &SignalFetcher,
+        metadata_resolver: Option<&dyn MetadataResolver>,
+        sample_evaluator: Option<&dyn SampleEvaluator>,
+        task: Option<&DatasetSelectionTask>,
+        config: &DatasetValuationConfig,
+        limit: usize,
+    ) -> Result<DatasetSelectionOutput> {
+        let profile = self.intent_parser.profile(query).await?;
+        let task = task
+            .cloned()
+            .unwrap_or_else(|| DatasetSelectionTask::from(&profile));
+        let search_output = self
+            .search_with_profile(&profile, filters, local_metadata, signal_fetcher, limit)
+            .await?;
+
+        self.value_search_output(
+            &search_output,
+            local_metadata,
+            metadata_resolver,
+            sample_evaluator,
+            &task,
+            config,
+        )
+        .await
+    }
+
+    /// Value already-discovered search results for a specific training task.
+    ///
+    /// This method is intentionally additive: it leaves the existing search API
+    /// intact while exposing a higher-level selection primitive for the
+    /// "search first, then estimate value, then download only the winner" flow.
+    pub async fn value_search_output(
+        &self,
+        search_output: &SearchOutput,
+        local_metadata: &[DatasetMetadata],
+        metadata_resolver: Option<&dyn MetadataResolver>,
+        sample_evaluator: Option<&dyn SampleEvaluator>,
+        task: &DatasetSelectionTask,
+        config: &DatasetValuationConfig,
+    ) -> Result<DatasetSelectionOutput> {
+        let mut errors = search_output.errors.clone();
+        let local_metadata_by_cid: HashMap<&str, &DatasetMetadata> = local_metadata
+            .iter()
+            .map(|metadata| (metadata.cid.0.as_str(), metadata))
+            .collect();
+
+        let mut candidates = Vec::with_capacity(search_output.results.len());
+
+        for ranked in &search_output.results {
+            let mut metadata = local_metadata_by_cid
+                .get(ranked.result.cid.0.as_str())
+                .map(|metadata| (*metadata).clone());
+
+            if metadata.is_none() {
+                if let Some(resolver) = metadata_resolver {
+                    match resolver.resolve_metadata(&ranked.result).await {
+                        Ok(resolved) => metadata = resolved,
+                        Err(error) => errors.push(format!(
+                            "metadata resolve failed for {}: {error}",
+                            ranked.result.cid.0
+                        )),
+                    }
+                }
+            }
+
+            if let Some(required_data_type) = task.required_data_type {
+                let candidate_data_type = metadata
+                    .as_ref()
+                    .map(|metadata| metadata.data_type)
+                    .unwrap_or(ranked.result.data_type);
+                if candidate_data_type != required_data_type {
+                    continue;
+                }
+            }
+
+            let task_similarity = compute_task_similarity(task, &ranked.result, metadata.as_ref());
+            let schema_fit = compute_schema_fit(task, &ranked.result, metadata.as_ref());
+            let scale_score = compute_scale_score(config, &ranked.result, metadata.as_ref());
+            let balance_score = compute_balance_score(task, &ranked.result, metadata.as_ref());
+            let metadata_quality = compute_metadata_quality(&ranked.result, metadata.as_ref());
+            let on_chain_score = match compute_on_chain_score(&ranked.result).await {
+                Ok(score) => score,
+                Err(error) => {
+                    warn!(
+                        cid = %ranked.result.cid.0,
+                        error = %error,
+                        "on-chain scoring failed; falling back to neutral"
+                    );
+                    ON_CHAIN_SCORE_NEUTRAL
+                }
+            };
+            let coarse_score = compose_coarse_score(
+                task_similarity,
+                schema_fit,
+                scale_score,
+                balance_score,
+                metadata_quality,
+                on_chain_score,
+            );
+
+            candidates.push(ValuationCandidateState {
+                metadata: metadata.clone(),
+                valuation: DatasetValuation {
+                    result: ranked.result.clone(),
+                    coarse_score,
+                    final_score: coarse_score,
+                    task_similarity,
+                    schema_fit,
+                    scale_score,
+                    balance_score,
+                    metadata_quality,
+                    on_chain_score,
+                    metadata_resolved: metadata.is_some(),
+                    sample_plan: None,
+                    proxy_utility: None,
+                    sample_failure_reason: None,
+                    explanation: String::new(),
+                },
+            });
+        }
+
+        candidates.sort_by(|a, b| {
+            b.valuation
+                .coarse_score
+                .partial_cmp(&a.valuation.coarse_score)
+                .unwrap_or(Ordering::Equal)
+        });
+
+        let batch_size = config.coarse_top_k.max(1);
+        let mut selected_collection_plan = None;
+        let mut evaluated_batch_count = 0usize;
+        let mut stop_after_batch_end = None;
+
+        for (batch_index, batch_start) in (0..candidates.len()).step_by(batch_size).enumerate() {
+            let batch_end = (batch_start + batch_size).min(candidates.len());
+            evaluated_batch_count += 1;
+
+            for candidate in candidates.iter_mut().take(batch_end).skip(batch_start) {
+                let Some(sample_evaluator) = sample_evaluator else {
+                    break;
+                };
+                let Some(metadata) = candidate.metadata.as_ref() else {
+                    candidate.valuation.sample_failure_reason =
+                        Some("sample evaluation skipped: resolved metadata unavailable".into());
+                    errors.push(format!(
+                        "sample evaluation skipped for {}: metadata unavailable",
+                        candidate.valuation.result.cid.0
+                    ));
+                    continue;
+                };
+
+                let plan = build_sample_plan(metadata, config);
+                if plan.sample_fraction == 0.0
+                    || (plan.estimated_rows == 0
+                        && !supports_sampling_without_shape_estimate(&candidate.valuation.result))
+                {
+                    candidate.valuation.sample_failure_reason = Some(
+                        if plan.sample_fraction == 0.0 {
+                            "sample evaluation skipped: sampling plan resolved to zero sample fraction"
+                                .into()
+                        } else {
+                            "sample evaluation skipped: dataset shape unavailable for sample download"
+                                .into()
+                        },
+                    );
+                    continue;
+                }
+
+                candidate.valuation.sample_plan = Some(plan.clone());
+                match sample_evaluator
+                    .evaluate_sample(&candidate.valuation.result, metadata, task, &plan)
+                    .await
+                {
+                    Ok(outcome) => {
+                        if let Some(proxy_utility) = outcome.proxy_utility {
+                            candidate.valuation.sample_failure_reason = None;
+                            candidate.valuation.final_score = match proxy_utility.apply_mode {
+                                ProxyUtilityApplyMode::Blend => blend_scores(
+                                    candidate.valuation.coarse_score,
+                                    proxy_utility.utility_score,
+                                    config.metadata_weight,
+                                    config.utility_weight,
+                                ),
+                                ProxyUtilityApplyMode::OverrideFinal => proxy_utility.utility_score,
+                            };
+                            candidate.valuation.proxy_utility = Some(proxy_utility);
+                        } else {
+                            candidate.valuation.sample_failure_reason =
+                                Some(outcome.no_score_reason.unwrap_or_else(|| {
+                                    "sample evaluation returned no usable score".into()
+                                }));
+                        }
+                    }
+                    Err(error) => {
+                        let formatted = format_error_chain(&error);
+                        candidate.valuation.sample_failure_reason = Some(formatted.clone());
+                        errors.push(format!(
+                            "sample evaluation failed for {}: {}",
+                            candidate.valuation.result.cid.0, formatted
+                        ));
+                    }
+                }
+            }
+
+            if let Some(plan) =
+                select_collection_from_batch(task, &candidates[..batch_end], 0, batch_index)
+            {
+                stop_after_batch_end = Some(batch_end);
+                selected_collection_plan = Some(plan);
+                break;
+            }
+        }
+
+        if let Some(skipped_start) = stop_after_batch_end {
+            for candidate in candidates.iter_mut().skip(skipped_start) {
+                if candidate.valuation.sample_failure_reason.is_none() && sample_evaluator.is_some()
+                {
+                    candidate.valuation.sample_failure_reason = Some(
+                        "sample evaluation skipped: collection selection succeeded in an earlier batch"
+                            .into(),
+                    );
+                }
+            }
+        }
+
+        if selected_collection_plan.is_none() && task.has_collection_constraints() {
+            errors.push(format!(
+                "dataset collection selection failed after {} batch(es): budget <= {} and total size {}",
+                evaluated_batch_count,
+                task.max_total_price
+                    .map(|value| format!("{value:.4}"))
+                    .unwrap_or_else(|| "unbounded".into()),
+                describe_size_interval(task.min_total_size_bytes, task.max_total_size_bytes),
+            ));
+        }
+
+        for candidate in &mut candidates {
+            candidate.valuation.explanation = build_valuation_explanation(&candidate.valuation);
+        }
+
+        let selected_collection = selected_collection_plan
+            .as_ref()
+            .map(|plan| build_selected_collection(plan, &candidates));
+
+        candidates.sort_by(|a, b| {
+            b.valuation
+                .final_score
+                .partial_cmp(&a.valuation.final_score)
+                .unwrap_or(Ordering::Equal)
+        });
+
+        let ranked_candidates: Vec<DatasetValuation> = candidates
+            .into_iter()
+            .map(|candidate| candidate.valuation)
+            .collect();
+        let selected = selected_collection
+            .as_ref()
+            .and_then(select_representative_dataset)
+            .or_else(|| ranked_candidates.first().cloned());
+
+        Ok(DatasetSelectionOutput {
+            task: task.clone(),
+            selected,
+            selected_collection,
+            candidates: ranked_candidates,
+            errors,
+        })
+    }
+
     /// Search local P2P metadata store.
     async fn search_local(
         &self,
@@ -178,8 +488,8 @@ impl SearchEngine {
         _filters: &SearchFilters,
         metadata: &[DatasetMetadata],
     ) -> Result<Vec<SearchResult>> {
-        let query_lower = intent.raw_query.to_lowercase();
-        let keywords = &intent.keywords;
+        let keyword_terms = normalized_intent_keywords(intent);
+        let fallback_query = intent.raw_query.to_lowercase();
 
         let results: Vec<SearchResult> = metadata
             .iter()
@@ -198,8 +508,13 @@ impl SearchEngine {
                 let data_type = format!("{:?}", m.data_type).to_lowercase();
                 let all_text = format!("{title} {desc} {tags_str} {column_names} {data_type}");
 
-                // Match if query substring or any keyword matches
-                all_text.contains(&query_lower) || keywords.iter().any(|kw| all_text.contains(kw))
+                if keyword_terms.is_empty() {
+                    all_text.contains(&fallback_query)
+                } else {
+                    keyword_terms
+                        .iter()
+                        .any(|keyword| all_text.contains(keyword))
+                }
             })
             .map(metadata_to_search_result)
             .collect();
@@ -216,21 +531,7 @@ impl SearchEngine {
     ) -> (Vec<SearchResult>, Vec<String>) {
         let mut results = vec![];
         let mut errors = vec![];
-        let external_query = {
-            let mut seen = std::collections::HashSet::new();
-            let keywords: Vec<&str> = intent
-                .keywords
-                .iter()
-                .map(|kw| kw.trim())
-                .filter(|kw| !kw.is_empty())
-                .filter(|kw| seen.insert(kw.to_lowercase()))
-                .collect();
-            if keywords.is_empty() {
-                intent.raw_query.clone()
-            } else {
-                keywords.join(" ")
-            }
-        };
+        let external_query = build_search_query(intent);
         for adapter in &self.adapters {
             match adapter.search(&external_query, limit).await {
                 Ok(mut r) => results.append(&mut r),
@@ -262,25 +563,292 @@ pub struct SearchOutput {
     pub profile: Option<QueryProfile>,
 }
 
+#[derive(Debug, Clone)]
+struct ValuationCandidateState {
+    valuation: DatasetValuation,
+    metadata: Option<DatasetMetadata>,
+}
+
+/// Structured description of the downstream training task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetSelectionTask {
+    pub task_description: String,
+    pub task_type: String,
+    pub required_columns: Vec<String>,
+    pub target_entity: Option<String>,
+    pub required_data_type: Option<DataType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_price: Option<f64>,
+    #[serde(default)]
+    pub min_total_size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_size_bytes: Option<u64>,
+}
+
+impl From<&QueryProfile> for DatasetSelectionTask {
+    fn from(profile: &QueryProfile) -> Self {
+        Self {
+            task_description: profile
+                .task_description
+                .clone()
+                .filter(|description| !description.trim().is_empty())
+                .unwrap_or_else(|| profile.raw_query.clone()),
+            task_type: profile
+                .task_type
+                .clone()
+                .unwrap_or_else(|| "general".to_string()),
+            required_columns: infer_required_columns(profile),
+            target_entity: profile.target_entity.clone(),
+            required_data_type: sample_unit_data_type(&profile.data_standard.sample_unit)
+                .or_else(|| strict_task_data_type(profile.task_type.as_deref())),
+            max_total_price: parse_budget_amount_str(&profile.data_standard.budget),
+            min_total_size_bytes: profile.data_standard.min_dataset_size_bytes,
+            max_total_size_bytes: Some(profile.data_standard.max_dataset_size_bytes)
+                .filter(|value| *value > 0),
+        }
+    }
+}
+
+impl DatasetSelectionTask {
+    pub fn has_collection_constraints(&self) -> bool {
+        self.max_total_price.is_some()
+            || self.min_total_size_bytes > 0
+            || self.max_total_size_bytes.is_some()
+    }
+}
+
+/// Knobs for the two-stage dataset valuation pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetValuationConfig {
+    pub coarse_top_k: usize,
+    pub sample_fraction: f64,
+    pub max_sample_rows: u64,
+    pub max_sample_bytes: u64,
+    pub sample_time_budget_secs: u64,
+    pub metadata_weight: f64,
+    pub utility_weight: f64,
+    pub scale_saturation_rows: u64,
+    pub scale_saturation_bytes: u64,
+}
+
+impl Default for DatasetValuationConfig {
+    fn default() -> Self {
+        Self {
+            coarse_top_k: 5,
+            sample_fraction: 0.01,
+            max_sample_rows: 2_000,
+            max_sample_bytes: 64 * 1024 * 1024,
+            sample_time_budget_secs: 120,
+            metadata_weight: 0.65,
+            utility_weight: 0.35,
+            scale_saturation_rows: 100_000,
+            scale_saturation_bytes: 512 * 1024 * 1024,
+        }
+    }
+}
+
+/// Download/train budget for the optional sample stage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplePlan {
+    pub sample_fraction: f64,
+    pub estimated_rows: u64,
+    pub estimated_bytes: u64,
+    pub max_rows: u64,
+    pub max_bytes: u64,
+    pub time_budget_secs: u64,
+}
+
+/// How a sample-based utility score should affect the final dataset valuation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProxyUtilityApplyMode {
+    Blend,
+    OverrideFinal,
+}
+
+/// Proxy model result computed from a small sample of a dataset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyUtilityReport {
+    pub utility_score: f64,
+    pub apply_mode: ProxyUtilityApplyMode,
+    pub proxy_metric_name: String,
+    pub proxy_metric_value: f64,
+    pub sampled_rows: u64,
+    pub sampled_bytes: u64,
+    pub notes: Option<String>,
+}
+
+/// Outcome of a sample-evaluation attempt, including an optional no-score reason.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SampleEvaluationOutcome {
+    pub proxy_utility: Option<ProxyUtilityReport>,
+    pub no_score_reason: Option<String>,
+}
+
+impl SampleEvaluationOutcome {
+    pub fn scored(proxy_utility: ProxyUtilityReport) -> Self {
+        Self {
+            proxy_utility: Some(proxy_utility),
+            no_score_reason: None,
+        }
+    }
+
+    pub fn no_score(reason: impl Into<String>) -> Self {
+        Self {
+            proxy_utility: None,
+            no_score_reason: Some(reason.into()),
+        }
+    }
+}
+
+/// Full valuation record for a candidate dataset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetValuation {
+    pub result: SearchResult,
+    pub coarse_score: f64,
+    pub final_score: f64,
+    pub task_similarity: f64,
+    pub schema_fit: f64,
+    pub scale_score: f64,
+    pub balance_score: f64,
+    pub metadata_quality: f64,
+    pub on_chain_score: f64,
+    pub metadata_resolved: bool,
+    pub sample_plan: Option<SamplePlan>,
+    pub proxy_utility: Option<ProxyUtilityReport>,
+    pub sample_failure_reason: Option<String>,
+    pub explanation: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OnChainScoreInputs {
+    trade_count: u64,
+    avg_rating: f64,
+    positive_reviews: u64,
+    neutral_reviews: u64,
+    negative_reviews: u64,
+}
+
+impl OnChainScoreInputs {
+    fn review_count(&self) -> u64 {
+        self.positive_reviews + self.neutral_reviews + self.negative_reviews
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewSentiment {
+    Positive,
+    Neutral,
+    Negative,
+}
+
+/// End-to-end output for search + valuation + best-dataset selection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetSelectionOutput {
+    pub task: DatasetSelectionTask,
+    pub selected: Option<DatasetValuation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_collection: Option<DatasetCollectionSelection>,
+    pub candidates: Vec<DatasetValuation>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetCollectionSelection {
+    pub datasets: Vec<DatasetValuation>,
+    pub total_price: f64,
+    pub total_size_bytes: u64,
+    pub total_value: f64,
+    pub batch_index: usize,
+    pub batch_start_rank: usize,
+    pub batch_end_rank: usize,
+    pub price_step: f64,
+}
+
+#[derive(Debug, Clone)]
+struct DatasetCollectionSelectionPlan {
+    candidate_indices: Vec<usize>,
+    total_price: f64,
+    total_size_bytes: u64,
+    total_value: f64,
+    batch_index: usize,
+    batch_start_rank: usize,
+    batch_end_rank: usize,
+    price_step: f64,
+}
+
+#[derive(Debug, Clone)]
+struct SelectionBatchCandidate {
+    global_index: usize,
+    price_amount: f64,
+    price_units: usize,
+    size_bytes: u64,
+    total_value: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CollectionDpState {
+    total_price: f64,
+    total_size_bytes: u64,
+    total_value: f64,
+    chosen_indices: Vec<usize>,
+}
+
+/// Allows callers to resolve richer metadata for external search results.
+#[async_trait::async_trait]
+pub trait MetadataResolver: Send + Sync {
+    async fn resolve_metadata(&self, result: &SearchResult) -> Result<Option<DatasetMetadata>>;
+}
+
+/// Optional second-stage evaluator backed by a tiny proxy model.
+#[async_trait::async_trait]
+pub trait SampleEvaluator: Send + Sync {
+    async fn evaluate_sample(
+        &self,
+        result: &SearchResult,
+        metadata: &DatasetMetadata,
+        task: &DatasetSelectionTask,
+        plan: &SamplePlan,
+    ) -> Result<SampleEvaluationOutcome>;
+}
+
 /// Backward-compatible alias for the structured query profile type.
 pub type ParsedIntent = QueryProfile;
 
 /// Rank a search result incorporating community signal.
 /// This is a lightweight version of TCV used for search ranking.
-fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &ParsedIntent) -> f64 {
+fn rank_with_signal(
+    result: &SearchResult,
+    metadata: Option<&DatasetMetadata>,
+    signal: &CommunitySignal,
+    intent: &ParsedIntent,
+) -> f64 {
     let quality = result.quality.as_ref().map(|q| q.total).unwrap_or(50.0);
 
-    // Keyword relevance: how many query keywords appear in title/description/tags/schema
+    let metadata_text = build_dataset_text(result, metadata).to_lowercase();
     let searchable_text = searchable_result_text(result);
-    let keyword_hits = intent
-        .keywords
+    let task_text = intent
+        .task_description
+        .as_deref()
+        .filter(|description| !description.trim().is_empty())
+        .unwrap_or(intent.raw_query.as_str());
+
+    let keywords = normalized_intent_keywords(intent);
+    let keyword_hits = keywords
         .iter()
-        .filter(|kw| searchable_text.contains(kw.as_str()))
+        .filter(|keyword| {
+            metadata_text.contains(keyword.as_str()) || searchable_text.contains(keyword.as_str())
+        })
         .count();
-    let relevance = if intent.keywords.is_empty() {
-        50.0
+    let keyword_relevance = if keywords.is_empty() {
+        0.0
     } else {
-        (keyword_hits as f64 / intent.keywords.len() as f64) * 100.0
+        (keyword_hits as f64 / keywords.len() as f64) * 100.0
+    };
+    let task_description_relevance = cosine_similarity(task_text, &metadata_text) * 100.0;
+    let relevance = if keywords.is_empty() {
+        task_description_relevance
+    } else {
+        (0.35 * keyword_relevance + 0.65 * task_description_relevance).clamp(0.0, 100.0)
     };
 
     // Community signal: positive reviews boost, negative reviews penalize
@@ -295,7 +863,7 @@ fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &Pa
     let risk = signal.risk_penalty();
     let price_penalty = if result.price.is_free() { 0.0 } else { 5.0 };
     let market_boost = market_signal_score(result);
-    let task_type_adjustment = match strict_task_data_type(intent.task_type.as_deref()) {
+    let task_type_adjustment = match required_data_type(intent) {
         Some(expected_type) if result.data_type == expected_type => 20.0,
         Some(_) => -40.0,
         None => 0.0,
@@ -312,11 +880,59 @@ fn rank_with_signal(result: &SearchResult, signal: &CommunitySignal, intent: &Pa
         + task_type_adjustment
 }
 
+fn normalized_intent_keywords(intent: &ParsedIntent) -> Vec<String> {
+    let mut seen = HashSet::new();
+    intent
+        .keywords
+        .iter()
+        .map(|keyword| keyword.trim().to_lowercase())
+        .filter(|keyword| !keyword.is_empty())
+        .filter(|keyword| seen.insert(keyword.clone()))
+        .collect()
+}
+
+fn build_search_query(intent: &ParsedIntent) -> String {
+    let keywords = normalized_intent_keywords(intent);
+    if keywords.is_empty() {
+        intent.raw_query.clone()
+    } else {
+        keywords.join(" ")
+    }
+}
+
 fn profile_with_task_type(mut profile: QueryProfile, task_type: Option<&str>) -> QueryProfile {
     if let Some(task_type) = task_type.map(str::trim).filter(|s| !s.is_empty()) {
         profile.task_type = Some(task_type.to_string());
     }
     profile
+}
+
+fn apply_intent_hard_filters(
+    results: &mut Vec<SearchResult>,
+    profile: &QueryProfile,
+    _metadata_by_cid: &HashMap<&str, &DatasetMetadata>,
+) {
+    if let Some(required_type) = required_data_type(profile) {
+        results.retain(|result| result.data_type == required_type);
+    }
+}
+
+fn required_data_type(profile: &QueryProfile) -> Option<data_core::types::DataType> {
+    sample_unit_data_type(&profile.data_standard.sample_unit)
+        .or_else(|| strict_task_data_type(profile.task_type.as_deref()))
+}
+
+fn sample_unit_data_type(sample_unit: &str) -> Option<data_core::types::DataType> {
+    use data_core::types::DataType;
+
+    match sample_unit.trim().to_lowercase().as_str() {
+        "image" | "images" | "photo" | "photos" | "picture" | "pictures" => Some(DataType::Image),
+        "video" | "videos" => Some(DataType::Video),
+        "audio" => Some(DataType::Audio),
+        "text" | "document" | "documents" => Some(DataType::Text),
+        "tabular" | "table" | "tables" | "csv" => Some(DataType::Tabular),
+        _ => None,
+    }
 }
 
 fn strict_task_data_type(task_type: Option<&str>) -> Option<data_core::types::DataType> {
@@ -335,6 +951,1176 @@ fn strict_task_data_type(task_type: Option<&str>) -> Option<data_core::types::Da
         Some(task_type) if task_type == "video_classification" => Some(DataType::Video),
         _ => None,
     }
+}
+
+fn compose_coarse_score(
+    task_similarity: f64,
+    schema_fit: f64,
+    scale_score: f64,
+    balance_score: f64,
+    metadata_quality: f64,
+    on_chain_score: f64,
+) -> f64 {
+    (0.55 * task_similarity
+        + 0.15 * schema_fit
+        + 0.15 * scale_score
+        + 0.10 * balance_score
+        + 0.05 * metadata_quality
+        + ON_CHAIN_COARSE_ADJUST_WEIGHT * (on_chain_score - ON_CHAIN_SCORE_NEUTRAL))
+        .clamp(0.0, 100.0)
+}
+
+async fn compute_on_chain_score(result: &SearchResult) -> Result<f64> {
+    if result.source != DataSource::GuixuHub {
+        return Ok(ON_CHAIN_SCORE_NEUTRAL);
+    }
+
+    let trade_count = result
+        .market
+        .as_ref()
+        .map(|market| market.trade_count)
+        .unwrap_or(0);
+    let mut inputs = OnChainScoreInputs {
+        trade_count,
+        ..Default::default()
+    };
+
+    let Some(listing_id) = guixu_listing_id(result) else {
+        return Ok(score_on_chain_signal(&inputs));
+    };
+
+    match fetch_guixu_review_inputs(listing_id).await {
+        Ok(review_inputs) => {
+            inputs.avg_rating = review_inputs.avg_rating;
+            inputs.positive_reviews = review_inputs.positive_reviews;
+            inputs.neutral_reviews = review_inputs.neutral_reviews;
+            inputs.negative_reviews = review_inputs.negative_reviews;
+        }
+        Err(error) => {
+            warn!(
+                cid = %result.cid.0,
+                listing_id,
+                error = %error,
+                "guixu review fetch failed; using trade-only on-chain signal"
+            );
+        }
+    }
+
+    Ok(score_on_chain_signal(&inputs))
+}
+
+fn guixu_listing_id(result: &SearchResult) -> Option<&str> {
+    result
+        .cid
+        .0
+        .strip_prefix("guixu-hub:")
+        .or_else(|| result.provider.0.strip_prefix("guixu:hub:"))
+}
+
+async fn fetch_guixu_review_inputs(listing_id: &str) -> Result<OnChainScoreInputs> {
+    let Some(contract_address) = env_or_setting("GUIXU_BASE_CONTRACT_ADDRESS")
+        .or_else(|| env_or_setting("GUIXU_CONTRACT_ADDRESS"))
+    else {
+        return Ok(OnChainScoreInputs::default());
+    };
+
+    let network = env_or_setting("GUIXU_BASE_NETWORK").unwrap_or_else(|| "mainnet".to_string());
+    let config = match network.trim().to_lowercase().as_str() {
+        "mainnet" | "base" => ChainConfig::base_mainnet(&contract_address),
+        "sepolia" | "base-sepolia" => ChainConfig::base_sepolia(&contract_address),
+        other => {
+            warn!(
+                network = other,
+                "unsupported GUIXU_BASE_NETWORK; falling back to Base mainnet"
+            );
+            ChainConfig::base_mainnet(&contract_address)
+        }
+    };
+
+    let client = BaseChainClient::new(config);
+    let reviews = fetch_buyer_reviews(&client, listing_id)
+        .await
+        .with_context(|| format!("fetch buyer reviews for listing {listing_id}"))?;
+
+    if reviews.is_empty() {
+        return Ok(OnChainScoreInputs::default());
+    }
+
+    let summary = summarize_reviews(listing_id, &reviews);
+    let classified = classify_review_sentiments(&reviews).await;
+    Ok(OnChainScoreInputs {
+        trade_count: 0,
+        avg_rating: summary.avg_rating,
+        positive_reviews: classified.positive_reviews,
+        neutral_reviews: classified.neutral_reviews,
+        negative_reviews: classified.negative_reviews,
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+struct ClassifiedReviewCounts {
+    positive_reviews: u64,
+    neutral_reviews: u64,
+    negative_reviews: u64,
+}
+
+impl ClassifiedReviewCounts {
+    fn push(&mut self, sentiment: ReviewSentiment) {
+        match sentiment {
+            ReviewSentiment::Positive => self.positive_reviews += 1,
+            ReviewSentiment::Neutral => self.neutral_reviews += 1,
+            ReviewSentiment::Negative => self.negative_reviews += 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CommentClassificationItem {
+    id: usize,
+    rating: u8,
+    comment: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepSeekSentimentPayload {
+    items: Vec<DeepSeekSentimentItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepSeekSentimentItem {
+    id: usize,
+    sentiment: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepSeekChatResponse {
+    choices: Vec<DeepSeekChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepSeekChoice {
+    message: DeepSeekChoiceMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepSeekChoiceMessage {
+    content: Option<String>,
+}
+
+async fn classify_review_sentiments(
+    reviews: &[data_attestation::BuyerReview],
+) -> ClassifiedReviewCounts {
+    let mut fallback_counts = ClassifiedReviewCounts::default();
+    let mut comment_items = Vec::new();
+    let mut fallback_by_id = HashMap::new();
+
+    for (id, review) in reviews.iter().enumerate() {
+        let fallback = sentiment_from_rating(review.rating);
+        let comment = review.comment.trim();
+        if comment.is_empty() || comment_items.len() >= ON_CHAIN_SENTIMENT_SAMPLE_LIMIT {
+            fallback_counts.push(fallback);
+            continue;
+        }
+
+        fallback_by_id.insert(id, fallback);
+        comment_items.push(CommentClassificationItem {
+            id,
+            rating: review.rating,
+            comment: comment.to_string(),
+        });
+    }
+
+    if comment_items.is_empty() {
+        return fallback_counts;
+    }
+
+    match classify_comment_sentiments_with_deepseek(&comment_items).await {
+        Ok(classified) => {
+            for item in comment_items {
+                let sentiment = classified
+                    .get(&item.id)
+                    .copied()
+                    .unwrap_or_else(|| fallback_by_id[&item.id]);
+                fallback_counts.push(sentiment);
+            }
+            fallback_counts
+        }
+        Err(error) => {
+            warn!(error = %error, "DeepSeek review sentiment classification failed; falling back to ratings");
+            for item in comment_items {
+                fallback_counts.push(fallback_by_id[&item.id]);
+            }
+            fallback_counts
+        }
+    }
+}
+
+async fn classify_comment_sentiments_with_deepseek(
+    items: &[CommentClassificationItem],
+) -> Result<HashMap<usize, ReviewSentiment>> {
+    let config = IntentParserConfig::from_env();
+    let api_key = config
+        .api_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("missing DEEPSEEK_API_KEY"))?;
+    let endpoint = format!("{}/chat/completions", config.api_base.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(config.timeout)
+        .user_agent("guixu/0.1")
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let items_json =
+        serde_json::to_string(items).context("serialize review comments for DeepSeek request")?;
+    let prompt = format!(
+        "Classify each buyer review comment about a dataset purchase. Return JSON only with this exact schema: {{\"items\":[{{\"id\":0,\"sentiment\":\"positive|neutral|negative\"}}]}}. Use the comment as the primary signal and the numeric rating only as a weak hint. Mark complaints about poor quality, missing data, scams, bad seller behavior, or mismatched content as negative. Mark praise, satisfaction, successful delivery, or recommendation as positive. Mark factual, mixed, or unclear comments as neutral.\n\nReviews:\n{items_json}"
+    );
+    let response = client
+        .post(endpoint)
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": config.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You classify buyer review comments for dataset marketplace transactions and must return strict JSON."
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "response_format": { "type": "json_object" }
+        }))
+        .send()
+        .await
+        .context("send DeepSeek on-chain review classification request")?
+        .error_for_status()
+        .context("DeepSeek on-chain review classification returned error status")?
+        .json::<DeepSeekChatResponse>()
+        .await
+        .context("parse DeepSeek on-chain review classification response")?;
+
+    let content = response
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.message.content)
+        .map(|content| content.trim().to_string())
+        .filter(|content| !content.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("DeepSeek returned an empty on-chain review payload"))?;
+    let payload: DeepSeekSentimentPayload = serde_json::from_str(&content)
+        .with_context(|| format!("parse DeepSeek on-chain review JSON: {content}"))?;
+
+    Ok(payload
+        .items
+        .into_iter()
+        .filter_map(|item| {
+            parse_review_sentiment(&item.sentiment).map(|sentiment| (item.id, sentiment))
+        })
+        .collect())
+}
+
+fn sentiment_from_rating(rating: u8) -> ReviewSentiment {
+    match rating {
+        4..=5 => ReviewSentiment::Positive,
+        0..=2 => ReviewSentiment::Negative,
+        _ => ReviewSentiment::Neutral,
+    }
+}
+
+fn parse_review_sentiment(raw: &str) -> Option<ReviewSentiment> {
+    let normalized = raw.trim().to_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.contains("positive") || normalized.contains("好评") || normalized.contains("满意")
+    {
+        Some(ReviewSentiment::Positive)
+    } else if normalized.contains("negative")
+        || normalized.contains("差评")
+        || normalized.contains("不满")
+    {
+        Some(ReviewSentiment::Negative)
+    } else if normalized.contains("neutral") || normalized.contains("中性") {
+        Some(ReviewSentiment::Neutral)
+    } else {
+        None
+    }
+}
+
+fn score_on_chain_signal(inputs: &OnChainScoreInputs) -> f64 {
+    let review_count = inputs.review_count();
+    if inputs.trade_count == 0 && review_count == 0 {
+        return ON_CHAIN_SCORE_NEUTRAL;
+    }
+
+    let trade_score = if inputs.trade_count == 0 {
+        ON_CHAIN_SCORE_NEUTRAL
+    } else {
+        let activity = saturating_log_score(inputs.trade_count, ON_CHAIN_TRADE_SATURATION) / 100.0;
+        (ON_CHAIN_SCORE_NEUTRAL + 35.0 * activity).clamp(ON_CHAIN_SCORE_NEUTRAL, 85.0)
+    };
+
+    let sentiment_score = if review_count == 0 {
+        ON_CHAIN_SCORE_NEUTRAL
+    } else {
+        let sentiment_bias =
+            (inputs.positive_reviews as f64 - inputs.negative_reviews as f64) / review_count as f64;
+        let rating_bias = if inputs.avg_rating > 0.0 {
+            ((inputs.avg_rating - 3.0) / 2.0).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+        let confidence = 1.0 - (1.0 / (1.0 + review_count as f64 * 0.4));
+        let base = (ON_CHAIN_SCORE_NEUTRAL + 45.0 * (0.7 * sentiment_bias + 0.3 * rating_bias))
+            .clamp(0.0, 100.0);
+        (ON_CHAIN_SCORE_NEUTRAL * (1.0 - confidence) + base * confidence).clamp(0.0, 100.0)
+    };
+
+    match (inputs.trade_count > 0, review_count > 0) {
+        (true, true) => (0.30 * trade_score + 0.70 * sentiment_score).clamp(0.0, 100.0),
+        (true, false) => trade_score,
+        (false, true) => sentiment_score,
+        (false, false) => ON_CHAIN_SCORE_NEUTRAL,
+    }
+}
+
+fn env_or_setting(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            load_setting_env_value(key)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn blend_scores(
+    metadata_score: f64,
+    utility_score: f64,
+    metadata_weight: f64,
+    utility_weight: f64,
+) -> f64 {
+    let metadata_weight = metadata_weight.max(0.0);
+    let utility_weight = utility_weight.max(0.0);
+    let total_weight = (metadata_weight + utility_weight).max(f64::EPSILON);
+    ((metadata_score * metadata_weight + utility_score * utility_weight) / total_weight)
+        .clamp(0.0, 100.0)
+}
+
+fn compute_task_similarity(
+    task: &DatasetSelectionTask,
+    result: &SearchResult,
+    metadata: Option<&DatasetMetadata>,
+) -> f64 {
+    let task_text = build_task_text(task);
+    let dataset_text = build_dataset_text(result, metadata);
+    let cosine = cosine_similarity(&task_text, &dataset_text) * 100.0;
+    let dataset_lower = dataset_text.to_lowercase();
+
+    let entity_bonus = task
+        .target_entity
+        .as_deref()
+        .map(|entity| {
+            if dataset_lower.contains(&entity.to_lowercase()) {
+                15.0
+            } else {
+                0.0
+            }
+        })
+        .unwrap_or(0.0);
+
+    let type_bonus = match task.task_type.as_str() {
+        "classification" => {
+            if dataset_lower.contains("classification")
+                || dataset_lower.contains("classifier")
+                || has_any_column_like(result, metadata, &["label", "class", "target", "category"])
+            {
+                10.0
+            } else {
+                0.0
+            }
+        }
+        "forecasting" => {
+            if dataset_lower.contains("forecast")
+                || dataset_lower.contains("time series")
+                || has_any_column_like(result, metadata, &["time", "date", "timestamp", "value"])
+            {
+                10.0
+            } else {
+                0.0
+            }
+        }
+        _ => 0.0,
+    };
+
+    (cosine * 0.85 + entity_bonus + type_bonus).clamp(0.0, 100.0)
+}
+
+fn compute_schema_fit(
+    task: &DatasetSelectionTask,
+    result: &SearchResult,
+    metadata: Option<&DatasetMetadata>,
+) -> f64 {
+    if task.required_columns.is_empty() {
+        return 50.0;
+    }
+
+    let columns = candidate_column_names(result, metadata);
+    if columns.is_empty() {
+        return 25.0;
+    }
+
+    let total = task
+        .required_columns
+        .iter()
+        .map(|required| {
+            let required = required.to_lowercase();
+            columns
+                .iter()
+                .map(|column| match_score(column, &required))
+                .fold(0.0_f64, f64::max)
+        })
+        .sum::<f64>();
+
+    (total / task.required_columns.len() as f64 * 100.0).clamp(0.0, 100.0)
+}
+
+fn compute_scale_score(
+    config: &DatasetValuationConfig,
+    result: &SearchResult,
+    metadata: Option<&DatasetMetadata>,
+) -> f64 {
+    let (rows, bytes) = candidate_shape(result, metadata);
+
+    let row_score = saturating_log_score(rows, config.scale_saturation_rows);
+    let byte_score = saturating_log_score(bytes, config.scale_saturation_bytes);
+
+    if rows == 0 && bytes == 0 {
+        40.0
+    } else {
+        (0.7 * row_score + 0.3 * byte_score).clamp(0.0, 100.0)
+    }
+}
+
+fn compute_balance_score(
+    task: &DatasetSelectionTask,
+    result: &SearchResult,
+    metadata: Option<&DatasetMetadata>,
+) -> f64 {
+    let mut score = if task.task_type == "classification" {
+        55.0
+    } else {
+        50.0
+    };
+    let dataset_text = build_dataset_text(result, metadata).to_lowercase();
+    let row_count = candidate_shape(result, metadata).0;
+
+    if task.task_type == "classification" {
+        if has_any_column_like(result, metadata, &["label", "class", "target", "category"]) {
+            score += 20.0;
+        }
+        if contains_any(
+            &dataset_text,
+            &["balanced", "class-balanced", "well-balanced", "stratified"],
+        ) {
+            score += 15.0;
+        }
+        if contains_any(&dataset_text, &["imbalanced", "long-tail", "skewed"]) {
+            score -= 25.0;
+        }
+        if row_count > 5_000 {
+            score += 5.0;
+        } else if row_count > 0 && row_count < 500 {
+            score -= 10.0;
+        }
+    }
+
+    if let Some(stats) = metadata.and_then(|metadata| metadata.stats.as_ref()) {
+        score += ((1.0 - stats.null_rate.clamp(0.0, 1.0)) * 10.0) - 5.0;
+    }
+
+    score.clamp(0.0, 100.0)
+}
+
+fn compute_metadata_quality(result: &SearchResult, metadata: Option<&DatasetMetadata>) -> f64 {
+    let description_present =
+        candidate_description(result, metadata).is_some() as u8 as f64 * 100.0;
+    let column_count = candidate_column_names(result, metadata).len() as u64;
+    let schema_score = if column_count == 0 {
+        20.0
+    } else {
+        (40.0 + (column_count.min(8) as f64 / 8.0) * 60.0).clamp(0.0, 100.0)
+    };
+    let stats_score = metadata
+        .and_then(|metadata| metadata.stats.as_ref())
+        .map(|stats| (1.0 - stats.null_rate.clamp(0.0, 1.0)) * 100.0)
+        .or_else(|| result.quality.as_ref().map(|quality| quality.total))
+        .unwrap_or(50.0);
+    let provenance_score = metadata
+        .map(|metadata| {
+            if !metadata.signature.is_empty() || metadata.verifiable_credential.is_some() {
+                100.0
+            } else {
+                50.0
+            }
+        })
+        .unwrap_or(50.0);
+
+    (0.25 * description_present
+        + 0.30 * schema_score
+        + 0.30 * stats_score
+        + 0.15 * provenance_score)
+        .clamp(0.0, 100.0)
+}
+
+fn build_sample_plan(metadata: &DatasetMetadata, config: &DatasetValuationConfig) -> SamplePlan {
+    if config.coarse_top_k == 0
+        || config.sample_fraction <= 0.0
+        || config.max_sample_rows == 0
+        || config.max_sample_bytes == 0
+    {
+        return SamplePlan {
+            sample_fraction: 0.0,
+            estimated_rows: 0,
+            estimated_bytes: 0,
+            max_rows: config.max_sample_rows,
+            max_bytes: config.max_sample_bytes,
+            time_budget_secs: config.sample_time_budget_secs,
+        };
+    }
+
+    let base_fraction = config.sample_fraction.clamp(0.0, 1.0);
+    let row_fraction = if metadata.schema.row_count > 0 {
+        config.max_sample_rows as f64 / metadata.schema.row_count as f64
+    } else {
+        1.0
+    };
+    let byte_fraction = if metadata.schema.size_bytes > 0 {
+        config.max_sample_bytes as f64 / metadata.schema.size_bytes as f64
+    } else {
+        1.0
+    };
+    let sample_fraction = base_fraction
+        .min(row_fraction)
+        .min(byte_fraction)
+        .clamp(0.0, 1.0);
+
+    let estimated_rows = if metadata.schema.row_count == 0 || sample_fraction == 0.0 {
+        0
+    } else {
+        ((metadata.schema.row_count as f64 * sample_fraction).ceil() as u64)
+            .max(1)
+            .min(config.max_sample_rows)
+    };
+    let estimated_bytes = if metadata.schema.size_bytes == 0 || sample_fraction == 0.0 {
+        0
+    } else {
+        ((metadata.schema.size_bytes as f64 * sample_fraction).ceil() as u64)
+            .max(1)
+            .min(config.max_sample_bytes)
+    };
+
+    SamplePlan {
+        sample_fraction,
+        estimated_rows,
+        estimated_bytes,
+        max_rows: config.max_sample_rows,
+        max_bytes: config.max_sample_bytes,
+        time_budget_secs: config.sample_time_budget_secs,
+    }
+}
+
+fn select_collection_from_batch(
+    task: &DatasetSelectionTask,
+    batch: &[ValuationCandidateState],
+    global_offset: usize,
+    batch_index: usize,
+) -> Option<DatasetCollectionSelectionPlan> {
+    if batch.is_empty() {
+        return None;
+    }
+
+    let budget_cap = normalized_budget_cap(task, batch);
+    let max_total_size_bytes = normalized_max_total_size_bytes(task, batch);
+    if max_total_size_bytes < task.min_total_size_bytes {
+        return None;
+    }
+
+    let price_step = derive_price_step(budget_cap);
+    let budget_units = discretize_price_units(budget_cap, price_step)?;
+    let batch_candidates: Vec<SelectionBatchCandidate> = batch
+        .iter()
+        .enumerate()
+        .filter_map(|(local_index, candidate)| {
+            let size_bytes =
+                candidate_size_bytes(&candidate.valuation.result, candidate.metadata.as_ref());
+            let price_amount =
+                candidate_price_amount(&candidate.valuation.result, candidate.metadata.as_ref());
+            let total_value = candidate_total_value(candidate);
+
+            if size_bytes == 0
+                || size_bytes > max_total_size_bytes
+                || price_amount > budget_cap + SELECTION_VALUE_EPSILON
+                || total_value <= 0.0
+            {
+                return None;
+            }
+
+            Some(SelectionBatchCandidate {
+                global_index: global_offset + local_index,
+                price_amount,
+                price_units: discretize_price_units(price_amount, price_step)?,
+                size_bytes,
+                total_value,
+            })
+        })
+        .collect();
+
+    if batch_candidates.is_empty() {
+        return None;
+    }
+
+    let mut states = vec![HashMap::<u64, CollectionDpState>::new(); budget_units + 1];
+    states[0].insert(0, CollectionDpState::default());
+
+    for candidate in &batch_candidates {
+        for spent_units in (0..=budget_units.saturating_sub(candidate.price_units)).rev() {
+            if states[spent_units].is_empty() {
+                continue;
+            }
+
+            let existing_states: Vec<CollectionDpState> =
+                states[spent_units].values().cloned().collect();
+            for state in existing_states {
+                let new_size = state.total_size_bytes.saturating_add(candidate.size_bytes);
+                if new_size > max_total_size_bytes {
+                    continue;
+                }
+
+                let new_spent_units = spent_units + candidate.price_units;
+                let new_state = CollectionDpState {
+                    total_price: state.total_price + candidate.price_amount,
+                    total_size_bytes: new_size,
+                    total_value: state.total_value + candidate.total_value,
+                    chosen_indices: {
+                        let mut chosen_indices = state.chosen_indices.clone();
+                        chosen_indices.push(candidate.global_index);
+                        chosen_indices
+                    },
+                };
+
+                let replace = states[new_spent_units]
+                    .get(&new_size)
+                    .map(|current| is_better_dp_state(&new_state, current))
+                    .unwrap_or(true);
+                if replace {
+                    states[new_spent_units].insert(new_size, new_state);
+                }
+            }
+        }
+
+        for frontier in &mut states {
+            prune_selection_frontier(frontier);
+        }
+    }
+
+    let mut best: Option<(usize, CollectionDpState)> = None;
+    for (spent_units, frontier) in states.into_iter().enumerate() {
+        for state in frontier.into_values() {
+            if state.chosen_indices.is_empty()
+                || state.total_size_bytes < task.min_total_size_bytes
+                || state.total_size_bytes > max_total_size_bytes
+            {
+                continue;
+            }
+
+            let replace = best
+                .as_ref()
+                .map(|(best_spent_units, best_state)| {
+                    is_better_collection_solution(
+                        &state,
+                        spent_units,
+                        best_state,
+                        *best_spent_units,
+                    )
+                })
+                .unwrap_or(true);
+            if replace {
+                best = Some((spent_units, state));
+            }
+        }
+    }
+
+    best.map(|(_, state)| DatasetCollectionSelectionPlan {
+        candidate_indices: state.chosen_indices,
+        total_price: state.total_price,
+        total_size_bytes: state.total_size_bytes,
+        total_value: state.total_value,
+        batch_index,
+        batch_start_rank: global_offset + 1,
+        batch_end_rank: global_offset + batch.len(),
+        price_step,
+    })
+}
+
+fn build_selected_collection(
+    plan: &DatasetCollectionSelectionPlan,
+    candidates: &[ValuationCandidateState],
+) -> DatasetCollectionSelection {
+    let mut ranked_candidates: Vec<(f64, DatasetValuation)> = plan
+        .candidate_indices
+        .iter()
+        .filter_map(|index| {
+            candidates.get(*index).map(|candidate| {
+                (
+                    candidate_total_value(candidate),
+                    candidate.valuation.clone(),
+                )
+            })
+        })
+        .collect();
+    ranked_candidates.sort_by(|(left_value, _), (right_value, _)| {
+        right_value
+            .partial_cmp(left_value)
+            .unwrap_or(Ordering::Equal)
+    });
+    let datasets = ranked_candidates
+        .into_iter()
+        .map(|(_, valuation)| valuation)
+        .collect();
+
+    DatasetCollectionSelection {
+        datasets,
+        total_price: plan.total_price,
+        total_size_bytes: plan.total_size_bytes,
+        total_value: plan.total_value,
+        batch_index: plan.batch_index,
+        batch_start_rank: plan.batch_start_rank,
+        batch_end_rank: plan.batch_end_rank,
+        price_step: plan.price_step,
+    }
+}
+
+fn select_representative_dataset(
+    collection: &DatasetCollectionSelection,
+) -> Option<DatasetValuation> {
+    collection.datasets.first().cloned()
+}
+
+fn is_better_dp_state(candidate: &CollectionDpState, current: &CollectionDpState) -> bool {
+    candidate.total_value > current.total_value + SELECTION_VALUE_EPSILON
+        || ((candidate.total_value - current.total_value).abs() <= SELECTION_VALUE_EPSILON
+            && candidate.total_price + SELECTION_VALUE_EPSILON < current.total_price)
+}
+
+fn is_better_collection_solution(
+    candidate: &CollectionDpState,
+    candidate_spent_units: usize,
+    current: &CollectionDpState,
+    current_spent_units: usize,
+) -> bool {
+    if candidate.total_value > current.total_value + SELECTION_VALUE_EPSILON {
+        return true;
+    }
+    if (candidate.total_value - current.total_value).abs() > SELECTION_VALUE_EPSILON {
+        return false;
+    }
+    if candidate_spent_units != current_spent_units {
+        return candidate_spent_units < current_spent_units;
+    }
+    if (candidate.total_price - current.total_price).abs() > SELECTION_VALUE_EPSILON {
+        return candidate.total_price < current.total_price;
+    }
+    candidate.total_size_bytes > current.total_size_bytes
+}
+
+fn prune_selection_frontier(frontier: &mut HashMap<u64, CollectionDpState>) {
+    if frontier.len() <= 1 {
+        return;
+    }
+
+    let mut entries: Vec<(u64, CollectionDpState)> = frontier.drain().collect();
+    entries.sort_by(|(left_size, left_state), (right_size, right_state)| {
+        left_size
+            .cmp(right_size)
+            .then_with(|| {
+                right_state
+                    .total_value
+                    .partial_cmp(&left_state.total_value)
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| {
+                left_state
+                    .total_price
+                    .partial_cmp(&right_state.total_price)
+                    .unwrap_or(Ordering::Equal)
+            })
+    });
+
+    let mut best_value_so_far = f64::NEG_INFINITY;
+    for (size, state) in entries {
+        if state.total_value <= best_value_so_far + SELECTION_VALUE_EPSILON {
+            continue;
+        }
+        best_value_so_far = best_value_so_far.max(state.total_value);
+        frontier.insert(size, state);
+    }
+}
+
+fn normalized_budget_cap(task: &DatasetSelectionTask, batch: &[ValuationCandidateState]) -> f64 {
+    task.max_total_price
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or_else(|| {
+            batch
+                .iter()
+                .map(|candidate| {
+                    candidate_price_amount(&candidate.valuation.result, candidate.metadata.as_ref())
+                })
+                .sum::<f64>()
+        })
+}
+
+fn normalized_max_total_size_bytes(
+    task: &DatasetSelectionTask,
+    batch: &[ValuationCandidateState],
+) -> u64 {
+    task.max_total_size_bytes.unwrap_or_else(|| {
+        batch.iter().fold(0_u64, |acc, candidate| {
+            acc.saturating_add(candidate_size_bytes(
+                &candidate.valuation.result,
+                candidate.metadata.as_ref(),
+            ))
+        })
+    })
+}
+
+fn derive_price_step(budget_cap: f64) -> f64 {
+    const NICE_STEPS: &[f64] = &[0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0];
+
+    if !budget_cap.is_finite() || budget_cap <= 0.0 {
+        return 0.01;
+    }
+
+    let raw_step = (budget_cap / MAX_SELECTION_BUDGET_BUCKETS as f64).max(0.01);
+    NICE_STEPS
+        .iter()
+        .copied()
+        .find(|step| *step >= raw_step)
+        .unwrap_or_else(|| raw_step.ceil().max(1.0))
+}
+
+fn discretize_price_units(amount: f64, step: f64) -> Option<usize> {
+    if !amount.is_finite() || !step.is_finite() || step <= 0.0 {
+        return None;
+    }
+    Some((amount / step).ceil().max(0.0) as usize)
+}
+
+fn candidate_price_amount(result: &SearchResult, metadata: Option<&DatasetMetadata>) -> f64 {
+    metadata
+        .map(|metadata| metadata.price.amount)
+        .unwrap_or(result.price.amount)
+        .max(0.0)
+}
+
+fn candidate_size_bytes(result: &SearchResult, metadata: Option<&DatasetMetadata>) -> u64 {
+    candidate_shape(result, metadata).1
+}
+
+fn candidate_sample_count(result: &SearchResult, metadata: Option<&DatasetMetadata>) -> u64 {
+    candidate_shape(result, metadata).0
+}
+
+fn candidate_average_value_score(valuation: &DatasetValuation) -> f64 {
+    valuation.final_score.max(0.0)
+}
+
+fn candidate_contribution_value(
+    result: &SearchResult,
+    metadata: Option<&DatasetMetadata>,
+    valuation: &DatasetValuation,
+) -> f64 {
+    candidate_sample_count(result, metadata) as f64 * candidate_average_value_score(valuation)
+}
+
+fn candidate_total_value(candidate: &ValuationCandidateState) -> f64 {
+    candidate_contribution_value(
+        &candidate.valuation.result,
+        candidate.metadata.as_ref(),
+        &candidate.valuation,
+    )
+}
+
+fn describe_size_interval(min_size_bytes: u64, max_size_bytes: Option<u64>) -> String {
+    match max_size_bytes {
+        Some(max_size_bytes) => format!("[{min_size_bytes}, {max_size_bytes}] bytes"),
+        None => format!("[{min_size_bytes}, unbounded] bytes"),
+    }
+}
+
+fn parse_budget_amount_str(value: &str) -> Option<f64> {
+    let mut number = String::new();
+    let mut started = false;
+    let mut seen_dot = false;
+
+    for ch in value.chars() {
+        if ch.is_ascii_digit() {
+            number.push(ch);
+            started = true;
+            continue;
+        }
+        if ch == '.' && started && !seen_dot {
+            number.push(ch);
+            seen_dot = true;
+            continue;
+        }
+        if ch == ',' && started {
+            continue;
+        }
+        if started {
+            break;
+        }
+    }
+
+    if number.is_empty() {
+        None
+    } else {
+        number.parse::<f64>().ok()
+    }
+}
+
+fn supports_sampling_without_shape_estimate(result: &SearchResult) -> bool {
+    matches!(result.source, DataSource::GuixuHub)
+}
+
+fn build_valuation_explanation(valuation: &DatasetValuation) -> String {
+    let mut parts = vec![
+        format!("coarse={:.1}", valuation.coarse_score),
+        format!("task={:.1}", valuation.task_similarity),
+        format!("schema={:.1}", valuation.schema_fit),
+        format!("scale={:.1}", valuation.scale_score),
+        format!("balance={:.1}", valuation.balance_score),
+        format!("meta={:.1}", valuation.metadata_quality),
+        format!("onchain={:.1}", valuation.on_chain_score),
+    ];
+
+    if let Some(plan) = &valuation.sample_plan {
+        parts.push(format!(
+            "sample={:.2}% (~{} rows, {} bytes)",
+            plan.sample_fraction * 100.0,
+            plan.estimated_rows,
+            plan.estimated_bytes
+        ));
+    }
+
+    if let Some(proxy_utility) = &valuation.proxy_utility {
+        parts.push(format!(
+            "{}:{:?}={:.3} -> utility={:.1}",
+            proxy_utility.proxy_metric_name,
+            proxy_utility.apply_mode,
+            proxy_utility.proxy_metric_value,
+            proxy_utility.utility_score
+        ));
+    }
+    if let Some(reason) = &valuation.sample_failure_reason {
+        parts.push(format!("sample_reason={reason}"));
+    }
+
+    parts.push(format!("final={:.1}", valuation.final_score));
+    parts.join(", ")
+}
+
+fn infer_required_columns(profile: &QueryProfile) -> Vec<String> {
+    match profile.task_type.as_deref() {
+        Some("classification") => vec!["label".to_string()],
+        Some("forecasting") => vec!["timestamp".to_string(), "value".to_string()],
+        _ => vec![],
+    }
+}
+
+fn build_task_text(task: &DatasetSelectionTask) -> String {
+    let mut parts = vec![task.task_description.clone(), task.task_type.clone()];
+    if !task.required_columns.is_empty() {
+        parts.push(task.required_columns.join(" "));
+    }
+    if let Some(target_entity) = &task.target_entity {
+        parts.push(target_entity.clone());
+    }
+    parts.join(" ")
+}
+
+fn build_dataset_text(result: &SearchResult, metadata: Option<&DatasetMetadata>) -> String {
+    let mut parts = vec![result.title.clone()];
+    if let Some(description) = result.description.as_deref() {
+        parts.push(description.to_string());
+    }
+
+    if let Some(metadata) = metadata {
+        parts.push(metadata.title.clone());
+        if let Some(description) = metadata.description.as_deref() {
+            parts.push(description.to_string());
+        }
+        if !metadata.tags.is_empty() {
+            parts.push(metadata.tags.join(" "));
+        }
+        if !metadata.schema.columns.is_empty() {
+            parts.push(
+                metadata
+                    .schema
+                    .columns
+                    .iter()
+                    .map(|column| column.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+    } else if !result.schema.columns.is_empty() {
+        parts.push(
+            result
+                .schema
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+
+    parts.join(" ")
+}
+
+fn candidate_description<'a>(
+    result: &'a SearchResult,
+    metadata: Option<&'a DatasetMetadata>,
+) -> Option<&'a str> {
+    metadata
+        .and_then(|metadata| metadata.description.as_deref())
+        .or(result.description.as_deref())
+}
+
+fn candidate_column_names(
+    result: &SearchResult,
+    metadata: Option<&DatasetMetadata>,
+) -> Vec<String> {
+    metadata
+        .map(|metadata| {
+            metadata
+                .schema
+                .columns
+                .iter()
+                .map(|column| column.name.to_lowercase())
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            result
+                .schema
+                .columns
+                .iter()
+                .map(|column| column.name.to_lowercase())
+                .collect()
+        })
+}
+
+fn candidate_shape(result: &SearchResult, metadata: Option<&DatasetMetadata>) -> (u64, u64) {
+    if let Some(metadata) = metadata {
+        (metadata.schema.row_count, metadata.schema.size_bytes)
+    } else {
+        (result.schema.row_count, result.schema.size_bytes)
+    }
+}
+
+fn has_any_column_like(
+    result: &SearchResult,
+    metadata: Option<&DatasetMetadata>,
+    needles: &[&str],
+) -> bool {
+    let columns = candidate_column_names(result, metadata);
+    needles.iter().any(|needle| {
+        let needle = needle.to_lowercase();
+        columns.iter().any(|column| {
+            column == &needle || column.contains(&needle) || needle.contains(column.as_str())
+        })
+    })
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn saturating_log_score(value: u64, saturation: u64) -> f64 {
+    if value == 0 {
+        return 0.0;
+    }
+    if saturation <= 1 {
+        return 100.0;
+    }
+    (((value as f64) + 1.0).ln() / ((saturation as f64) + 1.0).ln()).min(1.0) * 100.0
+}
+
+fn match_score(column: &str, required: &str) -> f64 {
+    if column == required {
+        1.0
+    } else if column.contains(required) || required.contains(column) {
+        0.6
+    } else {
+        0.0
+    }
+}
+
+fn cosine_similarity(left: &str, right: &str) -> f64 {
+    let left = term_frequency(tokenize(left));
+    let right = term_frequency(tokenize(right));
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+
+    let dot = left
+        .iter()
+        .map(|(token, weight)| weight * right.get(token).copied().unwrap_or(0.0))
+        .sum::<f64>();
+    let left_norm = left
+        .values()
+        .map(|weight| weight * weight)
+        .sum::<f64>()
+        .sqrt();
+    let right_norm = right
+        .values()
+        .map(|weight| weight * weight)
+        .sum::<f64>()
+        .sqrt();
+
+    if left_norm == 0.0 || right_norm == 0.0 {
+        0.0
+    } else {
+        dot / (left_norm * right_norm)
+    }
+}
+
+fn term_frequency(tokens: Vec<String>) -> HashMap<String, f64> {
+    let mut tf = HashMap::new();
+    for token in tokens {
+        *tf.entry(token).or_insert(0.0) += 1.0;
+    }
+    tf
+}
+
+fn tokenize(text: &str) -> Vec<String> {
+    const STOPWORDS: &[&str] = &[
+        "a", "an", "and", "as", "at", "be", "build", "by", "data", "dataset", "for", "from",
+        "high", "in", "into", "is", "of", "on", "or", "the", "to", "with",
+    ];
+
+    text.split(|c: char| !c.is_alphanumeric())
+        .map(|token| token.to_lowercase())
+        .filter(|token| token.len() > 1)
+        .filter(|token| !STOPWORDS.contains(&token.as_str()))
+        .collect()
 }
 
 /// Convert DatasetMetadata to SearchResult.
@@ -386,4 +2172,371 @@ fn market_signal_score(result: &SearchResult) -> f64 {
     let reviews = (market.review_count as f64 + 1.0).ln();
     let trades = (market.trade_count as f64 + 1.0).ln();
     ((downloads * 20.0) + (reviews * 25.0) + (trades * 35.0)).clamp(0.0, 100.0)
+}
+
+#[cfg(test)]
+mod engine_unit_tests {
+    use super::{
+        compose_coarse_score, score_on_chain_signal, OnChainScoreInputs,
+        ON_CHAIN_COARSE_ADJUST_WEIGHT, ON_CHAIN_SCORE_NEUTRAL,
+    };
+
+    #[test]
+    fn coarse_score_keeps_neutral_on_chain_signal_aligned() {
+        let baseline = 0.55 * 82.0 + 0.15 * 74.0 + 0.15 * 68.0 + 0.10 * 57.0 + 0.05 * 91.0;
+        let coarse = compose_coarse_score(82.0, 74.0, 68.0, 57.0, 91.0, ON_CHAIN_SCORE_NEUTRAL);
+        assert!((coarse - baseline).abs() < 1e-6);
+    }
+
+    #[test]
+    fn coarse_score_applies_centered_on_chain_adjustment() {
+        let neutral = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, ON_CHAIN_SCORE_NEUTRAL);
+        let boosted = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, 90.0);
+        let penalized = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, 10.0);
+
+        assert!((boosted - neutral - ON_CHAIN_COARSE_ADJUST_WEIGHT * 40.0).abs() < 1e-6);
+        assert!((neutral - penalized - ON_CHAIN_COARSE_ADJUST_WEIGHT * 40.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn on_chain_signal_is_neutral_without_trade_or_reviews() {
+        assert_eq!(
+            score_on_chain_signal(&OnChainScoreInputs::default()),
+            ON_CHAIN_SCORE_NEUTRAL
+        );
+    }
+
+    #[test]
+    fn on_chain_signal_rewards_positive_trade_activity() {
+        let score = score_on_chain_signal(&OnChainScoreInputs {
+            trade_count: 36,
+            avg_rating: 4.8,
+            positive_reviews: 8,
+            neutral_reviews: 1,
+            negative_reviews: 0,
+        });
+
+        assert!(
+            score > 70.0,
+            "expected strong positive on-chain score, got {score}"
+        );
+    }
+
+    #[test]
+    fn on_chain_signal_penalizes_negative_reviews() {
+        let score = score_on_chain_signal(&OnChainScoreInputs {
+            trade_count: 28,
+            avg_rating: 1.4,
+            positive_reviews: 1,
+            neutral_reviews: 0,
+            negative_reviews: 9,
+        });
+
+        assert!(score < 40.0, "expected low on-chain score, got {score}");
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::{
+        metadata_to_search_result, select_collection_from_batch, DatasetSelectionTask,
+        DatasetValuation, DatasetValuationConfig, ProxyUtilityApplyMode, ProxyUtilityReport,
+        RankedResult, SampleEvaluationOutcome, SampleEvaluator, SearchEngine, SearchOutput,
+        ValuationCandidateState,
+    };
+    use crate::intent::IntentParser;
+    use crate::vector_index::VectorIndex;
+    use anyhow::Result;
+    use chrono::Utc;
+    use data_core::feedback::CommunitySignal;
+    use data_core::metadata::{DatasetMetadata, Provenance};
+    use data_core::types::{
+        AccessMode, ColumnDef, DataType, DatasetCid, DatasetSchema, Did, License, Price,
+        SearchResult,
+    };
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    fn test_task(
+        max_total_price: f64,
+        min_total_size_bytes: u64,
+        max_total_size_bytes: u64,
+    ) -> DatasetSelectionTask {
+        DatasetSelectionTask {
+            task_description: "cat detector".into(),
+            task_type: "classification".into(),
+            required_columns: vec!["label".into()],
+            target_entity: Some("cat".into()),
+            required_data_type: Some(DataType::Tabular),
+            max_total_price: Some(max_total_price),
+            min_total_size_bytes,
+            max_total_size_bytes: Some(max_total_size_bytes),
+        }
+    }
+
+    fn test_metadata(
+        cid_suffix: &str,
+        title: &str,
+        description: &str,
+        row_count: u64,
+        size_bytes: u64,
+        price_amount: f64,
+    ) -> DatasetMetadata {
+        DatasetMetadata {
+            cid: DatasetCid(format!("cid-{cid_suffix}")),
+            info_hash: format!("hash-{cid_suffix}"),
+            title: title.into(),
+            description: Some(description.into()),
+            tags: vec!["cat".into()],
+            data_type: DataType::Tabular,
+            schema: DatasetSchema {
+                columns: vec![
+                    ColumnDef {
+                        name: "sample_id".into(),
+                        dtype: "utf8".into(),
+                        nullable: false,
+                        description: None,
+                    },
+                    ColumnDef {
+                        name: "label".into(),
+                        dtype: "utf8".into(),
+                        nullable: false,
+                        description: None,
+                    },
+                ],
+                row_count: row_count.max(1),
+                size_bytes,
+            },
+            stats: None,
+            video_meta: None,
+            access: AccessMode::Open,
+            price: Price::usdc(price_amount),
+            license: License {
+                spdx_id: "CC-BY-4.0".into(),
+                commercial_use: true,
+                derivative_allowed: true,
+            },
+            provider: Did("did:key:test".into()),
+            signature: "sig".into(),
+            provenance: Provenance::Original,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            verifiable_credential: None,
+        }
+    }
+
+    fn test_candidate_state(
+        cid_suffix: &str,
+        title: &str,
+        description: &str,
+        row_count: u64,
+        size_bytes: u64,
+        price_amount: f64,
+        final_score: f64,
+    ) -> ValuationCandidateState {
+        let metadata = test_metadata(
+            cid_suffix,
+            title,
+            description,
+            row_count,
+            size_bytes,
+            price_amount,
+        );
+        let result = metadata_to_search_result(&metadata);
+        ValuationCandidateState {
+            metadata: Some(metadata),
+            valuation: DatasetValuation {
+                result,
+                coarse_score: final_score,
+                final_score,
+                task_similarity: final_score,
+                schema_fit: 100.0,
+                scale_score: 100.0,
+                balance_score: 100.0,
+                metadata_quality: 100.0,
+                on_chain_score: 50.0,
+                metadata_resolved: true,
+                sample_plan: None,
+                proxy_utility: None,
+                sample_failure_reason: None,
+                explanation: String::new(),
+            },
+        }
+    }
+
+    fn test_ranked_result(metadata: &DatasetMetadata) -> RankedResult {
+        RankedResult {
+            result: metadata_to_search_result(metadata),
+            rank_score: 0.0,
+            signal: CommunitySignal {
+                dataset_cid: metadata.cid.clone(),
+                total_reviews: 0,
+                avg_relevance: 0.0,
+                avg_quality: 0.0,
+                positive_rate: 0.0,
+                negative_rate: 0.0,
+                task_signals: vec![],
+            },
+        }
+    }
+
+    fn test_engine() -> SearchEngine {
+        SearchEngine::new(VectorIndex, IntentParser::default(), vec![])
+    }
+
+    struct StubSampleEvaluator {
+        scores: HashMap<String, f64>,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SampleEvaluator for StubSampleEvaluator {
+        async fn evaluate_sample(
+            &self,
+            result: &SearchResult,
+            _metadata: &DatasetMetadata,
+            _task: &DatasetSelectionTask,
+            plan: &super::SamplePlan,
+        ) -> Result<SampleEvaluationOutcome> {
+            self.seen.lock().unwrap().push(result.cid.0.clone());
+            let utility_score = self.scores.get(&result.cid.0).copied().unwrap_or(50.0);
+            Ok(SampleEvaluationOutcome::scored(ProxyUtilityReport {
+                utility_score,
+                apply_mode: ProxyUtilityApplyMode::OverrideFinal,
+                proxy_metric_name: "stub".into(),
+                proxy_metric_value: utility_score / 100.0,
+                sampled_rows: plan.estimated_rows.max(1),
+                sampled_bytes: plan.estimated_bytes.max(1),
+                notes: None,
+            }))
+        }
+    }
+
+    #[test]
+    fn batch_collection_selection_maximizes_total_value() {
+        let batch = vec![
+            test_candidate_state("a", "Cat A", "cat candidate a", 5, 30, 1.0, 90.0),
+            test_candidate_state("b", "Cat B", "cat candidate b", 100, 10, 2.0, 60.0),
+            test_candidate_state("c", "Cat C", "cat candidate c", 50, 20, 1.0, 50.0),
+        ];
+        let task = test_task(3.0, 20, 40);
+
+        let selected = select_collection_from_batch(&task, &batch, 0, 0).unwrap();
+
+        assert_eq!(selected.candidate_indices, vec![1, 2]);
+        assert!((selected.total_price - 3.0).abs() < 1e-6);
+        assert_eq!(selected.total_size_bytes, 30);
+    }
+
+    #[tokio::test]
+    async fn value_search_output_advances_to_next_batch_when_first_batch_infeasible() {
+        let metadata = vec![
+            test_metadata("a", "Cat shortlist A", "cat dataset a", 10, 10, 1.0),
+            test_metadata("b", "Cat shortlist B", "cat dataset b", 10, 10, 1.0),
+            test_metadata("c", "Archive C", "generic archive c", 20, 20, 2.0),
+            test_metadata("d", "Archive D", "generic archive d", 15, 15, 2.0),
+        ];
+        let search_output = SearchOutput {
+            results: metadata.iter().map(test_ranked_result).collect(),
+            errors: vec![],
+            profile: None,
+        };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sample_evaluator = StubSampleEvaluator {
+            scores: HashMap::from([
+                ("cid-a".into(), 95.0),
+                ("cid-b".into(), 90.0),
+                ("cid-c".into(), 80.0),
+                ("cid-d".into(), 70.0),
+            ]),
+            seen: seen.clone(),
+        };
+        let task = test_task(5.0, 30, 45);
+        let mut config = DatasetValuationConfig::default();
+        config.coarse_top_k = 2;
+
+        let output = test_engine()
+            .value_search_output(
+                &search_output,
+                &metadata,
+                None,
+                Some(&sample_evaluator),
+                &task,
+                &config,
+            )
+            .await
+            .unwrap();
+
+        let selected_collection = output.selected_collection.unwrap();
+        let selected_cids: Vec<String> = selected_collection
+            .datasets
+            .iter()
+            .map(|dataset| dataset.result.cid.0.clone())
+            .collect();
+
+        assert_eq!(selected_collection.batch_index, 1);
+        assert_eq!(selected_collection.batch_start_rank, 1);
+        assert_eq!(selected_collection.batch_end_rank, 4);
+        assert_eq!(
+            selected_cids,
+            vec![
+                "cid-c".to_string(),
+                "cid-d".to_string(),
+                "cid-a".to_string(),
+            ]
+        );
+        assert_eq!(seen.lock().unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn value_search_output_stops_sampling_after_first_feasible_batch() {
+        let metadata = vec![
+            test_metadata("a", "Cat shortlist A", "cat dataset a", 20, 20, 1.0),
+            test_metadata("b", "Cat shortlist B", "cat dataset b", 20, 20, 1.0),
+            test_metadata("c", "Archive C", "generic archive c", 30, 30, 2.0),
+        ];
+        let search_output = SearchOutput {
+            results: metadata.iter().map(test_ranked_result).collect(),
+            errors: vec![],
+            profile: None,
+        };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sample_evaluator = StubSampleEvaluator {
+            scores: HashMap::from([
+                ("cid-a".into(), 90.0),
+                ("cid-b".into(), 88.0),
+                ("cid-c".into(), 70.0),
+            ]),
+            seen: seen.clone(),
+        };
+        let task = test_task(3.0, 35, 45);
+        let mut config = DatasetValuationConfig::default();
+        config.coarse_top_k = 2;
+
+        let output = test_engine()
+            .value_search_output(
+                &search_output,
+                &metadata,
+                None,
+                Some(&sample_evaluator),
+                &task,
+                &config,
+            )
+            .await
+            .unwrap();
+
+        let selected_collection = output.selected_collection.unwrap();
+        assert_eq!(selected_collection.batch_index, 0);
+        assert_eq!(seen.lock().unwrap().len(), 2);
+
+        let skipped_candidate = output
+            .candidates
+            .iter()
+            .find(|candidate| candidate.result.cid.0 == "cid-c")
+            .unwrap();
+        assert_eq!(
+            skipped_candidate.sample_failure_reason.as_deref(),
+            Some("sample evaluation skipped: collection selection succeeded in an earlier batch")
+        );
+    }
 }

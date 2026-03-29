@@ -173,6 +173,19 @@ mod tcv_tests {
         let t = task(&["text", "label"], &[]);
         let report = engine.evaluate(&meta, &t, &signal);
         assert_eq!(report.verdict, TcvVerdict::StrongPositive);
+        assert!(report.tcv_score > 80.0);
+    }
+
+    #[test]
+    fn tcv_score_is_normalized_to_zero_to_hundred() {
+        let engine = TcvEngine;
+        let meta = make_metadata("poor", &[("foo", "utf8")], 0.0);
+        let signal = make_signal(20, 0.1, 0.9);
+        let t = task(&["text", "label"], &["cid-x", "cid-y", "cid-z"]);
+        let report = engine.evaluate(&meta, &t, &signal);
+
+        assert!(report.tcv_score >= 0.0);
+        assert!(report.tcv_score <= 100.0);
     }
 }
 
@@ -258,11 +271,13 @@ mod free_evaluator_tests {
 }
 
 // ============================================================
-// PaidDataEvaluator — MMD-based ROI
+// PaidDataEvaluator — budget-constrained value maximization
 // ============================================================
 mod paid_evaluator_tests {
     use super::*;
-    use data_valuation::paid_evaluator::PaidDataEvaluator;
+    use data_valuation::paid_evaluator::{
+        PaidDataEvaluator, PaidDatasetCandidate, PortfolioConstraints,
+    };
 
     #[tokio::test]
     async fn mmd_higher_value_when_no_free_alternative() {
@@ -347,6 +362,119 @@ mod paid_evaluator_tests {
 
         let report = eval.evaluate(&meta, &quality, &[], &signal).await.unwrap();
         assert!(report.recommendation.contains("Caution"));
+    }
+
+    #[tokio::test]
+    async fn portfolio_selection_prefers_higher_total_value_under_budget() {
+        let eval = PaidDataEvaluator;
+        let signal = make_signal(0, 0.0, 0.0);
+        let no_free: &[(&DatasetMetadata, &QualityScore)] = &[];
+
+        let dataset_a = make_metadata("dataset-a", &[("text", "utf8"), ("label", "int64")], 0.60);
+        let dataset_b = make_metadata("dataset-b", &[("text", "utf8"), ("label", "int64")], 0.35);
+        let dataset_c = make_metadata("dataset-c", &[("text", "utf8"), ("label", "int64")], 0.35);
+        let quality_a = make_quality(60.0);
+        let quality_b = make_quality(75.0);
+        let quality_c = make_quality(70.0);
+
+        let candidates = vec![
+            PaidDatasetCandidate {
+                metadata: &dataset_a,
+                quality: &quality_a,
+                free_alternatives: no_free,
+                signal: &signal,
+            },
+            PaidDatasetCandidate {
+                metadata: &dataset_b,
+                quality: &quality_b,
+                free_alternatives: no_free,
+                signal: &signal,
+            },
+            PaidDatasetCandidate {
+                metadata: &dataset_c,
+                quality: &quality_c,
+                free_alternatives: no_free,
+                signal: &signal,
+            },
+        ];
+
+        let report = eval
+            .select_portfolio(&candidates, &PortfolioConstraints { max_budget: 0.70 })
+            .await
+            .unwrap();
+
+        let selected_titles = report
+            .selected
+            .iter()
+            .map(|item| item.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(selected_titles, vec!["dataset-b", "dataset-c"]);
+        assert!(report.total_spend <= 0.70);
+        assert_eq!(report.selected.len(), 2);
+        assert!(
+            report.selected[0].estimated_value >= report.selected[1].estimated_value,
+            "selected items should be sorted by estimated value descending"
+        );
+    }
+
+    #[tokio::test]
+    async fn portfolio_selection_maximizes_total_value_under_budget() {
+        let eval = PaidDataEvaluator;
+        let signal = make_signal(0, 0.0, 0.0);
+        let no_free: &[(&DatasetMetadata, &QualityScore)] = &[];
+
+        let high_value = make_metadata("high-value", &[("text", "utf8"), ("label", "int64")], 0.55);
+        let lower_value_a = make_metadata(
+            "lower-value-a",
+            &[("text", "utf8"), ("label", "int64")],
+            0.30,
+        );
+        let lower_value_b = make_metadata(
+            "lower-value-b",
+            &[("text", "utf8"), ("label", "int64")],
+            0.30,
+        );
+        let quality_high = make_quality(90.0);
+        let quality_a = make_quality(40.0);
+        let quality_b = make_quality(30.0);
+
+        let candidates = vec![
+            PaidDatasetCandidate {
+                metadata: &high_value,
+                quality: &quality_high,
+                free_alternatives: no_free,
+                signal: &signal,
+            },
+            PaidDatasetCandidate {
+                metadata: &lower_value_a,
+                quality: &quality_a,
+                free_alternatives: no_free,
+                signal: &signal,
+            },
+            PaidDatasetCandidate {
+                metadata: &lower_value_b,
+                quality: &quality_b,
+                free_alternatives: no_free,
+                signal: &signal,
+            },
+        ];
+
+        let report = eval
+            .select_portfolio(&candidates, &PortfolioConstraints { max_budget: 0.60 })
+            .await
+            .unwrap();
+
+        let selected_titles = report
+            .selected
+            .iter()
+            .map(|item| item.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(selected_titles, vec!["high-value"]);
+        assert!(report.total_spend <= 0.60);
+        assert!(
+            report.total_estimated_value >= report.selected[0].estimated_value,
+            "portfolio value should reflect the chosen high-value item"
+        );
     }
 }
 

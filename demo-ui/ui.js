@@ -66,7 +66,13 @@ async function runPipeline() {
   renderLog();
   renderLedger();
   await delay(500);
-  completeStep('step3', `Best: TCV ${evalResults[0].tcvScore.toFixed(1)}`);
+  const bestParts = scoreComposition(evalResults[0]);
+  completeStep(
+    'step3',
+    bestParts.hasSampleScore
+      ? `Best: Meta ${formatScore(bestParts.metadataScore)} · Sample ${formatScore(bestParts.sampleScore)}`
+      : `Best: Meta ${formatScore(bestParts.metadataScore)}`,
+  );
 
   // Step 4: Purchase
   activateStep('step4');
@@ -232,6 +238,9 @@ function resetUI() {
   engine.logs = [];
   engine.ledger = [];
   engine.totalCost = 0;
+  engine.selectedDataset = null;
+  engine.selectedDatasets = [];
+  engine.selectionSummary = null;
   ['step2','step3','step4','step5'].forEach(id => {
     $(id).classList.add('disabled');
     $(id).classList.remove('active','done');
@@ -244,8 +253,9 @@ function resetUI() {
   $('purchaseResult').innerHTML = '';
   $('feedbackResult').innerHTML = '';
   $('tcvBars').innerHTML = '';
-  $('tcvScore').textContent = '—';
-  $('tcvScore').className = '';
+  $('scoreSummary').innerHTML = '';
+  $('scoreFormula').textContent = 'Metadata score comes from coarse metadata evaluation. Small-sample score comes from the downloaded sample utility check.';
+  $('scoreMeta').textContent = '';
   $('logEntries').innerHTML = '';
   $('ledgerEntries').innerHTML = '';
   $('costDetails').innerHTML = '';
@@ -253,6 +263,83 @@ function resetUI() {
   $('statTx').textContent = '0';
   $('statCost').textContent = '$0.00';
   $('statAttest').textContent = '0';
+}
+
+function scoreValue(dataset) {
+  const score = Number.isFinite(dataset?.finalScore) ? dataset.finalScore : dataset?.tcvScore;
+  return Number.isFinite(score) ? score : 0;
+}
+
+function firstFinite(...values) {
+  for (const value of values) {
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function formatScore(value) {
+  return Number.isFinite(value) ? value.toFixed(1) : '—';
+}
+
+function scoreToneClass(score) {
+  return Number.isFinite(score) ? tcvVerdict(score).cls : 'score-unavailable';
+}
+
+function scoreComposition(dataset) {
+  const proxyUtility = dataset?.finalBreakdown?.proxyUtility;
+  const metadataScore = firstFinite(
+    dataset?.coarseScore,
+    dataset?.finalBreakdown?.coarseScore,
+    dataset?.rawFinalScore,
+    scoreValue(dataset),
+  );
+  const sampleScore = firstFinite(proxyUtility?.utilityScore);
+  const sampledRows = firstFinite(proxyUtility?.sampledRows, dataset?.finalBreakdown?.proxyUtility?.sampledRows);
+  const sampledBytes = firstFinite(proxyUtility?.sampledBytes, dataset?.finalBreakdown?.proxyUtility?.sampledBytes);
+  const hasSampleScore = Number.isFinite(sampleScore) && Boolean(
+    dataset?.sampleScored
+      || dataset?.finalBreakdown?.hasSampleScore
+      || proxyUtility,
+  );
+  return {
+    metadataScore: metadataScore ?? 0,
+    sampleScore,
+    hasSampleScore,
+    sampledRows: sampledRows ?? 0,
+    sampledBytes: sampledBytes ?? 0,
+    applyMode: proxyUtility?.applyMode || '',
+    failureReason: dataset?.sampleFailureReason || '',
+  };
+}
+
+function renderScoreBox(label, score) {
+  const hasScore = Number.isFinite(score);
+  return `<span class="eval-score-box">
+    <span class="eval-score-kicker">${label}</span>
+    <span class="eval-score ${scoreToneClass(score)}">${hasScore ? score.toFixed(1) : '—'}</span>
+  </span>`;
+}
+
+function renderSummaryCard(label, score, meta) {
+  const hasScore = Number.isFinite(score);
+  return `<div class="score-summary-card ${hasScore ? '' : 'is-empty'}">
+    <span class="score-summary-label">${label}</span>
+    <span class="score-summary-value ${scoreToneClass(score)}">${hasScore ? score.toFixed(1) : '—'}</span>
+    <span class="score-summary-meta">${meta}</span>
+  </div>`;
+}
+
+function renderBreakdownBar(label, score, color, tag) {
+  const hasScore = Number.isFinite(score);
+  const width = hasScore ? Math.max(0, Math.min(100, score)) : 0;
+  return `<div class="bar-row">
+    <span class="bar-label">${label}</span>
+    <span class="bar-weight">${tag}</span>
+    <div class="bar-track">
+      <div class="bar-fill ${hasScore ? '' : 'is-empty'}" style="width:${width}%;background:${hasScore ? color : 'transparent'}"></div>
+    </div>
+    <span class="bar-val ${hasScore ? '' : 'is-empty'}" style="${hasScore ? `color:${color}` : ''}">${hasScore ? score.toFixed(1) : '—'}</span>
+  </div>`;
 }
 
 // --- Renderers ---
@@ -294,19 +381,32 @@ function renderEvalResults(results) {
   $('evalResults').innerHTML = results.map((r, i) => {
     const v = r.verdict;
     const isBest = i === 0;
+    const isSelected = Boolean(r.selectedInCollection);
+    const parts = scoreComposition(r);
+    const detail = [
+      v.text,
+      `Meta ${formatScore(parts.metadataScore)}`,
+      parts.hasSampleScore
+        ? `Sample ${formatScore(parts.sampleScore)}`
+        : (parts.failureReason ? `No sample score: ${parts.failureReason}` : 'sample not scored'),
+      isSelected ? 'selected bundle member' : '',
+      r.source === 'p2p' ? 'P2P' : r.sourceLabel,
+    ].filter(Boolean).join(' · ');
+    const preview = [
+      renderMiniBar('Metadata', parts.metadataScore, '#3b82f6'),
+      renderMiniBar('Sample', parts.hasSampleScore ? parts.sampleScore : null, '#22c55e'),
+    ].join('');
     return `
-    <div class="eval-card ${isBest ? 'best' : ''}" data-idx="${i}" onclick="showTcvDetail(${i})">
+    <div class="eval-card ${isBest ? 'best' : ''}" data-idx="${i}" onclick="showFinalValueDetail(${i})">
       <div class="eval-header">
-        <span>${isBest ? '[BEST] ' : ''}${r.title}</span>
-        <span class="eval-score ${v.cls}">${r.tcvScore.toFixed(1)}</span>
+        <span>${isBest ? '[BEST] ' : (isSelected ? '[SELECTED] ' : '')}${r.title}</span>
+        <span class="eval-score-stack">
+          ${renderScoreBox('Meta', parts.metadataScore)}
+          ${renderScoreBox('Sample', parts.hasSampleScore ? parts.sampleScore : null)}
+        </span>
       </div>
-      <div class="eval-verdict">${v.text} · ${r.source === 'p2p' ? 'P2P' : r.sourceLabel}</div>
-      ${renderMiniBar('Schema', r.tcv.schema_fit, '#3b82f6')}
-      ${renderMiniBar('Temporal', r.tcv.temporal_fit, '#06b6d4')}
-      ${renderMiniBar('InfoGain', r.tcv.info_gain, '#22c55e')}
-      ${renderMiniBar('Quality', r.tcv.quality, '#eab308')}
-      ${renderMiniBar('Community', r.tcv.community, '#a855f7')}
-      ${r.tcv.risk > 10 ? renderMiniBar('RISK', r.tcv.risk, '#ef4444') : ''}
+      <div class="eval-verdict">${detail}</div>
+      ${preview}
     </div>`;
   }).join('');
   // Store for detail view
@@ -314,38 +414,47 @@ function renderEvalResults(results) {
 }
 
 function renderMiniBar(label, val, color) {
+  const hasScore = Number.isFinite(val);
+  const width = hasScore ? Math.max(0, Math.min(100, val)) : 0;
   return `<div class="eval-bar-row">
     <span class="eval-bar-label">${label}</span>
-    <div class="eval-bar-track"><div class="eval-bar-fill" style="width:${val}%;background:${color}"></div></div>
-    <span style="width:30px;font-size:10px;color:${color}">${val.toFixed(0)}</span>
+    <div class="eval-bar-track"><div class="eval-bar-fill ${hasScore ? '' : 'is-empty'}" style="width:${width}%;background:${hasScore ? color : 'transparent'}"></div></div>
+    <span style="width:30px;font-size:10px;color:${hasScore ? color : 'var(--text-dim)'}">${hasScore ? val.toFixed(0) : '—'}</span>
   </div>`;
 }
 
 // Click handler for eval cards
-window.showTcvDetail = function(idx) {
+window.showFinalValueDetail = function(idx) {
   if (window._evalResults) renderTcvBreakdown(window._evalResults[idx]);
 };
 
 function renderTcvBreakdown(dataset) {
-  const comps = dataset.tcv;
-  let html = '';
-  for (const [key, cfg] of Object.entries(TCV_WEIGHTS)) {
-    const val = comps[key] || 0;
-    const weighted = cfg.weight * val;
-    const barW = Math.abs(val);
-    html += `<div class="bar-row">
-      <span class="bar-label">${cfg.symbol} ${cfg.label}</span>
-      <span class="bar-weight">×${cfg.weight >= 0 ? '+' : ''}${cfg.weight.toFixed(2)}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${barW}%;background:${cfg.color}"></div></div>
-      <span class="bar-val" style="color:${cfg.color}">${weighted >= 0 ? '+' : ''}${weighted.toFixed(1)}</span>
-    </div>`;
-  }
-  $('tcvBars').innerHTML = html;
-
-  const score = dataset.tcvScore;
-  const v = dataset.verdict;
-  $('tcvScore').textContent = score.toFixed(1);
-  $('tcvScore').className = v.cls;
+  const parts = scoreComposition(dataset);
+  $('scoreFormula').textContent = parts.hasSampleScore
+    ? 'Metadata score comes from coarse metadata evaluation. Small-sample score comes from the downloaded sample utility check.'
+    : `Only the metadata-side score is available for this candidate. ${parts.failureReason ? `Sample stage did not produce a score: ${parts.failureReason}.` : 'No small sample was downloaded and scored.'}`;
+  $('tcvBars').innerHTML = [
+    renderBreakdownBar('Metadata Score', parts.metadataScore, '#3b82f6', 'coarse'),
+    renderBreakdownBar('Small-Sample Score', parts.hasSampleScore ? parts.sampleScore : null, '#22c55e', 'sample'),
+  ].join('');
+  $('scoreSummary').innerHTML = [
+    renderSummaryCard('Metadata Score', parts.metadataScore, dataset.metadataResolved ? 'resolved metadata' : 'search/result metadata'),
+    renderSummaryCard(
+      'Small-Sample Score',
+      parts.hasSampleScore ? parts.sampleScore : null,
+      parts.hasSampleScore
+        ? `${parts.sampledRows ? parts.sampledRows + ' rows' : 'downloaded sample'}${parts.sampledBytes ? ' · ' + formatBytes(parts.sampledBytes) : ''}`
+        : (parts.failureReason || 'not sampled'),
+    ),
+  ].join('');
+  const meta = [];
+  if (parts.applyMode) meta.push(String(parts.applyMode).replace(/_/g, ' '));
+  if (parts.hasSampleScore) meta.push('sample scored');
+  if (!parts.hasSampleScore) meta.push('sample not scored');
+  if (parts.sampledRows) meta.push(`${parts.sampledRows} sampled rows`);
+  if (dataset.evaluationMode) meta.push(String(dataset.evaluationMode).replace(/_/g, ' '));
+  if (!parts.hasSampleScore && parts.failureReason) meta.push(parts.failureReason);
+  $('scoreMeta').textContent = meta.join(' · ');
 }
 
 function renderPurchase(dataset, info) {

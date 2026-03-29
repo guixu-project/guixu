@@ -21,6 +21,49 @@ pub struct RoiReport {
     pub recommendation: String,
 }
 
+/// Candidate input for budget-aware paid-data portfolio selection.
+pub struct PaidDatasetCandidate<'a> {
+    pub metadata: &'a DatasetMetadata,
+    pub quality: &'a QualityScore,
+    pub free_alternatives: &'a [(&'a DatasetMetadata, &'a QualityScore)],
+    pub signal: &'a CommunitySignal,
+}
+
+/// Constraints for the paid-data portfolio selector.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortfolioConstraints {
+    pub max_budget: f64,
+}
+
+/// Selected paid dataset after portfolio optimization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortfolioSelectionItem {
+    pub cid: String,
+    pub title: String,
+    pub asking_price: f64,
+    pub estimated_value: f64,
+    pub roi_ratio: f64,
+    pub recommendation: String,
+}
+
+/// Portfolio-level report for paid data selection under agent constraints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortfolioReport {
+    pub budget: f64,
+    pub total_spend: f64,
+    pub total_estimated_value: f64,
+    pub considered_count: usize,
+    pub selected: Vec<PortfolioSelectionItem>,
+    pub recommendation: String,
+}
+
+#[derive(Clone)]
+struct KnapsackState {
+    spent_cents: u64,
+    total_estimated_value: f64,
+    selected_indices: Vec<usize>,
+}
+
 impl PaidDataEvaluator {
     /// Assess whether a paid dataset is worth purchasing,
     /// using both quality metrics and on-chain community feedback.
@@ -130,6 +173,133 @@ impl PaidDataEvaluator {
         })
     }
 
+    /// Select a set of paid datasets under an agent budget.
+    ///
+    /// Objective: maximize total estimated value subject to:
+    /// - total price <= max_budget
+    ///
+    /// The selected datasets are returned sorted by estimated value descending.
+    pub async fn select_portfolio(
+        &self,
+        candidates: &[PaidDatasetCandidate<'_>],
+        constraints: &PortfolioConstraints,
+    ) -> Result<PortfolioReport> {
+        #[derive(Clone)]
+        struct CandidateEval {
+            cid: String,
+            title: String,
+            roi: RoiReport,
+            price_cents: u64,
+        }
+
+        let budget_cents = price_to_cents(constraints.max_budget);
+        let mut evaluated = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            let roi = self
+                .evaluate(
+                    candidate.metadata,
+                    candidate.quality,
+                    candidate.free_alternatives,
+                    candidate.signal,
+                )
+                .await?;
+            evaluated.push(CandidateEval {
+                cid: candidate.metadata.cid.0.clone(),
+                title: candidate.metadata.title.clone(),
+                price_cents: price_to_cents(roi.asking_price),
+                roi,
+            });
+        }
+
+        let mut states = vec![KnapsackState {
+            spent_cents: 0,
+            total_estimated_value: 0.0,
+            selected_indices: Vec::new(),
+        }];
+
+        for (index, candidate) in evaluated.iter().enumerate() {
+            let mut next_states = states.clone();
+            for state in &states {
+                let Some(next_spent_cents) = state.spent_cents.checked_add(candidate.price_cents)
+                else {
+                    continue;
+                };
+                if next_spent_cents > budget_cents {
+                    continue;
+                }
+
+                let mut selected_indices = state.selected_indices.clone();
+                selected_indices.push(index);
+                next_states.push(KnapsackState {
+                    spent_cents: next_spent_cents,
+                    total_estimated_value: state.total_estimated_value
+                        + candidate.roi.estimated_value.max(0.0),
+                    selected_indices,
+                });
+            }
+            states = prune_dominated_states(next_states);
+        }
+
+        let best = states.into_iter().max_by(|left, right| {
+            left.total_estimated_value
+                .partial_cmp(&right.total_estimated_value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.spent_cents.cmp(&right.spent_cents))
+        });
+
+        let Some(best) = best else {
+            return Ok(PortfolioReport {
+                budget: constraints.max_budget,
+                total_spend: 0.0,
+                total_estimated_value: 0.0,
+                considered_count: evaluated.len(),
+                selected: Vec::new(),
+                recommendation: "Skip — no paid dataset fits the budget".into(),
+            });
+        };
+
+        let mut selected = best
+            .selected_indices
+            .iter()
+            .map(|index| {
+                let candidate = &evaluated[*index];
+                PortfolioSelectionItem {
+                    cid: candidate.cid.clone(),
+                    title: candidate.title.clone(),
+                    asking_price: candidate.roi.asking_price,
+                    estimated_value: candidate.roi.estimated_value,
+                    roi_ratio: candidate.roi.roi_ratio,
+                    recommendation: candidate.roi.recommendation.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        selected.sort_by(|left, right| {
+            right
+                .estimated_value
+                .partial_cmp(&left.estimated_value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let recommendation = if selected.is_empty() {
+            "Skip — no paid dataset fits the budget".into()
+        } else {
+            format!(
+                "Select {} paid datasets under budget ${:.2} while maximizing total value",
+                selected.len(),
+                constraints.max_budget,
+            )
+        };
+
+        Ok(PortfolioReport {
+            budget: constraints.max_budget,
+            total_spend: cents_to_price(best.spent_cents),
+            total_estimated_value: best.total_estimated_value,
+            considered_count: evaluated.len(),
+            selected,
+            recommendation,
+        })
+    }
+
     /// Metadata-level MMD² approximation.
     ///
     /// Computes squared Maximum Mean Discrepancy between two datasets using
@@ -183,4 +353,32 @@ impl PaidDataEvaluator {
         let kernel_mean = rbf_quality * 0.7 + (1.0 - jaccard_dist) * 0.3;
         (2.0 * (1.0 - kernel_mean)).max(0.0)
     }
+}
+
+fn price_to_cents(price: f64) -> u64 {
+    (price.max(0.0) * 100.0).round() as u64
+}
+
+fn cents_to_price(cents: u64) -> f64 {
+    cents as f64 / 100.0
+}
+
+fn prune_dominated_states(states: Vec<KnapsackState>) -> Vec<KnapsackState> {
+    let mut kept = Vec::new();
+    'candidate: for (idx, state) in states.iter().enumerate() {
+        for (other_idx, other) in states.iter().enumerate() {
+            if idx == other_idx {
+                continue;
+            }
+            if other.spent_cents <= state.spent_cents
+                && other.total_estimated_value >= state.total_estimated_value
+                && (other.spent_cents < state.spent_cents
+                    || other.total_estimated_value > state.total_estimated_value)
+            {
+                continue 'candidate;
+            }
+        }
+        kept.push(state.clone());
+    }
+    kept
 }

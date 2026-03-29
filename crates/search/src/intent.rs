@@ -445,7 +445,9 @@ Rules:
 - Maximum 5 keywords. Fewer is better. If one keyword suffices, use one.
 - When in doubt about whether to include a keyword, leave it out.
 - data_standard carries dataset schema preferences plus query-side transfer constraints.
+- data_standard.sample_unit is the only hard dataset constraint used for search filtering before scoring.
 - data_standard.sample_unit should use broad units such as image, video, text, tabular, or audio.
+- If the user is asking for an image classifier or image detector, sample_unit should normally be "image".
 - data_standard.min_dataset_size_bytes and data_standard.max_dataset_size_bytes should be 0 in the LLM output; the application will compute them.
 - data_standard.canonical_columns must always include exactly these fields: sample_id, label.
 - data_standard.extra_columns must always include exactly these fields: timestamp.
@@ -922,7 +924,7 @@ fn fallback_task_description(query: &str) -> String {
     query.trim().to_string()
 }
 
-fn load_setting_env_value(key: &str) -> Option<String> {
+pub(crate) fn load_setting_env_value(key: &str) -> Option<String> {
     let path = resolve_setting_env_path()?;
     let contents = std::fs::read_to_string(path).ok()?;
     contents.lines().find_map(|line| {
@@ -1011,9 +1013,11 @@ fn resolve_setting_env_path() -> Option<PathBuf> {
     .flatten()
     {
         for ancestor in base.ancestors() {
-            let candidate = ancestor.join("local").join("setting.env");
-            if candidate.is_file() {
-                return Some(candidate);
+            for file_name in ["settings.env", "setting.env"] {
+                let candidate = ancestor.join("local").join(file_name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
     }
