@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -256,14 +256,16 @@ fn compact_intent(profile: &QueryProfile) -> Value {
     json!({
         "task_type": profile.task_type,
         "task_description": profile.task_description,
-        "budget": profile.budget,
         "target_entity": profile.target_entity,
         "keywords": profile.keywords,
         "data_standard": {
             "sample_unit": profile.data_standard.sample_unit,
+            "budget": profile.data_standard.budget,
+            "max_latency_secs": profile.data_standard.max_latency_secs,
+            "min_dataset_size_bytes": profile.data_standard.min_dataset_size_bytes,
+            "max_dataset_size_bytes": profile.data_standard.max_dataset_size_bytes,
             "canonical_columns": profile.data_standard.canonical_columns,
             "extra_columns": profile.data_standard.extra_columns,
-            "metadata_fields": profile.data_standard.metadata_fields,
         }
     })
 }
@@ -311,6 +313,43 @@ fn compact_selected_dataset(result: &Value) -> Value {
 
 fn parse_json_or_text(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| json!({ "text": raw }))
+}
+
+fn parse_budget_amount_str(value: &str) -> Option<f64> {
+    let mut number = String::new();
+    let mut started = false;
+    let mut seen_dot = false;
+
+    for ch in value.chars() {
+        if ch.is_ascii_digit() {
+            number.push(ch);
+            started = true;
+            continue;
+        }
+        if ch == '.' && started && !seen_dot {
+            number.push(ch);
+            seen_dot = true;
+            continue;
+        }
+        if ch == ',' && started {
+            continue;
+        }
+        if started {
+            break;
+        }
+    }
+
+    if number.is_empty() {
+        None
+    } else {
+        number.parse::<f64>().ok()
+    }
+}
+
+fn parse_budget_amount(value: Option<&Value>) -> Option<f64> {
+    let raw = value?;
+    raw.as_f64()
+        .or_else(|| raw.as_str().and_then(parse_budget_amount_str))
 }
 
 fn collect_search_filters(search_args: &Value) -> (SearchFilters, usize) {
@@ -787,7 +826,6 @@ fn evaluation_sort_score(result: &Value) -> f64 {
 fn build_normalized_results(results: &[Value], profile: &QueryProfile) -> Vec<Value> {
     let standard = json!({
         "sample_unit": profile.data_standard.sample_unit,
-        "metadata_fields": profile.data_standard.metadata_fields,
         "canonical_columns": profile.data_standard.canonical_columns,
         "extra_columns": profile.data_standard.extra_columns,
     });
@@ -1003,10 +1041,9 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
     }
 
     let required_columns = evaluate_required_columns(&evaluate_args, &profile);
-    let budget = evaluate_args
-        .get("budget")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(profile.budget);
+    let budget = parse_budget_amount(evaluate_args.get("budget"))
+        .or_else(|| parse_budget_amount_str(&profile.data_standard.budget))
+        .unwrap_or(0.0);
     let task_description = profile
         .task_description
         .clone()
@@ -1020,6 +1057,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
     let mut selection_task = DatasetSelectionTask::from(&profile);
     selection_task.task_description = task_description.clone();
     selection_task.task_type = task_type.clone();
+    selection_task.max_total_price = Some(budget);
     if !required_columns.is_empty() {
         selection_task.required_columns = required_columns.clone();
     }
@@ -1037,6 +1075,21 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             &selection_config,
         )
         .await?;
+    let selected_collection = selection_output.selected_collection.clone();
+    let selected_collection_cids: HashSet<String> = selected_collection
+        .as_ref()
+        .map(|collection| {
+            collection
+                .datasets
+                .iter()
+                .map(|dataset| dataset.result.cid.0.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let selected_dataset_cid = selection_output
+        .selected
+        .as_ref()
+        .map(|dataset| dataset.result.cid.0.clone());
     let mut valuation_by_cid: HashMap<String, DatasetValuation> = HashMap::new();
     for candidate in selection_output.candidates {
         valuation_by_cid.insert(candidate.result.cid.0.clone(), candidate);
@@ -1048,13 +1101,16 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
     let mut evaluated_results = Vec::new();
     let mut stage_errors = selection_output.errors;
 
-    for result in search_results.iter().take(evaluate_top_k) {
+    for (index, result) in search_results.iter().enumerate() {
         let cid = result
             .get("cid")
             .and_then(|value| value.as_str())
             .unwrap_or("")
             .to_string();
         if cid.is_empty() {
+            continue;
+        }
+        if index >= evaluate_top_k && !selected_collection_cids.contains(&cid) {
             continue;
         }
 
@@ -1153,11 +1209,23 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             "sample_failure_reason": valuation
                 .and_then(|candidate| candidate.sample_failure_reason.clone())
                 .unwrap_or_default(),
+            "selected_in_collection": selected_collection_cids.contains(&cid),
             "verdict": report_verdict(&report),
         }));
     }
 
     evaluated_results.sort_by(|left, right| {
+        let left_selected = left
+            .get("selected_in_collection")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let right_selected = right
+            .get("selected_in_collection")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if left_selected != right_selected {
+            return right_selected.cmp(&left_selected);
+        }
         let left_score = evaluation_sort_score(left);
         let right_score = evaluation_sort_score(right);
         right_score
@@ -1181,9 +1249,40 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         }))?);
     }
 
-    let selected_dataset = evaluated_results
-        .first()
+    let selected_dataset = selected_dataset_cid
+        .as_deref()
+        .and_then(|cid| {
+            evaluated_results
+                .iter()
+                .find(|result| result.get("cid").and_then(Value::as_str) == Some(cid))
+        })
         .map(compact_selected_dataset)
+        .or_else(|| evaluated_results.first().map(compact_selected_dataset))
+        .unwrap_or(Value::Null);
+    let selected_datasets: Vec<Value> = evaluated_results
+        .iter()
+        .filter(|result| {
+            result
+                .get("selected_in_collection")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(compact_selected_dataset)
+        .collect();
+    let selection_summary = selected_collection
+        .map(|collection| {
+            json!({
+                "selected_count": collection.datasets.len(),
+                "total_price": collection.total_price,
+                "total_size_bytes": collection.total_size_bytes,
+                "total_value": collection.total_value,
+                "batch_index": collection.batch_index,
+                "batch_start_rank": collection.batch_start_rank,
+                "batch_end_rank": collection.batch_end_rank,
+                "price_step": collection.price_step,
+                "objective": "maximize sum(row_count * estimated_average_value_score)",
+            })
+        })
         .unwrap_or(Value::Null);
 
     Ok(serde_json::to_string_pretty(&json!({
@@ -1197,6 +1296,8 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         "intent": compact_intent(&profile),
         "candidate_count": compact_candidates.len(),
         "selected_dataset": selected_dataset,
+        "selected_datasets": selected_datasets,
+        "selection_summary": selection_summary,
         "evaluated_candidates": evaluated_results,
         "errors": stage_errors,
     }))?)
@@ -1205,7 +1306,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluation_has_final_value, evaluation_sort_score, extract_percentage,
+        compact_intent, evaluation_has_final_value, evaluation_sort_score, extract_percentage,
         final_score_from_valuation, heuristic_report, parse_stop_after,
         sample_contains_image_records, StopAfter,
     };
@@ -1217,6 +1318,7 @@ mod tests {
         DatasetValuation, ProxyUtilityApplyMode, ProxyUtilityReport, ON_CHAIN_COARSE_ADJUST_WEIGHT,
         ON_CHAIN_SCORE_NEUTRAL,
     };
+    use data_search::intent::QueryProfile;
     use data_search::sample_eval::{DownloadedSample, SampleRecord};
     use serde_json::json;
 
@@ -1316,6 +1418,7 @@ mod tests {
                 market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
+                seller_endpoint: None,
             }
         }
 
@@ -1393,6 +1496,7 @@ mod tests {
                 market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
+                seller_endpoint: None,
             },
             coarse_score: 80.0,
             final_score: 80.0,
@@ -1462,5 +1566,32 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(stop_after, StopAfter::DatasetSearch);
+    }
+
+    #[test]
+    fn compact_intent_includes_transfer_constraints() {
+        let profile = QueryProfile {
+            raw_query: "find cat dataset".into(),
+            data_standard: data_search::intent::DataStandard {
+                budget: "$20".into(),
+                max_latency_secs: 45.0,
+                min_dataset_size_bytes: 500_000_000,
+                max_dataset_size_bytes: 562_500_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let compact = compact_intent(&profile);
+        assert_eq!(compact["data_standard"]["budget"], "$20");
+        assert_eq!(compact["data_standard"]["max_latency_secs"], 45.0);
+        assert_eq!(
+            compact["data_standard"]["min_dataset_size_bytes"],
+            500_000_000
+        );
+        assert_eq!(
+            compact["data_standard"]["max_dataset_size_bytes"],
+            562_500_000
+        );
     }
 }

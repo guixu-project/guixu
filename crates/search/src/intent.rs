@@ -11,14 +11,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// This is the stable intermediate representation between
 /// natural-language input and downstream discovery logic.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryProfile {
     pub raw_query: String,
     pub task_type: Option<String>,
     #[serde(default)]
     pub task_description: Option<String>,
-    #[serde(default)]
-    pub budget: f64,
     pub target_entity: Option<String>,
     pub keywords: Vec<String>,
     #[serde(default)]
@@ -27,11 +25,37 @@ pub struct QueryProfile {
     pub user_profile: UserProfile,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl Default for QueryProfile {
+    fn default() -> Self {
+        Self {
+            raw_query: String::new(),
+            task_type: None,
+            task_description: None,
+            target_entity: None,
+            keywords: Vec::new(),
+            data_standard: DataStandard::default(),
+            user_profile: UserProfile::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DataStandard {
     pub sample_unit: String,
-    #[serde(default)]
-    pub metadata_fields: Vec<MetadataField>,
+    #[serde(
+        default = "default_budget",
+        deserialize_with = "deserialize_budget_or_default"
+    )]
+    pub budget: String,
+    #[serde(
+        default = "default_max_latency_secs",
+        deserialize_with = "deserialize_f64_or_default"
+    )]
+    pub max_latency_secs: f64,
+    #[serde(default, deserialize_with = "deserialize_u64_or_default")]
+    pub min_dataset_size_bytes: u64,
+    #[serde(default, deserialize_with = "deserialize_u64_or_default")]
+    pub max_dataset_size_bytes: u64,
     #[serde(default)]
     pub canonical_columns: Vec<String>,
     #[serde(default)]
@@ -42,18 +66,14 @@ impl Default for DataStandard {
     fn default() -> Self {
         Self {
             sample_unit: String::new(),
-            metadata_fields: default_metadata_fields(),
+            budget: default_budget(),
+            max_latency_secs: default_max_latency_secs(),
+            min_dataset_size_bytes: 0,
+            max_dataset_size_bytes: 0,
             canonical_columns: default_canonical_columns(),
             extra_columns: default_extra_columns(),
         }
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MetadataField {
-    pub name: String,
-    #[serde(default)]
-    pub value: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +113,9 @@ pub struct IntentParser {
 }
 
 const MEMORY_SEARCH_LIMIT: usize = 6;
+const DEFAULT_MAX_LATENCY_SECS: f64 = 30.0;
+const CONTEXT_WINDOW_BYTES: usize = 48;
+const DEFAULT_BUDGET: &str = "0 USD";
 
 #[derive(Debug, Clone)]
 pub struct IntentParserConfig {
@@ -126,6 +149,35 @@ impl IntentParserConfig {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct IntentContext {
+    user_profile: UserProfile,
+    bandwidth_bytes_per_sec: u64,
+    related_memories: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct QueryTransferConstraints {
+    max_latency_secs: f64,
+    min_dataset_size_bytes: u64,
+    max_dataset_size_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct NumericUnitMatch {
+    value: f64,
+    unit: String,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum LlmScalarValue {
+    Number(f64),
+    Text(String),
+}
+
 impl Default for IntentParser {
     fn default() -> Self {
         Self::new(IntentParserConfig::default())
@@ -153,15 +205,20 @@ impl IntentParser {
             .is_some();
 
         let query_owned = query.to_string();
-        let (user_profile, related_memories) =
+        let intent_context =
             tokio::task::spawn_blocking(move || collect_intent_context(&query_owned, true))
                 .await
-                .unwrap_or_else(|_| (UserProfile::default(), Vec::new()));
+                .unwrap_or_else(|_| IntentContext::default());
 
         if has_key {
             eprintln!("calling DeepSeek API for intent parsing");
             let profile = self
-                .profile_with_deepseek(query, &user_profile, &related_memories)
+                .profile_with_deepseek(
+                    query,
+                    &intent_context.user_profile,
+                    intent_context.bandwidth_bytes_per_sec,
+                    &intent_context.related_memories,
+                )
                 .await?;
             eprintln!(
                 "intent profile:\n{}",
@@ -170,8 +227,13 @@ impl IntentParser {
             Ok(profile)
         } else {
             eprintln!("no DEEPSEEK_API_KEY, using guixu.org proxy for intent parsing");
-            self.profile_via_proxy(query, &user_profile, &related_memories)
-                .await
+            self.profile_via_proxy(
+                query,
+                &intent_context.user_profile,
+                intent_context.bandwidth_bytes_per_sec,
+                &intent_context.related_memories,
+            )
+            .await
         }
     }
 
@@ -184,6 +246,7 @@ impl IntentParser {
         &self,
         query: &str,
         user_profile: &UserProfile,
+        bandwidth_bytes_per_sec: u64,
         related_memories: &[String],
     ) -> Result<QueryProfile> {
         let api_key = self
@@ -219,7 +282,7 @@ impl IntentParser {
             .map(|content| content.trim().to_string())
             .filter(|content| !content.is_empty())
             .ok_or_else(|| anyhow!("DeepSeek returned an empty intent payload"))?;
-        self.profile_from_deepseek_content(query, user_profile, &content)
+        self.profile_from_deepseek_content(query, user_profile, bandwidth_bytes_per_sec, &content)
     }
 
     #[cfg(test)]
@@ -237,20 +300,32 @@ impl IntentParser {
         &self,
         query: &str,
         user_profile: &UserProfile,
+        bandwidth_bytes_per_sec: u64,
         content: &str,
     ) -> Result<QueryProfile> {
         let llm_profile = serde_json::from_str::<LlmIntentProfile>(content)
             .with_context(|| format!("parse DeepSeek intent JSON: {content}"))?;
+        let top_level_max_latency_secs =
+            normalize_latency_secs(llm_profile.max_latency_secs.clone());
+        let mut data_standard = normalize_data_standard(llm_profile.data_standard);
+        let max_latency_secs = top_level_max_latency_secs.or(Some(data_standard.max_latency_secs));
+        let transfer_constraints =
+            derive_query_transfer_constraints(query, max_latency_secs, bandwidth_bytes_per_sec);
+        if llm_profile.budget.is_some() {
+            data_standard.budget = normalize_budget(llm_profile.budget);
+        }
+        data_standard.max_latency_secs = transfer_constraints.max_latency_secs;
+        data_standard.min_dataset_size_bytes = transfer_constraints.min_dataset_size_bytes;
+        data_standard.max_dataset_size_bytes = transfer_constraints.max_dataset_size_bytes;
 
         Ok(QueryProfile {
             raw_query: query.to_string(),
             task_type: normalize_optional(llm_profile.task_type),
             task_description: normalize_optional(llm_profile.task_description)
                 .or_else(|| Some(fallback_task_description(query))),
-            budget: llm_profile.budget.unwrap_or(0.0),
             target_entity: normalize_optional(llm_profile.target_entity),
             keywords: normalize_keywords(llm_profile.keywords),
-            data_standard: normalize_data_standard(llm_profile.data_standard),
+            data_standard,
             user_profile: user_profile.clone(),
         })
     }
@@ -287,6 +362,7 @@ impl IntentParser {
         &self,
         query: &str,
         user_profile: &UserProfile,
+        bandwidth_bytes_per_sec: u64,
         related_memories: &[String],
     ) -> Result<QueryProfile> {
         let request = self.build_deepseek_request(query, user_profile, related_memories)?;
@@ -314,7 +390,7 @@ impl IntentParser {
             .map(|content| content.trim().to_string())
             .filter(|content| !content.is_empty())
             .ok_or_else(|| anyhow!("DeepSeek proxy returned an empty intent payload"))?;
-        self.profile_from_deepseek_content(query, user_profile, &content)
+        self.profile_from_deepseek_content(query, user_profile, bandwidth_bytes_per_sec, &content)
     }
 }
 
@@ -332,12 +408,14 @@ Use this exact json schema:
 {
   "task_type": "string or null",
   "task_description": "string or null",
-  "budget": "number",
   "target_entity": "string or null",
   "keywords": ["lowercase keyword"],
   "data_standard": {
     "sample_unit": "string",
-    "metadata_fields": [{"name": "string", "value": "string"}],
+    "budget": "string or null",
+    "max_latency_secs": "number or null",
+    "min_dataset_size_bytes": "integer",
+    "max_dataset_size_bytes": "integer",
     "canonical_columns": ["string"],
     "extra_columns": ["string"]
   }
@@ -347,10 +425,13 @@ Rules:
 - First infer the user's likely task description from the natural-language query and any relevant user memories.
 - task_type must be a concise task label such as classification, forecasting, detection, ranking, retrieval, segmentation, generation, summarization, or evaluation.
 - task_description must be a detailed natural-language description of what the user is trying to accomplish with the data.
-- budget must always be a number representing the maximum budget explicitly mentioned in the query.
-- If the query does not explicitly mention a budget, budget must be 0.
+- data_standard.budget must preserve the amount together with its explicit unit or currency, for example "$20", "20 USD", "100 RMB", or "0.05 ETH".
+- If the query gives a bare budget number without a currency, normalize it as USD, for example "20 USD".
+- If the query does not explicitly mention a budget, data_standard.budget must be "0 USD".
 - Do not infer a budget from unrelated numbers such as years, row counts, image resolutions, hardware specs, or model names.
-- Return budget as a plain number without currency symbols or units.
+- data_standard.max_latency_secs must be the maximum acceptable waiting time for getting the dataset only when the query explicitly states one.
+- Convert data_standard.max_latency_secs to seconds as a plain number. If the query does not specify such a limit, use null.
+- Do not infer data_standard.max_latency_secs from time spans that describe the dataset contents themselves.
 - target_entity must be the main subject or object of the requested dataset, kept short, and should prefer the generic publicly searchable category over a private instance name when the memories make that category clear.
 - If the query names a private entity such as a pet or person, resolve it to the relevant dataset-search target when possible, for example a named cat should produce target_entity "cat" rather than the pet's name.
 - keywords must be extracted only from the original query text or from relevant user memories that are clearly linked to the query by named-entity matches, do not invent keywords
@@ -363,17 +444,15 @@ Rules:
 - After resolving private entities to public categories via memories, the private name (e.g. "caesar") must NOT appear in keywords.
 - Maximum 5 keywords. Fewer is better. If one keyword suffices, use one.
 - When in doubt about whether to include a keyword, leave it out.
+- data_standard carries dataset schema preferences plus query-side transfer constraints.
 - data_standard.sample_unit is the only hard dataset constraint used for search filtering before scoring.
-- data_standard.sample_unit must encode the required per-sample modality using broad units such as image, video, text, tabular, or audio.
+- data_standard.sample_unit should use broad units such as image, video, text, tabular, or audio.
 - If the user is asking for an image classifier or image detector, sample_unit should normally be "image".
-- data_standard.metadata_fields must always include exactly these fields: min_sample_num, resolution.
-- data_standard.metadata_fields.resolution is descriptive metadata for downstream scoring or explanation only; it must NOT be treated as a hard search filter.
-- If the user requests that images should not be blurry or should be high quality, prefer a concrete resolution hint instead of leaving resolution empty.
+- data_standard.min_dataset_size_bytes and data_standard.max_dataset_size_bytes should be 0 in the LLM output; the application will compute them.
 - data_standard.canonical_columns must always include exactly these fields: sample_id, label.
 - data_standard.extra_columns must always include exactly these fields: timestamp.
-- metadata_fields values may be empty strings when the query does not provide the information.
 - canonical_columns and extra_columns must be string arrays, not objects.
-- If you do not have enough information for the hard constraint sample_unit, leave it empty rather than inventing it.
+- If you do not have enough information for data_standard, leave sample_unit as an empty string.
 Examples:
   Query: "write an image classifier that checks whether my cat is in the photo taken by my house monitor"
   Good keywords: ["cat"]
@@ -382,12 +461,14 @@ Examples:
 
   Query: "find a cat dataset under $20 for classification"
   Good keywords: ["cat"]
-  Budget: 20
+  data_standard.budget: "$20"
 
   Query: "build a model to detect lung nodules in chest CT scans"
   Good keywords: ["lung nodule", "chest ct"]
   Bad keywords: ["detect", "model", "build", "scan"]
-- If a scalar field other than budget is unknown, use null. budget must always be present as a number.
+- Query: "find a dataset I can download within 45 seconds"
+  data_standard.max_latency_secs: 45
+- If a scalar field other than data_standard.budget is unknown, use null. data_standard.budget must always be present as a string.
 - The provided hardware profile and user memories are context only; do not copy them verbatim into the json output."#;
 
 #[derive(Debug, Serialize)]
@@ -431,7 +512,8 @@ struct DeepSeekChoiceMessage {
 struct LlmIntentProfile {
     task_type: Option<String>,
     task_description: Option<String>,
-    budget: Option<f64>,
+    budget: Option<LlmScalarValue>,
+    max_latency_secs: Option<LlmScalarValue>,
     target_entity: Option<String>,
     #[serde(default)]
     keywords: Vec<String>,
@@ -452,6 +534,342 @@ fn build_user_prompt(
          Relevant user memories:\n{memories_section}\n\n\
          Hardware profile:\n{hardware_json}\n"
     ))
+}
+
+fn default_max_latency_secs() -> f64 {
+    DEFAULT_MAX_LATENCY_SECS
+}
+
+fn default_budget() -> String {
+    DEFAULT_BUDGET.to_string()
+}
+
+fn deserialize_budget_or_default<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(default_budget))
+}
+
+fn deserialize_f64_or_default<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or_else(default_max_latency_secs))
+}
+
+fn deserialize_u64_or_default<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn derive_query_transfer_constraints(
+    query: &str,
+    llm_max_latency_secs: Option<f64>,
+    bandwidth_bytes_per_sec: u64,
+) -> QueryTransferConstraints {
+    let max_latency_secs = llm_max_latency_secs
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or_else(default_max_latency_secs);
+    let min_dataset_size_bytes = extract_min_dataset_size_bytes(query).unwrap_or(0);
+    let max_dataset_size_bytes =
+        compute_max_dataset_size_bytes(max_latency_secs, bandwidth_bytes_per_sec);
+
+    QueryTransferConstraints {
+        max_latency_secs,
+        min_dataset_size_bytes,
+        max_dataset_size_bytes,
+    }
+}
+
+fn extract_min_dataset_size_bytes(query: &str) -> Option<u64> {
+    extract_numeric_unit_matches(query)
+        .into_iter()
+        .filter_map(|capture| {
+            let size_bytes = parse_size_bytes(&capture.unit, capture.value)?;
+            if has_minimum_size_context(query, capture.start, capture.end, &capture.unit) {
+                Some(size_bytes)
+            } else {
+                None
+            }
+        })
+        .max()
+}
+
+fn compute_max_dataset_size_bytes(max_latency_secs: f64, bandwidth_bytes_per_sec: u64) -> u64 {
+    if !max_latency_secs.is_finite() || max_latency_secs <= 0.0 || bandwidth_bytes_per_sec == 0 {
+        return 0;
+    }
+
+    let max_bytes = max_latency_secs * bandwidth_bytes_per_sec as f64;
+    if max_bytes >= u64::MAX as f64 {
+        u64::MAX
+    } else {
+        max_bytes.floor() as u64
+    }
+}
+
+fn normalize_budget(value: Option<LlmScalarValue>) -> String {
+    match value {
+        Some(LlmScalarValue::Text(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                default_budget()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        Some(LlmScalarValue::Number(number)) => format_numeric_budget(number),
+        None => default_budget(),
+    }
+}
+
+fn normalize_latency_secs(value: Option<LlmScalarValue>) -> Option<f64> {
+    match value {
+        Some(LlmScalarValue::Number(number)) if number.is_finite() => Some(number),
+        Some(LlmScalarValue::Text(text)) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn format_numeric_budget(value: f64) -> String {
+    if !value.is_finite() {
+        return default_budget();
+    }
+
+    if (value.fract()).abs() < f64::EPSILON {
+        format!("{value:.0} USD")
+    } else {
+        format!("{value} USD")
+    }
+}
+
+fn extract_numeric_unit_matches(query: &str) -> Vec<NumericUnitMatch> {
+    let mut matches = Vec::new();
+    let mut chars = query.char_indices().peekable();
+
+    while let Some((start, ch)) = chars.next() {
+        if !ch.is_ascii_digit() {
+            continue;
+        }
+
+        let mut number = String::from(ch);
+        let mut number_end = start + ch.len_utf8();
+        let mut seen_dot = false;
+
+        while let Some(&(idx, next)) = chars.peek() {
+            if next.is_ascii_digit() {
+                number.push(next);
+                number_end = idx + next.len_utf8();
+                chars.next();
+                continue;
+            }
+            if next == ',' {
+                number_end = idx + next.len_utf8();
+                chars.next();
+                continue;
+            }
+            if next == '.' && !seen_dot {
+                seen_dot = true;
+                number.push(next);
+                number_end = idx + next.len_utf8();
+                chars.next();
+                continue;
+            }
+            break;
+        }
+
+        while let Some(&(idx, next)) = chars.peek() {
+            if next.is_whitespace() || next == '-' {
+                number_end = idx + next.len_utf8();
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        let mut unit = String::new();
+        let mut unit_end = number_end;
+        while let Some(&(idx, next)) = chars.peek() {
+            if is_unit_char(next) {
+                unit.push(next);
+                unit_end = idx + next.len_utf8();
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        if unit.is_empty() {
+            continue;
+        }
+
+        let Ok(value) = number.replace(',', "").parse::<f64>() else {
+            continue;
+        };
+        if !value.is_finite() {
+            continue;
+        }
+
+        matches.push(NumericUnitMatch {
+            value,
+            unit: unit.to_lowercase(),
+            start,
+            end: unit_end,
+        });
+    }
+
+    matches
+}
+
+fn parse_size_bytes(unit: &str, value: f64) -> Option<u64> {
+    let normalized = strip_size_suffixes(unit.trim().to_lowercase());
+    let multiplier =
+        if normalized == "b" || normalized.contains("byte") || normalized.contains("字节") {
+            1_f64
+        } else if normalized == "kib" || normalized == "ki" || normalized.contains("kibibyte") {
+            1024_f64
+        } else if normalized == "kb" || normalized == "k" || normalized.contains("kilobyte") {
+            1_000_f64
+        } else if normalized == "mib" || normalized == "mi" || normalized.contains("mebibyte") {
+            1024_f64.powi(2)
+        } else if normalized == "mb"
+            || normalized == "m"
+            || normalized.contains("megabyte")
+            || normalized.contains("兆字节")
+        {
+            1_000_f64.powi(2)
+        } else if normalized == "gib" || normalized == "gi" || normalized.contains("gibibyte") {
+            1024_f64.powi(3)
+        } else if normalized == "gb"
+            || normalized == "g"
+            || normalized.contains("gigabyte")
+            || normalized.contains("吉字节")
+        {
+            1_000_f64.powi(3)
+        } else if normalized == "tib" || normalized == "ti" || normalized.contains("tebibyte") {
+            1024_f64.powi(4)
+        } else if normalized == "tb"
+            || normalized == "t"
+            || normalized.contains("terabyte")
+            || normalized.contains("太字节")
+        {
+            1_000_f64.powi(4)
+        } else {
+            return None;
+        };
+
+    let size_bytes = value * multiplier;
+    if !size_bytes.is_finite() || size_bytes <= 0.0 {
+        return None;
+    }
+    if size_bytes >= u64::MAX as f64 {
+        Some(u64::MAX)
+    } else {
+        Some(size_bytes.floor() as u64)
+    }
+}
+
+fn has_minimum_size_context(query: &str, start: usize, end: usize, unit: &str) -> bool {
+    let before = context_slice_before(query, start).to_lowercase();
+    let after = context_slice_after(query, end).to_lowercase();
+    let around = format!("{before} {after}");
+    let unit = unit.to_lowercase();
+
+    contains_any(
+        &around,
+        &[
+            "at least",
+            "minimum",
+            "min ",
+            "min:",
+            ">=",
+            "not less than",
+            "no smaller than",
+            "over",
+            "greater than",
+            "至少",
+            "不少于",
+            "最小",
+            "下限",
+            "不低于",
+            "大于",
+            "超过",
+            "以上",
+        ],
+    ) || contains_any(&unit, &["以上"])
+}
+
+fn strip_size_suffixes(mut unit: String) -> String {
+    for suffix in ["以上", "左右", "约", "的"] {
+        while unit.ends_with(suffix) {
+            unit.truncate(unit.len() - suffix.len());
+        }
+    }
+    unit
+}
+
+fn context_slice_before(query: &str, start: usize) -> &str {
+    let window_start =
+        clamp_to_char_boundary_left(query, start.saturating_sub(CONTEXT_WINDOW_BYTES));
+    &query[window_start..start]
+}
+
+fn context_slice_after(query: &str, end: usize) -> &str {
+    let window_end = clamp_to_char_boundary_right(
+        query,
+        end.saturating_add(CONTEXT_WINDOW_BYTES).min(query.len()),
+    );
+    &query[end..window_end]
+}
+
+fn clamp_to_char_boundary_left(value: &str, mut index: usize) -> usize {
+    while index > 0 && !value.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn clamp_to_char_boundary_right(value: &str, mut index: usize) -> usize {
+    while index < value.len() && !value.is_char_boundary(index) {
+        index += 1;
+    }
+    index
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn is_unit_char(ch: char) -> bool {
+    ch.is_ascii_alphabetic()
+        || matches!(
+            ch,
+            '秒' | '钟'
+                | '分'
+                | '小'
+                | '时'
+                | '毫'
+                | '字'
+                | '节'
+                | '兆'
+                | '吉'
+                | '太'
+                | '千'
+                | '内'
+                | '之'
+                | '以'
+                | '下'
+                | '上'
+                | '约'
+                | '的'
+        )
+        || ch == '/'
 }
 
 fn normalize_optional(value: Option<String>) -> Option<String> {
@@ -476,51 +894,15 @@ fn normalize_keywords(keywords: Vec<String>) -> Vec<String> {
 }
 
 fn normalize_data_standard(data_standard: DataStandard) -> DataStandard {
-    let metadata_values = data_standard
-        .metadata_fields
-        .into_iter()
-        .map(|field| {
-            (
-                field.name.trim().to_lowercase(),
-                field.value.trim().to_string(),
-            )
-        })
-        .collect::<std::collections::HashMap<_, _>>();
-
     DataStandard {
         sample_unit: data_standard.sample_unit.trim().to_string(),
-        metadata_fields: vec![
-            MetadataField {
-                name: "min_sample_num".to_string(),
-                value: metadata_values
-                    .get("min_sample_num")
-                    .cloned()
-                    .unwrap_or_default(),
-            },
-            MetadataField {
-                name: "resolution".to_string(),
-                value: metadata_values
-                    .get("resolution")
-                    .cloned()
-                    .unwrap_or_default(),
-            },
-        ],
+        budget: data_standard.budget.trim().to_string(),
+        max_latency_secs: data_standard.max_latency_secs,
+        min_dataset_size_bytes: data_standard.min_dataset_size_bytes,
+        max_dataset_size_bytes: data_standard.max_dataset_size_bytes,
         canonical_columns: default_canonical_columns(),
         extra_columns: default_extra_columns(),
     }
-}
-
-fn default_metadata_fields() -> Vec<MetadataField> {
-    vec![
-        MetadataField {
-            name: "min_sample_num".to_string(),
-            value: String::new(),
-        },
-        MetadataField {
-            name: "resolution".to_string(),
-            value: String::new(),
-        },
-    ]
 }
 
 fn default_canonical_columns() -> Vec<String> {
@@ -563,14 +945,19 @@ pub(crate) fn load_setting_env_value(key: &str) -> Option<String> {
     })
 }
 
-fn collect_intent_context(query: &str, include_memories: bool) -> (UserProfile, Vec<String>) {
+fn collect_intent_context(query: &str, include_memories: bool) -> IntentContext {
     let user_profile = collect_user_profile();
     let related_memories = if include_memories {
         retrieve_related_memories(query, MEMORY_SEARCH_LIMIT)
     } else {
         Vec::new()
     };
-    (user_profile, related_memories)
+
+    IntentContext {
+        user_profile,
+        bandwidth_bytes_per_sec: collect_local_bandwidth_bytes_per_sec(),
+        related_memories,
+    }
 }
 
 fn retrieve_related_memories(query: &str, limit: usize) -> Vec<String> {
@@ -925,6 +1312,55 @@ fn collect_user_profile() -> UserProfile {
     }
 }
 
+fn collect_local_bandwidth_bytes_per_sec() -> u64 {
+    detect_local_bandwidth_bytes_per_sec()
+        .or_else(load_bandwidth_override_bytes_per_sec)
+        .unwrap_or(0)
+}
+
+fn detect_local_bandwidth_bytes_per_sec() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        return detect_linux_bandwidth_bytes_per_sec();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return detect_macos_bandwidth_bytes_per_sec();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return detect_windows_bandwidth_bytes_per_sec();
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+fn load_bandwidth_override_bytes_per_sec() -> Option<u64> {
+    if let Ok(value) = std::env::var("GUIXU_DEFAULT_BANDWIDTH_BYTES_PER_SEC") {
+        let parsed = value.trim().parse::<u64>().ok()?;
+        if parsed > 0 {
+            return Some(parsed);
+        }
+    }
+
+    let mbps = std::env::var("GUIXU_DEFAULT_BANDWIDTH_MBPS")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())?;
+    if !mbps.is_finite() || mbps <= 0.0 {
+        return None;
+    }
+
+    let bytes_per_sec = (mbps * 1_000_000.0) / 8.0;
+    if bytes_per_sec >= u64::MAX as f64 {
+        Some(u64::MAX)
+    } else {
+        Some(bytes_per_sec.floor() as u64)
+    }
+}
+
 fn collect_cpu_profile() -> CpuProfile {
     CpuProfile {
         architecture: std::env::consts::ARCH.to_string(),
@@ -1026,6 +1462,138 @@ fn detect_nvidia_gpus() -> Option<Vec<GpuProfile>> {
 }
 
 #[cfg(target_os = "linux")]
+fn detect_linux_bandwidth_bytes_per_sec() -> Option<u64> {
+    let interface =
+        detect_linux_default_interface().or_else(detect_linux_default_interface_via_ip_route)?;
+    read_linux_interface_speed_bytes_per_sec(&interface)
+}
+
+#[cfg(target_os = "linux")]
+fn detect_linux_default_interface() -> Option<String> {
+    let routes = std::fs::read_to_string("/proc/net/route").ok()?;
+    for line in routes.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 2 {
+            continue;
+        }
+        if fields[1] == "00000000" && fields[0] != "lo" {
+            return Some(fields[0].to_string());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn detect_linux_default_interface_via_ip_route() -> Option<String> {
+    let output = run_command("ip", &["route", "show", "default"])?;
+    for line in output.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if let Some(index) = fields.iter().position(|field| *field == "dev") {
+            if let Some(interface) = fields.get(index + 1) {
+                return Some((*interface).to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_interface_speed_bytes_per_sec(interface: &str) -> Option<u64> {
+    let speed_path = PathBuf::from("/sys/class/net")
+        .join(interface)
+        .join("speed");
+    let speed_mbps = std::fs::read_to_string(speed_path)
+        .ok()?
+        .trim()
+        .parse::<i64>()
+        .ok()?;
+    if speed_mbps <= 0 {
+        return None;
+    }
+
+    Some((speed_mbps as u64).saturating_mul(1_000_000) / 8)
+}
+
+#[cfg(target_os = "macos")]
+fn detect_macos_bandwidth_bytes_per_sec() -> Option<u64> {
+    let interface = detect_macos_default_interface()?;
+    let output = run_command("system_profiler", &["SPNetworkDataType"])?;
+    parse_macos_link_speed_bytes_per_sec(&output, &interface)
+}
+
+#[cfg(target_os = "macos")]
+fn detect_macos_default_interface() -> Option<String> {
+    let output = run_command("route", &["-n", "get", "default"])?;
+    output.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let value = trimmed.strip_prefix("interface:")?.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn parse_macos_link_speed_bytes_per_sec(output: &str, interface: &str) -> Option<u64> {
+    let mut in_matching_block = false;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(device) = trimmed.strip_prefix("BSD Device Name:") {
+            in_matching_block = device.trim() == interface;
+            continue;
+        }
+        if in_matching_block {
+            if let Some(speed) = trimmed.strip_prefix("Link Speed:") {
+                return parse_link_speed_bytes_per_sec(speed.trim());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn detect_windows_bandwidth_bytes_per_sec() -> Option<u64> {
+    let output = run_command(
+        "wmic",
+        &["nic", "where", "NetEnabled=true", "get", "Speed", "/value"],
+    )?;
+    output
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("Speed="))
+        .filter_map(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .max()
+        .map(|bits_per_sec| bits_per_sec / 8)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_link_speed_bytes_per_sec(value: &str) -> Option<u64> {
+    let normalized = value.trim().to_lowercase();
+    let capture = extract_numeric_unit_matches(&normalized)
+        .into_iter()
+        .next()?;
+    let multiplier = if capture.unit.starts_with("tbit") || capture.unit.starts_with("tbps") {
+        1_000_000_000_000_f64
+    } else if capture.unit.starts_with("gbit") || capture.unit.starts_with("gbps") {
+        1_000_000_000_f64
+    } else if capture.unit.starts_with("mbit") || capture.unit.starts_with("mbps") {
+        1_000_000_f64
+    } else if capture.unit.starts_with("kbit") || capture.unit.starts_with("kbps") {
+        1_000_f64
+    } else {
+        return None;
+    };
+    let bits_per_sec = capture.value * multiplier;
+    if !bits_per_sec.is_finite() || bits_per_sec <= 0.0 {
+        return None;
+    }
+
+    Some((bits_per_sec / 8.0).floor() as u64)
+}
+
+#[cfg(target_os = "linux")]
 fn detect_linux_gpus() -> Vec<GpuProfile> {
     let Some(output) = run_command("lspci", &[]) else {
         return Vec::new();
@@ -1120,4 +1688,48 @@ fn run_command(program: &str, args: &[&str]) -> Option<String> {
         .ok()
         .map(|stdout| stdout.trim().to_string())
         .filter(|stdout| !stdout.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        compute_max_dataset_size_bytes, derive_query_transfer_constraints,
+        extract_min_dataset_size_bytes, format_numeric_budget, normalize_budget,
+        normalize_latency_secs, LlmScalarValue,
+    };
+
+    #[test]
+    fn normalize_budget_preserves_units_from_llm() {
+        let budget = normalize_budget(Some(LlmScalarValue::Text("$20".into())));
+        assert_eq!(budget, "$20");
+    }
+
+    #[test]
+    fn normalize_latency_secs_accepts_llm_number() {
+        let latency = normalize_latency_secs(Some(LlmScalarValue::Number(45.0)));
+        assert_eq!(latency, Some(45.0));
+    }
+
+    #[test]
+    fn extract_min_dataset_size_bytes_parses_minimum_constraint() {
+        let size = extract_min_dataset_size_bytes("需要至少 2GB 的数据集");
+        assert_eq!(size, Some(2_000_000_000));
+    }
+
+    #[test]
+    fn derive_query_transfer_constraints_defaults_latency_and_computes_max_size() {
+        let constraints = derive_query_transfer_constraints("find a cat dataset", None, 8_000_000);
+        assert_eq!(constraints.max_latency_secs, 30.0);
+        assert_eq!(constraints.min_dataset_size_bytes, 0);
+        assert_eq!(constraints.max_dataset_size_bytes, 240_000_000);
+        assert_eq!(
+            compute_max_dataset_size_bytes(constraints.max_latency_secs, 8_000_000),
+            240_000_000
+        );
+    }
+
+    #[test]
+    fn format_numeric_budget_adds_default_unit() {
+        assert_eq!(format_numeric_budget(20.0), "20 USD");
+    }
 }
