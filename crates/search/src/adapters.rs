@@ -88,6 +88,7 @@ impl KaggleAdapter {
                     market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: created,
+                    seller_endpoint: None,
                 })
             })
             .collect()
@@ -222,6 +223,7 @@ impl HuggingFaceAdapter {
                     }),
                     data_type: infer_data_type_from_title(id),
                     created_at: created,
+                    seller_endpoint: None,
                 })
             })
             .collect()
@@ -373,6 +375,7 @@ impl ExternalAdapter for IpfsAdapter {
                     market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: created,
+                    seller_endpoint: None,
                 })
             })
             .collect())
@@ -486,6 +489,7 @@ impl BitTorrentAdapter {
             market: None,
             data_type: infer_data_type_from_title(name),
             created_at: created,
+            seller_endpoint: None,
         })
     }
 
@@ -545,6 +549,7 @@ impl BitTorrentAdapter {
             market: None,
             data_type: infer_data_type_from_title(title),
             created_at: created,
+            seller_endpoint: None,
         })
     }
 
@@ -596,6 +601,7 @@ impl BitTorrentAdapter {
                     market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: chrono::Utc::now(),
+                    seller_endpoint: None,
                 })
             })
             .collect())
@@ -827,6 +833,7 @@ impl GoogleDatasetSearchAdapter {
                     market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: chrono::Utc::now(),
+                    seller_endpoint: None,
                 })
             })
             .collect()
@@ -966,6 +973,7 @@ impl ExternalAdapter for DataCiteCommonsAdapter {
                     market: None,
                     data_type: infer_data_type_from_title(title),
                     created_at: created,
+                    seller_endpoint: None,
                 })
             })
             .collect())
@@ -996,6 +1004,8 @@ struct GuixuHubDatasetResponse {
     price: GuixuHubPriceResponse,
     #[serde(default)]
     created_at: String,
+    #[serde(default)]
+    x402_endpoint: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1149,6 +1159,15 @@ impl ExternalAdapter for GuixuHubAdapter {
                     }),
                     data_type,
                     created_at,
+                    seller_endpoint: item.x402_endpoint.map(|ep| {
+                        if ep.starts_with("http") {
+                            ep
+                        } else {
+                            let base = std::env::var("GUIXU_HUB_BASE_URL")
+                                .unwrap_or_else(|_| "https://www.guixu.org".into());
+                            format!("{base}{ep}")
+                        }
+                    }),
                 }
             })
             .collect())
@@ -1298,6 +1317,7 @@ impl LocalFileAdapter {
             market: None,
             data_type: DataType::from_ext(ext),
             created_at: chrono::Utc::now(),
+            seller_endpoint: None,
         })
     }
 

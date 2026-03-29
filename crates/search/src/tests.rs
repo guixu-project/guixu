@@ -101,6 +101,7 @@ fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> Sea
         market: None,
         data_type: DataType::Tabular,
         created_at: Utc::now(),
+        seller_endpoint: None,
     }
 }
 
@@ -689,6 +690,7 @@ async fn search_engine_includes_new_adapter_results() {
                 market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
+                seller_endpoint: None,
             }])
         }
     }
@@ -725,6 +727,7 @@ async fn search_engine_includes_new_adapter_results() {
                 market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
+                seller_endpoint: None,
             }])
         }
     }
@@ -797,6 +800,7 @@ async fn source_filter_works_for_new_sources() {
                 market: None,
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
+                seller_endpoint: None,
             }])
         }
     }
