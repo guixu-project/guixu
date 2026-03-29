@@ -39,7 +39,17 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         seller_endpoint: args
             .get("seller_endpoint")
             .and_then(|v| v.as_str())
-            .map(String::from),
+            .map(String::from)
+            .or_else(|| {
+                // Auto-resolve x402 endpoint for Guixu Hub datasets
+                if let Some(listing_id) = cid_str.strip_prefix("guixu-hub:") {
+                    let base = std::env::var("GUIXU_HUB_BASE_URL")
+                        .unwrap_or_else(|_| "https://www.guixu.org".into());
+                    Some(format!("{base}/api/x402/{listing_id}"))
+                } else {
+                    None
+                }
+            }),
     };
 
     let (receipt, protocol_desc) = if metadata.price.is_free() {
@@ -64,25 +74,37 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .map(|r| format!("{:?}", r.protocol))
         .unwrap_or_else(|| "none".into());
 
-    let delivery = match state.store.get_file_path(&cid)? {
-        Some(path) if path.exists() => {
-            json!({
-                "method": "local",
-                "file_path": path.to_string_lossy(),
-                "size_bytes": std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
-            })
-        }
-        _ => {
-            let download_dir = state
-                .store
-                .get_file_path(&DatasetCid("__config_data_dir__".into()))?
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp/guixu-downloads"));
-            let dest = download_dir.join(format!("{}.dat", &cid_str[..16.min(cid_str.len())]));
-            json!({
-                "method": "torrent_pending",
-                "info_hash": metadata.info_hash,
-                "download_path": dest.to_string_lossy(),
-            })
+    let delivery = if let Some(download_url) = receipt
+        .as_ref()
+        .and_then(|r| r.seller_response.as_ref())
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+        .and_then(|v| v.get("downloadUrl")?.as_str().map(String::from))
+    {
+        json!({
+            "method": "url",
+            "download_url": download_url,
+        })
+    } else {
+        match state.store.get_file_path(&cid)? {
+            Some(path) if path.exists() => {
+                json!({
+                    "method": "local",
+                    "file_path": path.to_string_lossy(),
+                    "size_bytes": std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                })
+            }
+            _ => {
+                let download_dir = state
+                    .store
+                    .get_file_path(&DatasetCid("__config_data_dir__".into()))?
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp/guixu-downloads"));
+                let dest = download_dir.join(format!("{}.dat", &cid_str[..16.min(cid_str.len())]));
+                json!({
+                    "method": "torrent_pending",
+                    "info_hash": metadata.info_hash,
+                    "download_path": dest.to_string_lossy(),
+                })
+            }
         }
     };
 

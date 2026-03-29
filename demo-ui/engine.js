@@ -222,6 +222,8 @@ class GuixuEngine {
     this.totalCost = 0;
     this.datasets = [];
     this.selectedDataset = null;
+    this.selectedDatasets = [];
+    this.selectionSummary = null;
     this.logs = [];
     this.lastSearchContext = null;
   }
@@ -426,6 +428,15 @@ class GuixuEngine {
 
     const pipelineErrors = Array.isArray(data?.errors) ? data.errors : [];
     const candidates = Array.isArray(data?.evaluated_candidates) ? data.evaluated_candidates : [];
+    const selectedDatasets = Array.isArray(data?.selected_datasets) ? data.selected_datasets : [];
+    const selectedCids = new Set(
+      selectedDatasets
+        .map(candidate => candidate?.cid)
+        .filter(Boolean),
+    );
+    const selectionSummary = data?.selection_summary && typeof data.selection_summary === 'object'
+      ? data.selection_summary
+      : null;
     if (candidates.length === 0) {
       if (this._lastError) {
         this.log('[!]', `Sample pipeline request failed: ${this._lastError}`);
@@ -461,12 +472,16 @@ class GuixuEngine {
         evaluationMode: candidate.evaluation_mode || 'selection_pipeline',
         selectionExplanation: candidate.selection_explanation || '',
         sampleFailureReason: candidate.sample_failure_reason || '',
+        selectedInCollection: Boolean(candidate.selected_in_collection) || selectedCids.has(candidate.cid),
         pipelineErrors,
         verdict: tcvVerdict(finalScore),
       };
     });
 
     results.sort((left, right) => {
+      if (left.selectedInCollection !== right.selectedInCollection) {
+        return left.selectedInCollection ? -1 : 1;
+      }
       if (left.hasFinalValue !== right.hasFinalValue) {
         return left.hasFinalValue ? -1 : 1;
       }
@@ -486,8 +501,20 @@ class GuixuEngine {
     pipelineErrors.slice(0, 5).forEach(error => {
       this.log('[!]', `Sample pipeline: ${error}`);
     });
-    this.selectedDataset = results[0];
-    this.log('[+]', `Best pick: ${results[0].title}`);
+    this.selectedDatasets = results.filter(result => result.selectedInCollection);
+    this.selectionSummary = selectionSummary;
+    this.selectedDataset = this.selectedDatasets[0] || results[0];
+    if (this.selectedDatasets.length > 1) {
+      this.log('[+]', `Selected bundle: ${this.selectedDatasets.map(result => result.title).join(' + ')}`);
+      if (selectionSummary) {
+        this.log(
+          '[i]',
+          `Bundle totals: $${parseNumber(selectionSummary.total_price).toFixed(4)} · ${formatBytes(parseNumber(selectionSummary.total_size_bytes, 0))}`,
+        );
+      }
+    } else {
+      this.log('[+]', `Best pick: ${this.selectedDataset.title}`);
+    }
     return results;
   }
 

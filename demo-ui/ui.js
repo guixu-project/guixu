@@ -238,6 +238,9 @@ function resetUI() {
   engine.logs = [];
   engine.ledger = [];
   engine.totalCost = 0;
+  engine.selectedDataset = null;
+  engine.selectedDatasets = [];
+  engine.selectionSummary = null;
   ['step2','step3','step4','step5'].forEach(id => {
     $(id).classList.add('disabled');
     $(id).classList.remove('active','done');
@@ -378,6 +381,7 @@ function renderEvalResults(results) {
   $('evalResults').innerHTML = results.map((r, i) => {
     const v = r.verdict;
     const isBest = i === 0;
+    const isSelected = Boolean(r.selectedInCollection);
     const parts = scoreComposition(r);
     const detail = [
       v.text,
@@ -385,6 +389,7 @@ function renderEvalResults(results) {
       parts.hasSampleScore
         ? `Sample ${formatScore(parts.sampleScore)}`
         : (parts.failureReason ? `No sample score: ${parts.failureReason}` : 'sample not scored'),
+      isSelected ? 'selected bundle member' : '',
       r.source === 'p2p' ? 'P2P' : r.sourceLabel,
     ].filter(Boolean).join(' · ');
     const preview = [
@@ -394,7 +399,7 @@ function renderEvalResults(results) {
     return `
     <div class="eval-card ${isBest ? 'best' : ''}" data-idx="${i}" onclick="showFinalValueDetail(${i})">
       <div class="eval-header">
-        <span>${isBest ? '[BEST] ' : ''}${r.title}</span>
+        <span>${isBest ? '[BEST] ' : (isSelected ? '[SELECTED] ' : '')}${r.title}</span>
         <span class="eval-score-stack">
           ${renderScoreBox('Meta', parts.metadataScore)}
           ${renderScoreBox('Sample', parts.hasSampleScore ? parts.sampleScore : null)}

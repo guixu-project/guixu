@@ -226,8 +226,8 @@ impl X402Client {
             bail!("x402: payment rejected with {status}: {body}");
         }
 
-        // Step 5: Parse settlement receipt
-        let tx_hash = resp
+        // Step 5: Parse settlement receipt from header + capture response body
+        let payment_resp_header = resp
             .headers()
             .get("payment-response")
             .and_then(|h| h.to_str().ok())
@@ -238,9 +238,15 @@ impl X402Client {
                         .ok()
                         .and_then(|b| serde_json::from_slice(&b).ok())
                 })
-            })
-            .and_then(|pr| pr.tx_hash)
+            });
+
+        let tx_hash = payment_resp_header
+            .as_ref()
+            .and_then(|pr| pr.tx_hash.clone())
             .unwrap_or_default();
+
+        let body = resp.text().await.unwrap_or_default();
+        let seller_response = if body.is_empty() { None } else { Some(body) };
 
         debug!(tx_hash = %tx_hash, "x402: payment settled");
 
@@ -256,6 +262,7 @@ impl X402Client {
             price: Price::usdc(amount_raw as f64 / 1_000_000.0),
             protocol: PaymentProtocol::X402,
             timestamp: chrono::Utc::now(),
+            seller_response,
         })
     }
 }

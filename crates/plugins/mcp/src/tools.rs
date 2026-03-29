@@ -81,7 +81,13 @@ fn task_pipeline_definition(allow_source_filter: bool) -> ToolDefinition {
                     "description": "Evaluation settings used once the workflow reaches dataset_evaluate. External datasets fall back to the demo UI heuristic when no local metadata is available.",
                     "properties": {
                         "top_k": { "type": "integer" },
-                        "budget": { "type": "number" },
+                        "budget": {
+                            "anyOf": [
+                                { "type": "number" },
+                                { "type": "string" }
+                            ],
+                            "description": "Maximum budget, ideally preserving the unit or currency such as $20 or 20 USD"
+                        },
                         "required_columns": {
                             "type": "array",
                             "items": { "type": "string" }
@@ -170,7 +176,13 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "items": { "type": "string" },
                         "description": "Column names the task requires"
                     },
-                    "budget": { "type": "number", "description": "Maximum budget in USD" }
+                    "budget": {
+                        "anyOf": [
+                            { "type": "number" },
+                            { "type": "string" }
+                        ],
+                        "description": "Maximum budget, preserving unit/currency when available, e.g. $20 or 20 USD"
+                    }
                 },
                 "required": ["cid", "task_description"]
             }),
