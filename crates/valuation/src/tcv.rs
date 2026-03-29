@@ -10,7 +10,7 @@ use crate::video_evaluator::VideoEvaluator;
 /// TCV(D, T, C) = α·SchemaFit + β·TemporalFit + γ·InfoGain
 ///              + δ·Quality + ε·CommunitySignal - ζ·RiskPenalty
 ///
-/// Range: [-100, +100]. Negative means the dataset would likely harm the task.
+/// Range: [0, 100]. Scores around 50 are neutral after normalization.
 pub struct TcvEngine;
 
 /// Full TCV valuation report returned to the agent.
@@ -30,15 +30,15 @@ pub struct TcvReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TcvVerdict {
-    /// TCV > 60: strongly recommended
+    /// TCV > 80: strongly recommended
     StrongPositive,
-    /// TCV 30-60: recommended
+    /// TCV 65-80: recommended
     Positive,
-    /// TCV 0-30: marginal value
+    /// TCV 50-65: marginal value
     Neutral,
-    /// TCV -30 to 0: likely unhelpful
+    /// TCV 35-50: likely unhelpful
     Negative,
-    /// TCV < -30: would harm task performance
+    /// TCV <= 35: would likely harm task performance
     StrongNegative,
 }
 
@@ -87,20 +87,22 @@ impl TcvEngine {
         let quality_score =
             quality_score * (1.0 - if type_bonus > 0.0 { 0.5 } else { 0.0 }) + type_bonus;
 
-        // TCV in range [-100, +100]
+        // Compute the legacy centered score, then normalize it into [0, 100]
+        // so downstream consumers never see negative TCV values.
         let raw = ALPHA * schema_fit
             + BETA * temporal_fit
             + GAMMA * information_gain
             + DELTA * quality_score
             + EPSILON * community
             - ZETA * risk;
-        let tcv_score = raw.clamp(-100.0, 100.0);
+        let centered_score = raw.clamp(-100.0, 100.0);
+        let tcv_score = ((centered_score + 100.0) / 2.0).clamp(0.0, 100.0);
 
         let verdict = match tcv_score {
-            s if s > 60.0 => TcvVerdict::StrongPositive,
-            s if s > 30.0 => TcvVerdict::Positive,
-            s if s > 0.0 => TcvVerdict::Neutral,
-            s if s > -30.0 => TcvVerdict::Negative,
+            s if s > 80.0 => TcvVerdict::StrongPositive,
+            s if s > 65.0 => TcvVerdict::Positive,
+            s if s > 50.0 => TcvVerdict::Neutral,
+            s if s > 35.0 => TcvVerdict::Negative,
             _ => TcvVerdict::StrongNegative,
         };
 

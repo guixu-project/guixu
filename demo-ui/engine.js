@@ -42,14 +42,14 @@ function computeTCV(c) {
     + TCV_WEIGHTS.quality.weight * c.quality
     + TCV_WEIGHTS.community.weight * c.community
     + TCV_WEIGHTS.risk.weight * c.risk;
-  return Math.max(-100, Math.min(100, raw));
+  return Math.max(0, Math.min(100, (raw + 100) / 2));
 }
 
 function tcvVerdict(score) {
-  if (score > 60) return { label: 'StrongPositive', cls: 'score-strong-pos', text: 'Strongly Recommended' };
-  if (score > 30) return { label: 'Positive', cls: 'score-pos', text: 'Recommended' };
-  if (score > 0) return { label: 'Neutral', cls: 'score-neutral', text: 'Marginal' };
-  if (score > -30) return { label: 'Negative', cls: 'score-neg', text: 'Not Recommended' };
+  if (score > 80) return { label: 'StrongPositive', cls: 'score-strong-pos', text: 'Strongly Recommended' };
+  if (score > 65) return { label: 'Positive', cls: 'score-pos', text: 'Recommended' };
+  if (score > 50) return { label: 'Neutral', cls: 'score-neutral', text: 'Marginal' };
+  if (score > 35) return { label: 'Negative', cls: 'score-neg', text: 'Not Recommended' };
   return { label: 'StrongNegative', cls: 'score-strong-neg', text: 'Harmful' };
 }
 

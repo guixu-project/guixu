@@ -49,7 +49,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_evaluate".into(),
-            description: "Compute Task-Conditioned Value (TCV) for a dataset. Returns a score from -100 (harmful) to +100 (highly valuable) based on schema fit, quality, and on-chain community feedback.".into(),
+            description: "Compute Task-Conditioned Value (TCV) for a dataset. Returns a score from 0 (harmful) to 100 (highly valuable) based on schema fit, quality, and on-chain community feedback.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
