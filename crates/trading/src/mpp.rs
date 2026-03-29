@@ -191,6 +191,7 @@ impl MppClient {
             price: Price::usdc(amount),
             protocol: PaymentProtocol::StripeMpp,
             timestamp: chrono::Utc::now(),
+            seller_response: None,
         })
     }
 
