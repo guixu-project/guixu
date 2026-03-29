@@ -34,9 +34,10 @@ fn dump_json<T: Serialize>(label: &str, value: &T) {
 
 fn dump_profile_fields(profile: &QueryProfile) {
     println!(
-        "profile.fields: task_type={:?}, task_description={:?}, target_entity={:?}, keywords={:?}, user_profile={:?}",
+        "profile.fields: task_type={:?}, task_description={:?}, budget={:?}, target_entity={:?}, keywords={:?}, user_profile={:?}",
         profile.task_type,
         profile.task_description,
+        profile.budget,
         profile.target_entity,
         profile.keywords,
         profile.user_profile
@@ -1132,7 +1133,7 @@ async fn intent_parser_uses_deepseek_when_configured() {
         .profile_from_deepseek_content(
             query,
             &user_profile,
-            r#"{"task_type":"classification","task_description":"Detect whether cats are present in input images with high-quality accuracy.","target_entity":"cats","keywords":["cats","classifier","vision"]}"#,
+            r#"{"task_type":"classification","task_description":"Detect whether cats are present in input images with high-quality accuracy.","budget":25,"target_entity":"cats","keywords":["cats","classifier","vision"]}"#,
         )
         .unwrap();
 
@@ -1155,6 +1156,10 @@ async fn intent_parser_uses_deepseek_when_configured() {
         .as_str()
         .unwrap()
         .contains("\"task_description\""));
+    assert!(request_body["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("\"budget\""));
     assert!(request_body["messages"][1]["content"]
         .as_str()
         .unwrap()
@@ -1168,9 +1173,25 @@ async fn intent_parser_uses_deepseek_when_configured() {
         profile.task_description.as_deref(),
         Some("Detect whether cats are present in input images with high-quality accuracy.")
     );
+    assert_eq!(profile.budget, 25.0);
     assert_eq!(profile.target_entity.as_deref(), Some("cats"));
     assert_eq!(profile.keywords, vec!["cats", "classifier", "vision"]);
     assert_eq!(profile.user_profile, user_profile);
+}
+
+#[test]
+fn profile_from_deepseek_content_defaults_budget_to_zero() {
+    let parser = IntentParser::default();
+    let user_profile = UserProfile::default();
+    let profile = parser
+        .profile_from_deepseek_content(
+            "find a cat dataset",
+            &user_profile,
+            r#"{"task_type":"classification","task_description":"Find cat datasets.","target_entity":"cats","keywords":["cats"]}"#,
+        )
+        .unwrap();
+
+    assert_eq!(profile.budget, 0.0);
 }
 
 #[test]
@@ -1232,6 +1253,7 @@ async fn search_with_profile_matches_local_metadata() {
             "detect".into(),
             "cats".into(),
         ],
+        budget: 0.0,
         user_profile: UserProfile::default(),
         data_standard: make_data_standard("image", "720p"),
     };
@@ -1358,6 +1380,7 @@ async fn search_with_profile_deduplicates_local_and_external_results_by_cid() {
         ),
         target_entity: Some("cats".into()),
         keywords: vec!["cats".into(), "classifier".into()],
+        budget: 0.0,
         user_profile: UserProfile::default(),
         data_standard: DataStandard::default(),
     };

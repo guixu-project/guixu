@@ -27,3 +27,6 @@ local/
 
 # Kiro
 .kiro/
+
+# Node
+node_modules/
