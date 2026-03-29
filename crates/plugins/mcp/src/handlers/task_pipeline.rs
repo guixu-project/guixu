@@ -391,7 +391,9 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let intent_query = raw_query.or(query).ok_or_else(|| anyhow::anyhow!("missing query"))?;
+    let intent_query = raw_query
+        .or(query)
+        .ok_or_else(|| anyhow::anyhow!("missing query"))?;
     let task_type_override = args
         .get("task_type")
         .and_then(|v| v.as_str())
@@ -437,19 +439,20 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         }))?);
     }
 
-    let (search_results, search_errors) = match search_results_json(state, &profile, &filters, limit).await {
-        Ok(result) => result,
-        Err(e) => {
-            return Ok(serde_json::to_string_pretty(&json!({
-                "status": "failed",
-                "stop_after": stop_after.as_str(),
-                "completed_steps": [StopAfter::IntentParse.as_str()],
-                "failed_stage": StopAfter::DatasetSearch.as_str(),
-                "error": e.to_string(),
-                "intent": compact_intent(&profile),
-            }))?)
-        }
-    };
+    let (search_results, search_errors) =
+        match search_results_json(state, &profile, &filters, limit).await {
+            Ok(result) => result,
+            Err(e) => {
+                return Ok(serde_json::to_string_pretty(&json!({
+                    "status": "failed",
+                    "stop_after": stop_after.as_str(),
+                    "completed_steps": [StopAfter::IntentParse.as_str()],
+                    "failed_stage": StopAfter::DatasetSearch.as_str(),
+                    "error": e.to_string(),
+                    "intent": compact_intent(&profile),
+                }))?)
+            }
+        };
     let search_candidate_cids = extract_candidate_cids(&search_results);
     let compact_candidates: Vec<Value> = search_results.iter().map(compact_candidate).collect();
 

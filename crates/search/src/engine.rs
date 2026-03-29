@@ -355,6 +355,7 @@ fn metadata_to_search_result(m: &DatasetMetadata) -> SearchResult {
         market: None,
         data_type: m.data_type,
         created_at: m.created_at,
+        seller_endpoint: None,
     }
 }
 

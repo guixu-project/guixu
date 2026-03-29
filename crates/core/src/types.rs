@@ -162,6 +162,9 @@ pub struct SearchResult {
     pub market: Option<DatasetMarketStats>,
     pub data_type: DataType,
     pub created_at: DateTime<Utc>,
+    /// x402-compatible payment endpoint (e.g. from Guixu Hub).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seller_endpoint: Option<String>,
 }
 
 /// Where a dataset was discovered.
@@ -200,4 +203,7 @@ pub struct TransactionReceipt {
     pub price: Price,
     pub protocol: PaymentProtocol,
     pub timestamp: DateTime<Utc>,
+    /// Optional response body from the seller endpoint (e.g. download URL from x402).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seller_response: Option<String>,
 }

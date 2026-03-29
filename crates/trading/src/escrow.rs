@@ -23,6 +23,7 @@ impl EscrowClient {
             price: Price::usdc(ctx.amount),
             protocol: PaymentProtocol::Erc8183,
             timestamp: chrono::Utc::now(),
+            seller_response: None,
         })
     }
 }
