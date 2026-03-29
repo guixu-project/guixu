@@ -11,12 +11,14 @@ use serde::{Deserialize, Serialize};
 ///
 /// This is the stable intermediate representation between
 /// natural-language input and downstream discovery logic.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QueryProfile {
     pub raw_query: String,
     pub task_type: Option<String>,
     #[serde(default)]
     pub task_description: Option<String>,
+    #[serde(default)]
+    pub budget: f64,
     pub target_entity: Option<String>,
     pub keywords: Vec<String>,
     #[serde(default)]
@@ -245,6 +247,7 @@ impl IntentParser {
             task_type: normalize_optional(llm_profile.task_type),
             task_description: normalize_optional(llm_profile.task_description)
                 .or_else(|| Some(fallback_task_description(query))),
+            budget: llm_profile.budget.unwrap_or(0.0),
             target_entity: normalize_optional(llm_profile.target_entity),
             keywords: normalize_keywords(llm_profile.keywords),
             data_standard: normalize_data_standard(llm_profile.data_standard),
@@ -329,6 +332,7 @@ Use this exact json schema:
 {
   "task_type": "string or null",
   "task_description": "string or null",
+  "budget": "number",
   "target_entity": "string or null",
   "keywords": ["lowercase keyword"],
   "data_standard": {
@@ -343,6 +347,10 @@ Rules:
 - First infer the user's likely task description from the natural-language query and any relevant user memories.
 - task_type must be a concise task label such as classification, forecasting, detection, ranking, retrieval, segmentation, generation, summarization, or evaluation.
 - task_description must be a detailed natural-language description of what the user is trying to accomplish with the data.
+- budget must always be a number representing the maximum budget explicitly mentioned in the query.
+- If the query does not explicitly mention a budget, budget must be 0.
+- Do not infer a budget from unrelated numbers such as years, row counts, image resolutions, hardware specs, or model names.
+- Return budget as a plain number without currency symbols or units.
 - target_entity must be the main subject or object of the requested dataset, kept short, and should prefer the generic publicly searchable category over a private instance name when the memories make that category clear.
 - If the query names a private entity such as a pet or person, resolve it to the relevant dataset-search target when possible, for example a named cat should produce target_entity "cat" rather than the pet's name.
 - keywords must be extracted only from the original query text or from relevant user memories that are clearly linked to the query by named-entity matches, do not invent keywords
@@ -370,11 +378,16 @@ Examples:
   Query: "write an image classifier that checks whether my cat is in the photo taken by my house monitor"
   Good keywords: ["cat"]
   Bad keywords: ["image", "classifier", "cat", "photo", "house", "monitor"]
+  Budget: 0
+
+  Query: "find a cat dataset under $20 for classification"
+  Good keywords: ["cat"]
+  Budget: 20
 
   Query: "build a model to detect lung nodules in chest CT scans"
   Good keywords: ["lung nodule", "chest ct"]
   Bad keywords: ["detect", "model", "build", "scan"]
-- If a field is unknown, use null for scalars and [] for keywords.
+- If a scalar field other than budget is unknown, use null. budget must always be present as a number.
 - The provided hardware profile and user memories are context only; do not copy them verbatim into the json output."#;
 
 #[derive(Debug, Serialize)]
@@ -418,6 +431,7 @@ struct DeepSeekChoiceMessage {
 struct LlmIntentProfile {
     task_type: Option<String>,
     task_description: Option<String>,
+    budget: Option<f64>,
     target_entity: Option<String>,
     #[serde(default)]
     keywords: Vec<String>,

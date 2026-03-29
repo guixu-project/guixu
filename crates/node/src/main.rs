@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use toml_edit::{value, Array, DocumentMut, Item, Table};
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -9,6 +10,7 @@ use data_core::config::{NodeConfig, NodeMode};
 use data_core::identity::NodeIdentity;
 use data_core::types::AccessMode;
 use data_mcp_server::server::AppState;
+use data_mcp_server::state::ToolProfile;
 use data_p2p::dht::DhtIndex;
 use data_storage::feedback_store::FeedbackStore;
 use data_storage::metadata_store::MetadataStore;
@@ -41,34 +43,8 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // --- Logging: stderr (human) + file (JSON, daily rotation) ---
-    let log_dir = NodeConfig::config_dir().join("logs");
-    std::fs::create_dir_all(&log_dir).ok();
-
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "guixu.log");
-    let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
-
-    tracing_subscriber::registry()
-        // stderr: compact human-readable
-        .with(
-            fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_target(false)
-                .compact(),
-        )
-        // file: structured JSON, all fields
-        .with(
-            fmt::layer()
-                .with_writer(file_writer)
-                .json()
-                .with_span_list(false),
-        )
-        .with(env_filter)
-        .init();
-
     let cli = Cli::parse();
+    init_logging(&cli.command);
 
     match cli.command {
         Commands::Init { data_dir } => cmd_init(data_dir)?,
@@ -77,6 +53,67 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn init_logging(command: &Commands) {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let use_stderr_only = matches!(command, Commands::Mcp { mode } if mode == "codex");
+    if use_stderr_only {
+        init_stderr_logging(env_filter);
+        return;
+    }
+
+    let log_dir = NodeConfig::config_dir().join("logs");
+    let file_appender = std::fs::create_dir_all(&log_dir)
+        .map_err(anyhow::Error::from)
+        .and_then(|_| {
+            tracing_appender::rolling::RollingFileAppender::builder()
+                .rotation(tracing_appender::rolling::Rotation::DAILY)
+                .filename_prefix("guixu.log")
+                .build(&log_dir)
+                .map_err(anyhow::Error::from)
+        });
+
+    match file_appender {
+        Ok(file_appender) => {
+            let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
+            tracing_subscriber::registry()
+                .with(
+                    fmt::layer()
+                        .with_writer(std::io::stderr)
+                        .with_target(false)
+                        .compact(),
+                )
+                .with(
+                    fmt::layer()
+                        .with_writer(file_writer)
+                        .json()
+                        .with_span_list(false),
+                )
+                .with(env_filter)
+                .init();
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: file logging unavailable at {}, falling back to stderr-only logging: {e}",
+                log_dir.display()
+            );
+            init_stderr_logging(env_filter);
+        }
+    }
+}
+
+fn init_stderr_logging(env_filter: EnvFilter) {
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_target(false)
+                .compact(),
+        )
+        .with(env_filter)
+        .init();
 }
 
 fn cmd_init(data_dir: Option<String>) -> Result<()> {
@@ -184,7 +221,6 @@ async fn cmd_start() -> Result<()> {
     });
 
     // Start embedded Web UI + MCP HTTP server
-    let disabled_adapters = config.disabled_adapters.clone();
     let state = Arc::new(
         AppState::with_payment_config(
             NodeIdentity::from_seed(identity.seed()),
@@ -195,7 +231,7 @@ async fn cmd_start() -> Result<()> {
             store,
             feedback_store,
             &config.payment,
-            &disabled_adapters,
+            ToolProfile::Full,
         )
         .await,
     );
@@ -213,6 +249,14 @@ async fn cmd_start() -> Result<()> {
 }
 
 async fn cmd_mcp(mode: String) -> Result<()> {
+    if mode == "codex" {
+        if let Err(e) = ensure_codex_mcp_config() {
+            tracing::warn!(err = %e, "failed to update Codex MCP config");
+        }
+        let state = Arc::new(AppState::for_codex().await?);
+        return data_mcp_server::server::run_stdio(state).await;
+    }
+
     let (config, identity) = load_config_and_identity()?;
     let node_mode = if mode == "full" {
         NodeMode::Full
@@ -258,7 +302,7 @@ async fn cmd_mcp(mode: String) -> Result<()> {
             store,
             feedback_store,
             &config.payment,
-            &config.disabled_adapters,
+            ToolProfile::Full,
         )
         .await,
     );
@@ -300,4 +344,43 @@ fn shellexpand(s: String) -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from(s)
+}
+
+fn ensure_codex_mcp_config() -> Result<()> {
+    let Some(home) = dirs::home_dir() else {
+        anyhow::bail!("unable to determine home directory");
+    };
+
+    let codex_dir = home.join(".codex");
+    std::fs::create_dir_all(&codex_dir)?;
+    let config_path = codex_dir.join("config.toml");
+
+    let mut document = if config_path.exists() {
+        std::fs::read_to_string(&config_path)?
+            .parse::<DocumentMut>()
+            .map_err(|e| anyhow::anyhow!("parse {}: {e}", config_path.display()))?
+    } else {
+        DocumentMut::new()
+    };
+
+    if !document.as_table().contains_key("mcp_servers") || !document["mcp_servers"].is_table() {
+        document["mcp_servers"] = Item::Table(Table::new());
+    }
+    if !document["mcp_servers"]["guixu"].is_table() {
+        document["mcp_servers"]["guixu"] = Item::Table(Table::new());
+    }
+
+    let exe = std::env::current_exe()?;
+    let exe = exe.canonicalize().unwrap_or(exe);
+
+    let mut args = Array::new();
+    args.push("mcp");
+    args.push("--mode");
+    args.push("codex");
+
+    document["mcp_servers"]["guixu"]["command"] = value(exe.to_string_lossy().to_string());
+    document["mcp_servers"]["guixu"]["args"] = value(args);
+
+    std::fs::write(config_path, document.to_string())?;
+    Ok(())
 }
