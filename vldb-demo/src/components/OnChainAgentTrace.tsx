@@ -457,14 +457,14 @@ type OnChainAgentTraceProps = {
   candidate: Candidate
   onTraceReviewCommit?: (candidateId: CandidateId) => void
   planningRuntime?: PlanningRuntimeState
-  paperMode?: boolean
+  completedMode?: boolean
 }
 
 const OnChainAgentTrace = ({
   candidate,
   onTraceReviewCommit,
   planningRuntime = idlePlanningRuntimeState,
-  paperMode = false,
+  completedMode = false,
 }: OnChainAgentTraceProps) => {
   const trace = buildDeliveryTrace(candidate)
   const reviewExecutionMetric = '95.2%'
@@ -503,7 +503,7 @@ const OnChainAgentTrace = ({
   const reviewStepIndex = stepIndexFor(reviewElapsedMs, reviewDurationMs, reviewAttestationSteps.length)
 
   useEffect(() => {
-    if (paperMode) {
+    if (completedMode) {
       setTraceClockMs(0)
       setReviewTraceStartedAt(0)
       committedReviewRef.current = candidate.id
@@ -515,10 +515,10 @@ const OnChainAgentTrace = ({
     setTraceClockMs(0)
     setReviewTraceStartedAt(null)
     committedReviewRef.current = null
-  }, [paperMode, candidate.id, trace.isOnChain, trace.stages.length, onTraceReviewCommit])
+  }, [completedMode, candidate.id, trace.isOnChain, trace.stages.length, onTraceReviewCommit])
 
   useEffect(() => {
-    if (paperMode)
+    if (completedMode)
       return
 
     const shouldTickReview = reviewStarted && reviewElapsedMs < reviewDurationMs
@@ -532,16 +532,16 @@ const OnChainAgentTrace = ({
     return () => {
       window.clearInterval(timer)
     }
-  }, [paperMode, reviewStarted, reviewElapsedMs, reviewDurationMs])
+  }, [completedMode, reviewStarted, reviewElapsedMs, reviewDurationMs])
 
   useEffect(() => {
-    if (paperMode || !traceEnabled || !unlockDone || !executionDone || reviewTraceStartedAt !== null)
+    if (completedMode || !traceEnabled || !unlockDone || !executionDone || reviewTraceStartedAt !== null)
       return
 
     const now = performance.now()
     setReviewTraceStartedAt(now)
     setTraceClockMs(now)
-  }, [paperMode, traceEnabled, unlockDone, executionDone, reviewTraceStartedAt])
+  }, [completedMode, traceEnabled, unlockDone, executionDone, reviewTraceStartedAt])
 
   useEffect(() => {
     if (!traceEnabled || !reviewDone)
@@ -555,7 +555,7 @@ const OnChainAgentTrace = ({
   }, [traceEnabled, reviewDone, candidate.id, onTraceReviewCommit])
 
   const stageState = (index: number): StageVisualStatus => {
-    if (paperMode && traceEnabled)
+    if (completedMode && traceEnabled)
       return 'done'
     if (!traceEnabled || !traceActivated)
       return 'idle'
@@ -580,12 +580,12 @@ const OnChainAgentTrace = ({
     }
   }
 
-  const currentStageIndex = paperMode && traceEnabled
+  const currentStageIndex = completedMode && traceEnabled
     ? trace.stages.length - 1
     : paymentCurrent ? 0 : shardsCurrent ? 1 : unlockCurrent || (!unlockDone && traceActivated) ? 2 : reviewStarted ? 3 : 0
   const currentStage = trace.stages[currentStageIndex]
-  const statusLog = paperMode && traceEnabled
-    ? 'Completed trace ready for paper export.'
+  const statusLog = completedMode && traceEnabled
+    ? 'Completed on-chain trace ready.'
     : !traceEnabled
         ? 'Select Guixu Hub in the workflow to enable the on-chain agent trace.'
         : !purchaseStarted

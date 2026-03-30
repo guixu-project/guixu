@@ -1,17 +1,14 @@
-import { useEffect, useState } from 'react'
-import DemoHeader from './components/DemoHeader'
+import { useState } from 'react'
 import LedgerPanel from './components/LedgerPanel'
 import PlanningPanel from './components/PlanningPanel'
 import ValuationPanel from './components/ValuationPanel'
-import { candidates, paperExportDatasetId, type CandidateId, type MarketReview } from './data'
+import type { CandidateId, MarketReview } from './data'
 import { idlePlanningRuntimeState, type PlanningRuntimeState } from './demoTimeline'
 
-const searchParams = new URLSearchParams(window.location.search)
-const paperMode = searchParams.get('paper') === '1'
-  || searchParams.get('mode') === 'paper'
-  || searchParams.get('export') === 'paper'
+const demoUiMode = true
+const completedMode = true
 
-const paperPlanningRuntimeState: PlanningRuntimeState = {
+const completedPlanningRuntimeState: PlanningRuntimeState = {
   launchId: 1,
   launched: true,
   hasGuixuHub: true,
@@ -34,36 +31,15 @@ const paperPlanningRuntimeState: PlanningRuntimeState = {
   },
 }
 
-const initialPaperReviews = (): Record<string, MarketReview> => {
-  if (!paperMode)
-    return {}
-
-  return {
-    [paperExportDatasetId]: {
-      id: `session-review-${paperExportDatasetId}`,
-      reviewer_address: '0x72bc4e34c7f08e2f4bb1a413d9c8a3bfa2fd881f',
-      content: 'Strong task fit with stable gain after execution on SafeHat_Premium.',
-      source: 'on-chain',
-      tx_hash: null,
-      created_at: new Date().toISOString(),
-    },
-  }
-}
-
 const App = () => {
   const [selectedId, setSelectedId] = useState<CandidateId>('safehat-premium')
-  const [activeMarketDatasetId, setActiveMarketDatasetId] = useState<string | null>(paperMode ? paperExportDatasetId : null)
-  const [sessionReviewsByDatasetId, setSessionReviewsByDatasetId] = useState<Record<string, MarketReview>>(initialPaperReviews)
-  const [planningRuntime, setPlanningRuntime] = useState<PlanningRuntimeState>(paperMode ? paperPlanningRuntimeState : idlePlanningRuntimeState)
+  const [activeMarketDatasetId, setActiveMarketDatasetId] = useState<string | null>(null)
+  const [sessionReviewsByDatasetId, setSessionReviewsByDatasetId] = useState<Record<string, MarketReview>>({})
+  const [planningRuntime, setPlanningRuntime] = useState<PlanningRuntimeState>(
+    completedMode ? completedPlanningRuntimeState : idlePlanningRuntimeState,
+  )
 
-  useEffect(() => {
-    document.body.classList.toggle('paper-mode', paperMode)
-    return () => {
-      document.body.classList.remove('paper-mode')
-    }
-  }, [])
-
-  const handleTraceReviewCommit = (candidateId: CandidateId) => {
+  const handleTraceReviewCommit = (_candidateId: CandidateId) => {
     if (!activeMarketDatasetId)
       return
 
@@ -76,7 +52,7 @@ const App = () => {
         [activeMarketDatasetId]: {
           id: `session-review-${activeMarketDatasetId}`,
           reviewer_address: '0x72bc4e34c7f08e2f4bb1a413d9c8a3bfa2fd881f',
-          content: `Strong task fit with stable gain after execution on ${candidates[candidateId].name}.`,
+          content: 'Strong task fit with stable gain after execution. Reliable candidate for future agent runs.',
           source: 'on-chain',
           tx_hash: null,
           created_at: new Date().toISOString(),
@@ -86,21 +62,19 @@ const App = () => {
   }
 
   return (
-    <div className={`page-shell${paperMode ? ' paper-mode' : ''}`}>
-      <DemoHeader paperMode={paperMode} />
-
+    <div className={`page-shell${demoUiMode ? ' no-topbar' : ''}`}>
       <main className="dashboard">
         <PlanningPanel
           onRecommendCandidate={setSelectedId}
           onRuntimeChange={setPlanningRuntime}
-          paperMode={paperMode}
+          completedMode={completedMode}
         />
         <ValuationPanel
           selectedId={selectedId}
           onSelectCandidate={setSelectedId}
           onTraceReviewCommit={handleTraceReviewCommit}
           planningRuntime={planningRuntime}
-          paperMode={paperMode}
+          completedMode={completedMode}
         />
       </main>
 
@@ -108,7 +82,8 @@ const App = () => {
         selectedCandidateId={selectedId}
         sessionReviewsByDatasetId={sessionReviewsByDatasetId}
         onActiveDatasetChange={setActiveMarketDatasetId}
-        paperMode={paperMode}
+        preferredDatasetTitle={demoUiMode ? 'Design Paper' : undefined}
+        disableCandidateAutoMatch={demoUiMode}
       />
     </div>
   )

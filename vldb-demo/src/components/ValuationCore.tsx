@@ -37,18 +37,18 @@ const SampleGlyph = ({ kind }: { kind: 'dataset' | 'oracle' | 'records' | 'mean'
 const ValuationCore = ({
   selected,
   planningRuntime,
-  paperMode = false,
+  completedMode = false,
   visible = true,
 }: {
   selected: ValuationSearchCandidate
   planningRuntime: PlanningRuntimeState
-  paperMode?: boolean
+  completedMode?: boolean
   visible?: boolean
 }) => {
-  const samplePhase = paperMode ? 'done' : planningRuntime.nodePhases.valuation
-  const valuationProgress = paperMode ? 1 : planningRuntime.nodeProgress.valuation
+  const samplePhase = completedMode ? 'done' : planningRuntime.nodePhases.valuation
+  const valuationProgress = completedMode ? 1 : planningRuntime.nodeProgress.valuation
   const sampleStarted = samplePhase !== 'idle'
-  const sampleDone = paperMode || samplePhase === 'done' || (samplePhase === 'running' && valuationProgress >= 0.58)
+  const sampleDone = completedMode || samplePhase === 'done' || (samplePhase === 'running' && valuationProgress >= 0.58)
   const sampleProgress = sampleDone ? 1 : Math.max(0, Math.min(1, valuationProgress / 0.58))
   const sampleStage = !sampleStarted ? -1 : sampleDone ? 4 : sampleProgress < 0.22 ? 1 : sampleProgress < 0.48 ? 2 : sampleProgress < 0.78 ? 3 : 4
   const knapsackActive = sampleDone
@@ -105,7 +105,6 @@ const ValuationCore = ({
               <SampleGlyph kind="dataset" />
             </div>
             <strong>Sampled Records</strong>
-            <span className="sample-inline-value">{selected.sampledRecords}</span>
           </div>
 
           <div className="sample-inline-arrow" aria-hidden="true">→</div>
@@ -115,7 +114,6 @@ const ValuationCore = ({
               <SampleGlyph kind="oracle" />
             </div>
             <strong>Seed Scoring</strong>
-            <span className="sample-inline-value">{selected.seedRecords}</span>
           </div>
 
           <div className="sample-inline-arrow" aria-hidden="true">→</div>
@@ -129,7 +127,6 @@ const ValuationCore = ({
               </span>
             </div>
             <strong>Score Anchors</strong>
-            <span className="sample-anchor-interval">[{selected.lowBoundScore}, {selected.highBoundScore}]</span>
           </div>
 
           <div className="sample-inline-arrow" aria-hidden="true">→</div>
@@ -148,7 +145,6 @@ const ValuationCore = ({
               <SampleGlyph kind="mean" />
             </div>
             <strong>Result</strong>
-            <span className="sample-inline-score">{selected.sampleScore}</span>
           </div>
         </div>
       </div>

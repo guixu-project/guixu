@@ -37,12 +37,12 @@ const stageInset = {
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
 
 const nodeCardLayout: Record<string, NodeCardLayout> = {
-  parser: { width: 165, height: 258 },
-  search: { width: 160, height: 220 },
-  code: { width: 160, height: 200 },
-  valuation: { width: 152, height: 164 },
-  purchase: { width: 165, height: 124 },
-  execution: { width: 165, height: 124 },
+  parser: { width: 174, height: 268 },
+  search: { width: 170, height: 230 },
+  code: { width: 170, height: 210 },
+  valuation: { width: 160, height: 172 },
+  purchase: { width: 172, height: 132 },
+  execution: { width: 172, height: 132 },
 }
 
 const layoutWorkflowNodes = (nodes: WorkflowNode[], stage: StageSize) => {
@@ -312,16 +312,16 @@ const progressForNode = (node: WorkflowNode, elapsedMs: number, nodeSchedule: No
 const PlanningPanel = ({
   onRecommendCandidate,
   onRuntimeChange,
-  paperMode = false,
+  completedMode = false,
 }: {
   onRecommendCandidate: (candidateId: CandidateId) => void
   onRuntimeChange?: (runtime: PlanningRuntimeState) => void
-  paperMode?: boolean
+  completedMode?: boolean
 }) => {
   const stageRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const initialPresetIndex = paperMode ? 1 : 0
+  const initialPresetIndex = completedMode ? 1 : 0
   const initialQuery = presetQueries[initialPresetIndex]
   const initialSources = presetDefaultSources[initialPresetIndex]
 
@@ -329,7 +329,7 @@ const PlanningPanel = ({
   const [query, setQuery] = useState(initialQuery)
   const [sources, setSources] = useState<PlanningSourceId[]>(initialSources)
   const [runConfig, setRunConfig] = useState<RunConfig>(
-    paperMode
+    completedMode
       ? {
           query: initialQuery,
           sources: initialSources,
@@ -345,7 +345,7 @@ const PlanningPanel = ({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [stageSize, setStageSize] = useState<StageSize>({ width: 0, height: 0 })
   const [cardFrames, setCardFrames] = useState<Record<string, NodeFrame>>({})
-  const [launchId, setLaunchId] = useState(paperMode ? 1 : 0)
+  const [launchId, setLaunchId] = useState(completedMode ? 1 : 0)
 
   const workflow = useMemo(
     () => (runConfig ? buildPlanningWorkflow(runConfig.query, runConfig.sources, runConfig.presetIndex) : null),
@@ -432,7 +432,7 @@ const PlanningPanel = ({
     setNodes(stageSize.width > 0 && stageSize.height > 0 ? layoutWorkflowNodes(workflow.nodes, stageSize) : workflow.nodes)
     setSelectedNodeId(null)
 
-    if (paperMode) {
+    if (completedMode) {
       setElapsedMs(totalRuntimeMs)
       setRevealCount(revealOrderIds.length)
       return
@@ -483,7 +483,7 @@ const PlanningPanel = ({
       if (executionStartTimer)
         window.clearTimeout(executionStartTimer)
     }
-  }, [paperMode, revealOrderIds, timingPreset, totalRuntimeMs, workflow])
+  }, [completedMode, revealOrderIds, timingPreset, totalRuntimeMs, workflow])
 
   useEffect(() => {
     if (!workflow || !runConfig) {
@@ -516,7 +516,7 @@ const PlanningPanel = ({
   }, [elapsedMs, nodeSchedule, onRuntimeChange, runConfig, workflow])
 
   useEffect(() => {
-    if (paperMode) {
+    if (completedMode) {
       const preferredNode = workflow?.nodes.find(node => node.id === 'execution')
         ?? workflow?.nodes.find(node => node.id === 'purchase')
         ?? (workflow ? workflow.nodes[workflow.nodes.length - 1] : undefined)
@@ -539,7 +539,7 @@ const PlanningPanel = ({
 
     if (finishedNode)
       setSelectedNodeId(finishedNode.id)
-  }, [elapsedMs, nodeSchedule, paperMode, workflow])
+  }, [completedMode, elapsedMs, nodeSchedule, workflow])
 
   useEffect(() => {
     if (elapsedMs >= 0 || revealCount <= 0)
@@ -691,7 +691,7 @@ const PlanningPanel = ({
   }, [measuredNodes, workflow])
 
   const switchPreset = () => {
-    if (paperMode)
+    if (completedMode)
       return
 
     const next = (presetIndex + 1) % presetQueries.length
@@ -704,7 +704,7 @@ const PlanningPanel = ({
   const canLaunch = query.trim().length > 0 && sources.length > 0
 
   const toggleSource = (sourceId: PlanningSourceId) => {
-    if (paperMode)
+    if (completedMode)
       return
 
     setSources(prev => (
@@ -715,7 +715,7 @@ const PlanningPanel = ({
   }
 
   const launchWorkflow = () => {
-    if (paperMode)
+    if (completedMode)
       return
 
     if (!canLaunch)
@@ -746,7 +746,7 @@ const PlanningPanel = ({
             type="text"
             value={query}
             onChange={event => setQuery(event.target.value)}
-            readOnly={paperMode}
+            readOnly={completedMode}
           />
           <button
             type="button"
@@ -766,7 +766,7 @@ const PlanningPanel = ({
                 type="button"
                 className={`source-chip source-chip-${source.id}${sources.includes(source.id) ? ' active' : ''}`}
                 onClick={() => toggleSource(source.id)}
-                disabled={paperMode}
+                disabled={completedMode}
               >
                 <span className="source-check" aria-hidden="true">{sources.includes(source.id) ? '✓' : ''}</span>
                 <span className={`source-icon source-icon-${source.id}`} aria-hidden="true">
@@ -788,10 +788,10 @@ const PlanningPanel = ({
           <button
             type="button"
             className="launch-button"
-            disabled={!canLaunch || paperMode}
+            disabled={!canLaunch || completedMode}
             onClick={launchWorkflow}
           >
-            {paperMode ? 'Paper Mode' : 'Start'}
+            {completedMode ? 'Completed' : 'Start'}
           </button>
         </div>
       </div>
@@ -876,7 +876,7 @@ const PlanningPanel = ({
               transform: `translate(${node.px.x}px, ${node.px.y}px)`,
             }}
             onPointerDown={(event) => {
-              if (paperMode)
+              if (completedMode)
                 return
 
               if (!stageRef.current)

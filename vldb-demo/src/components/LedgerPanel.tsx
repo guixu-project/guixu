@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { candidates, paperExportDatasetId, type CandidateId, type MarketReview } from '../data'
+import { candidates, type CandidateId, type MarketReview } from '../data'
 import SectionTitle from './SectionTitle'
 
 const candidateIds = Object.keys(candidates) as CandidateId[]
@@ -79,114 +79,6 @@ interface HistoryCacheEntry {
   rows: HistoryRow[]
   fetchedAt: number
 }
-
-const PAPER_USDC_ADDRESS = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
-
-const paperDatasets: HubDataset[] = [
-  {
-    id: paperExportDatasetId,
-    seller_address: '0x72bc4e34c7f08e2f4bb1a413d9c8a3bfa2fd881f',
-    contract_address: '0x91de13c091de13c091de13c091de13c091de13c0',
-    payment_token: PAPER_USDC_ADDRESS,
-    title: 'SafeHat_Premium',
-    description: 'Task-fit construction helmet detection dataset with strong labels and on-chain trade memory.',
-    data_type: 'image',
-    status: 'active',
-    schema: { columns: [], row_count: 50000, size_bytes: 2469606195 },
-    metrics: { download_count: 128, review_count: 32, trade_count: 32 },
-    price: { amount: 10, currency: 'USDC', label: '$10', is_free: false },
-    tags: ['helmet', 'construction', 'bbox'],
-    created_at: '2026-03-24T10:26:00Z',
-    updated_at: '2026-03-29T10:43:00Z',
-  },
-  {
-    id: 'paper-warehouse-ppe',
-    seller_address: '0x3d4e2a6283d0a5f99d9fa7d65f85740c39a52a44',
-    contract_address: '',
-    payment_token: PAPER_USDC_ADDRESS,
-    title: 'Warehouse_PPE_Set',
-    description: 'Private seller PPE detection set with moderate task fit.',
-    data_type: 'image',
-    status: 'active',
-    schema: { columns: [], row_count: 32000, size_bytes: 1691143372 },
-    metrics: { download_count: 74, review_count: 18, trade_count: 18 },
-    price: { amount: 7, currency: 'USDC', label: '$7', is_free: false },
-    tags: ['ppe', 'warehouse'],
-    created_at: '2026-03-23T09:58:00Z',
-    updated_at: '2026-03-28T09:58:00Z',
-  },
-  {
-    id: 'paper-construction-images-v2',
-    seller_address: '0x9aa52f2f6b3f3a4dbb7f7c61e9a95a40f6ef5552',
-    contract_address: '',
-    payment_token: PAPER_USDC_ADDRESS,
-    title: 'Construction_Images_v2',
-    description: 'Public construction image set with broader but noisier labels.',
-    data_type: 'image',
-    status: 'active',
-    schema: { columns: [], row_count: 61000, size_bytes: 5476083301 },
-    metrics: { download_count: 196, review_count: 20, trade_count: 20 },
-    price: { amount: 5, currency: 'USDC', label: '$5', is_free: false },
-    tags: ['construction', 'public'],
-    created_at: '2026-03-21T08:20:00Z',
-    updated_at: '2026-03-27T08:20:00Z',
-  },
-]
-
-const paperHistoryRows: HistoryRow[] = [
-  {
-    time: 'Mar 29, 10:43',
-    timeTitle: '2026 Mar 29 10:43:00',
-    eventType: 'RELEASE',
-    eventTone: 'released',
-    buyer: '0x72bc...881f',
-    buyerTitle: '0x72bc4e34c7f08e2f4bb1a413d9c8a3bfa2fd881f',
-    value: '10 USDC',
-    txHash: '0xa4cf991ea4cf991ea4cf991ea4cf991ea4cf991ea4cf991ea4cf991ea4cf991e',
-    txShort: '0xa4cf...991e',
-  },
-  {
-    time: 'Mar 29, 10:34',
-    timeTitle: '2026 Mar 29 10:34:00',
-    eventType: 'PURCHASE',
-    eventTone: 'purchased',
-    buyer: '0x72bc...881f',
-    buyerTitle: '0x72bc4e34c7f08e2f4bb1a413d9c8a3bfa2fd881f',
-    value: '10 USDC',
-    txHash: '0x91de13c091de13c091de13c091de13c091de13c091de13c091de13c091de13c0',
-    txShort: '0x91de...13c0',
-  },
-  {
-    time: 'Mar 29, 10:26',
-    timeTitle: '2026 Mar 29 10:26:00',
-    eventType: 'RELEASE',
-    eventTone: 'released',
-    buyer: '0xd80e...296e',
-    buyerTitle: '0xd80e5bfc2c32ebc209bd91bc234d63aeeda0296e',
-    value: '0 USDC',
-    txHash: '0x81afbe4281afbe4281afbe4281afbe4281afbe4281afbe4281afbe4281afbe42',
-    txShort: '0x81af...be42',
-  },
-]
-
-const paperReviews: MarketReview[] = [
-  {
-    id: 'paper-review-1',
-    reviewer_address: '0x81afbe4281afbe4281afbe4281afbe4281afbe42',
-    content: 'High annotation quality and strong construction-scene coverage for helmet detection.',
-    source: 'user',
-    tx_hash: null,
-    created_at: '2026-03-29T10:44:00Z',
-  },
-  {
-    id: 'paper-review-2',
-    reviewer_address: '0x72bc4e34c7f08e2f4bb1a413d9c8a3bfa2fd881f',
-    content: 'Stable improvement under a tight budget; became the best candidate in valuation.',
-    source: 'on-chain',
-    tx_hash: null,
-    created_at: '2026-03-29T10:45:00Z',
-  },
-]
 
 function maskAddress(addr: string) {
   if (addr.length <= 18)
@@ -340,39 +232,43 @@ const datasetMatchesCandidate = (dataset: HubDataset, candidateId: CandidateId) 
   ))
 }
 
+const datasetMatchesPreferredTitle = (dataset: HubDataset, preferredTitle: string) => {
+  const preferredKey = normalizeLookup(preferredTitle)
+  const datasetKeys = [dataset.id, dataset.title].map(normalizeLookup)
+
+  return datasetKeys.some(datasetKey =>
+    datasetKey === preferredKey || datasetKey.includes(preferredKey) || preferredKey.includes(datasetKey),
+  )
+}
+
 const LedgerPanel = ({
   selectedCandidateId,
   sessionReviewsByDatasetId,
   onActiveDatasetChange,
-  paperMode = false,
+  preferredDatasetTitle,
+  disableCandidateAutoMatch = false,
 }: {
   selectedCandidateId: CandidateId
   sessionReviewsByDatasetId: Record<string, MarketReview>
   onActiveDatasetChange?: (datasetId: string | null) => void
-  paperMode?: boolean
+  preferredDatasetTitle?: string
+  disableCandidateAutoMatch?: boolean
 }) => {
-  const [datasets, setDatasets] = useState<HubDataset[]>(paperMode ? paperDatasets : [])
-  const [loading, setLoading] = useState(!paperMode)
+  const [datasets, setDatasets] = useState<HubDataset[]>([])
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeDatasetId, setActiveDatasetId] = useState<string | null>(paperMode ? paperExportDatasetId : null)
+  const [activeDatasetId, setActiveDatasetId] = useState<string | null>(null)
   const [activeHistoryIndex, setActiveHistoryIndex] = useState(0)
   const [revealedSellerId, setRevealedSellerId] = useState<string | null>(null)
-  const [reviews, setReviews] = useState<MarketReview[]>(paperMode ? paperReviews : [])
+  const [reviews, setReviews] = useState<MarketReview[]>([])
   const [reviewsLoading, setReviewsLoading] = useState(false)
-  const [historyRows, setHistoryRows] = useState<HistoryRow[]>(paperMode ? paperHistoryRows : [])
+  const [historyRows, setHistoryRows] = useState<HistoryRow[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const historyCacheRef = useRef<Map<string, HistoryCacheEntry>>(loadHistoryCache())
   const historyRequestRef = useRef(new Map<string, Promise<HistoryRow[]>>())
 
   useEffect(() => {
-    if (paperMode) {
-      setDatasets(paperDatasets)
-      setLoading(false)
-      setError(null)
-      return
-    }
-
     let cancelled = false
     setLoading(true)
     setError(null)
@@ -385,7 +281,7 @@ const LedgerPanel = ({
       .catch(err => { if (!cancelled) setError(err.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [paperMode])
+  }, [])
 
   useEffect(() => {
     if (!datasets.length) {
@@ -393,14 +289,21 @@ const LedgerPanel = ({
       return
     }
 
+    const preferredDataset = preferredDatasetTitle
+      ? datasets.find(dataset => datasetMatchesPreferredTitle(dataset, preferredDatasetTitle))
+      : null
+
     setActiveDatasetId(prev => (
       prev && datasets.some(dataset => dataset.id === prev)
         ? prev
-        : datasets[0].id
+        : preferredDataset?.id ?? datasets[0].id
     ))
-  }, [datasets])
+  }, [datasets, preferredDatasetTitle])
 
   useEffect(() => {
+    if (disableCandidateAutoMatch)
+      return
+
     if (!datasets.length)
       return
 
@@ -409,7 +312,7 @@ const LedgerPanel = ({
       return
 
     setActiveDatasetId(prev => (prev === matchedDataset.id ? prev : matchedDataset.id))
-  }, [datasets, selectedCandidateId])
+  }, [datasets, selectedCandidateId, disableCandidateAutoMatch])
 
   useEffect(() => {
     setActiveHistoryIndex(0)
@@ -420,9 +323,20 @@ const LedgerPanel = ({
     onActiveDatasetChange?.(activeDatasetId)
   }, [activeDatasetId, onActiveDatasetChange])
 
+  const orderedDatasets = useMemo(() => {
+    if (!preferredDatasetTitle)
+      return datasets
+
+    const preferred = datasets.find(dataset => datasetMatchesPreferredTitle(dataset, preferredDatasetTitle))
+    if (!preferred)
+      return datasets
+
+    return [preferred, ...datasets.filter(dataset => dataset.id !== preferred.id)]
+  }, [datasets, preferredDatasetTitle])
+
   const activeDataset = useMemo(
-    () => datasets.find(dataset => dataset.id === activeDatasetId) ?? datasets[0] ?? null,
-    [activeDatasetId, datasets],
+    () => orderedDatasets.find(dataset => dataset.id === activeDatasetId) ?? orderedDatasets[0] ?? null,
+    [activeDatasetId, orderedDatasets],
   )
 
   const updateHistoryCache = (listingId: string, rows: HistoryRow[]) => {
@@ -467,13 +381,6 @@ const LedgerPanel = ({
   }
 
   useEffect(() => {
-    if (paperMode) {
-      setHistoryRows(paperHistoryRows)
-      setHistoryError(null)
-      setHistoryLoading(false)
-      return
-    }
-
     if (!activeDatasetId || !hasOnChainContract(activeDataset?.contract_address)) {
       setHistoryRows([])
       setHistoryError(null)
@@ -518,12 +425,9 @@ const LedgerPanel = ({
     return () => {
       cancelled = true
     }
-  }, [activeDataset?.contract_address, activeDatasetId, paperMode])
+  }, [activeDataset?.contract_address, activeDatasetId])
 
   useEffect(() => {
-    if (paperMode)
-      return
-
     const contractDatasets = datasets.filter(dataset => hasOnChainContract(dataset.contract_address))
     if (!contractDatasets.length)
       return
@@ -553,16 +457,10 @@ const LedgerPanel = ({
     return () => {
       cancelled = true
     }
-  }, [datasets, paperMode])
+  }, [datasets])
 
   // Fetch reviews from real API when active dataset changes
   useEffect(() => {
-    if (paperMode) {
-      setReviews(paperReviews)
-      setReviewsLoading(false)
-      return
-    }
-
     if (!activeDatasetId) {
       setReviews([])
       setReviewsLoading(false)
@@ -580,7 +478,7 @@ const LedgerPanel = ({
       .catch(() => { if (!cancelled) setReviews([]) })
       .finally(() => { if (!cancelled) setReviewsLoading(false) })
     return () => { cancelled = true }
-  }, [activeDatasetId, paperMode])
+  }, [activeDatasetId])
 
   const sessionReview = activeDatasetId ? sessionReviewsByDatasetId[activeDatasetId] ?? null : null
 
@@ -602,7 +500,7 @@ const LedgerPanel = ({
   return (
     <section className="panel ledger-panel">
       <div className="panel-heading">
-        <SectionTitle variant="ledger" title="Data Market" />
+        <SectionTitle variant="ledger" title="On-chain Data Market" />
       </div>
 
       <div className="ledger-grid">
@@ -633,7 +531,7 @@ const LedgerPanel = ({
                 {error && (
                   <tr><td colSpan={4} style={{ textAlign: 'center', color: '#c0392b' }}>Failed: {error}</td></tr>
                 )}
-                {!loading && !error && datasets.map(ds => (
+                {!loading && !error && orderedDatasets.map(ds => (
                   <tr
                     key={ds.id}
                     className={`interactive-row${ds.id === activeDatasetId ? ' highlight-row' : ''}`}

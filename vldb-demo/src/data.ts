@@ -541,5 +541,3 @@ export const reviews = [
     stars: '★★★★★',
   },
 ] as const
-
-export const paperExportDatasetId = 'paper-safehat-premium'
