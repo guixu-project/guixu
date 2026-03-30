@@ -799,7 +799,7 @@ const PlanningPanel = ({
       <div className="workflow-stage orchestration-stage" ref={stageRef}>
         {!workflow && (
           <div className="workflow-empty">
-            <strong>Launch the workflow to generate the orchestration graph.</strong>
+            <strong></strong>
           </div>
         )}
 
