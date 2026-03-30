@@ -33,6 +33,15 @@ export type Candidate = {
   reviewCount: number
 }
 
+export type MarketReview = {
+  id: string
+  reviewer_address: string
+  content: string
+  source: string
+  tx_hash: string | null
+  created_at: string
+}
+
 export type WorkflowNode = {
   id: string
   badge: string
@@ -53,11 +62,17 @@ export type WorkflowNode = {
   }
   content:
     | { kind: 'query'; query: string; sources: string[] }
-    | { kind: 'intent'; taskDescription: string; taskType: string; keywords: string[] }
-    | { kind: 'code'; file: string; filesChanged: number; addedLines: number; removedLines?: number }
+    | { kind: 'intent'; taskDescription: string; budget: string; keywords: string[] }
+    | {
+        kind: 'code'
+        files: Array<{ path: string; file: string; addedLines: number }>
+        filesChanged: number
+        addedLines: number
+        removedLines?: number
+      }
     | { kind: 'search'; totalResults: number; candidateCount: number }
     | { kind: 'valuation'; selected: string; action: string; detail: string }
-    | { kind: 'execution'; stage: string; result: string }
+    | { kind: 'execution'; stage: string; accuracy: string; loss: string }
     | { kind: 'ledger'; items: string[] }
 }
 
@@ -73,7 +88,7 @@ export type PlanningSourceId = 'kaggle' | 'huggingface' | 'guixu-hub'
 export const planningSourceOptions = [
   { id: 'kaggle', label: 'Kaggle' },
   { id: 'huggingface', label: 'HuggingFace' },
-  { id: 'guixu-hub', label: 'Guixu-HUB' },
+  { id: 'guixu-hub', label: 'Guixu Hub' },
 ] as const satisfies ReadonlyArray<{ id: PlanningSourceId; label: string }>
 
 const defaultSources: PlanningSourceId[] = ['kaggle', 'huggingface', 'guixu-hub']
@@ -86,10 +101,29 @@ const preferredCandidate = (sources: PlanningSourceId[]) => {
   return { id: 'kaggle-construction' as CandidateId, name: 'Kaggle_Construction' }
 }
 
-export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]) => {
+export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[], presetIndex = 0) => {
   const activeSources = sources.length ? sources : defaultSources
   const candidate = preferredCandidate(activeSources)
-  const keywords = ['helmet', 'construction', 'worker', 'bbox']
+  const preset = presetIndex === 0
+    ? {
+        taskDescription: 'Build an image classifier to detect the presence of the user\'s cat in photos captured by a house monitor.',
+        keywords: ['cat', 'image'],
+        budget: '$0',
+        codeFiles: [
+          { path: 'cat-classification/train_cat.py', file: 'train_cat.py', addedLines: 93 },
+          { path: 'cat-classification/prepare.py', file: 'prepare.py', addedLines: 304 },
+        ],
+      }
+    : {
+        taskDescription: 'Train an image classifier to determine whether workers in construction site images are wearing safety helmets correctly.',
+        keywords: ['safety helmet', 'worker'],
+        budget: '$2.00',
+        codeFiles: [
+          { path: 'safetyhelmet-classification/train_helmet.py', file: 'train_helmet.py', addedLines: 118 },
+          { path: 'safetyhelmet-classification/prepare.py', file: 'prepare.py', addedLines: 348 },
+          { path: 'safetyhelmet-classification/export_queue.py', file: 'export_queue.py', addedLines: 361 },
+        ],
+      }
   const hasGuixuHub = activeSources.includes('guixu-hub')
   const totalResults = 25
   const candidateCount = 5
@@ -98,7 +132,7 @@ export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]
     {
       id: 'parser',
       badge: '1',
-      title: 'Query Parser',
+      title: 'Semantic Query Parser',
       subtitle: 'structured task profile',
       accent: 'indigo',
       position: { x: 0.02, y: 0.06 },
@@ -107,9 +141,9 @@ export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]
       statusText: { running: 'parsing', done: 'parsed' },
       content: {
         kind: 'intent',
-        taskDescription: 'Build an image classifier to detect the presence of the user\'s cat in photos captured by a house monitor.',
-        taskType: 'time_series_prediction',
-        keywords: ['cat', 'image'],
+        taskDescription: preset.taskDescription,
+        budget: preset.budget,
+        keywords: preset.keywords,
       },
     },
     {
@@ -141,7 +175,7 @@ export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]
       content: {
         kind: 'valuation',
         selected: candidate.name,
-        action: hasGuixuHub ? 'trade + download triggered' : 'download prepared',
+        action: hasGuixuHub ? 'purchase path prepared' : 'download prepared',
         detail: hasGuixuHub ? 'valuation uses code fit + market memory' : 'valuation uses code fit + public-source signals',
       },
     },
@@ -157,45 +191,45 @@ export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]
       statusText: { running: 'writing', done: 'ready' },
       content: {
         kind: 'code',
-        file: 'train_safehat.py',
-        filesChanged: 1,
-        addedLines: 228,
+        files: preset.codeFiles,
+        filesChanged: preset.codeFiles.length,
+        addedLines: preset.codeFiles.reduce((sum, f) => sum + f.addedLines, 0),
       },
     },
     {
       id: 'execution',
-      badge: '5',
+      badge: hasGuixuHub ? '6' : '5',
       title: 'Task Execution',
       subtitle: 'training run',
       accent: 'teal',
-      terminal: !hasGuixuHub,
+      terminal: true,
       position: { x: 0.36, y: 0.62 },
       size: { w: 188, h: 112 },
-      lifecycle: { showAt: 9, doneAt: 12 },
+      lifecycle: hasGuixuHub ? { showAt: 12, doneAt: 15 } : { showAt: 9, doneAt: 12 },
       statusText: { running: 'training', done: 'completed' },
       content: {
         kind: 'execution',
         stage: 'epoch 14/30',
-        result: candidate.id === 'safehat-premium' ? 'mAP 0.81' : candidate.id === 'warehouse-ppe' ? 'mAP 0.79' : 'mAP 0.75',
+        accuracy: candidate.id === 'safehat-premium' ? '95.2%' : candidate.id === 'warehouse-ppe' ? '93.1%' : '89.7%',
+        loss: candidate.id === 'safehat-premium' ? '0.03' : candidate.id === 'warehouse-ppe' ? '0.05' : '0.08',
       },
     },
   ]
 
   if (hasGuixuHub) {
     nodes.push({
-      id: 'provenance',
-      badge: '6',
-      title: 'Data Provenance',
-      subtitle: 'on-chain write-back',
+      id: 'purchase',
+      badge: '5',
+      title: 'Agentic Purchase',
+      subtitle: 'x402 + unlock',
       accent: 'amber',
-      terminal: true,
       position: { x: 0.7, y: 0.62 },
       size: { w: 188, h: 144 },
-      lifecycle: { showAt: 12, doneAt: 14 },
-      statusText: { running: 'committing', done: 'recorded' },
+      lifecycle: { showAt: 9, doneAt: 12 },
+      statusText: { running: 'purchasing', done: 'unlocked' },
       content: {
         kind: 'ledger',
-        items: ['purchase attested', 'feedback indexed'],
+        items: ['x402 payment settled', '3/5 key shares released'],
       },
     })
   }
@@ -205,20 +239,22 @@ export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]
     { from: 'parser', to: 'code', label: 'task description', kind: 'branch' },
     { from: 'code', to: 'valuation', label: 'training code' },
     { from: 'search', to: 'valuation', label: 'candidate datasets' },
-    { from: 'valuation', to: 'execution', label: 'selected asset' },
   ]
 
   if (hasGuixuHub) {
     edges.push(
-      { from: 'execution', to: 'provenance', label: 'task-fit feedback', kind: 'feedback' },
+      { from: 'valuation', to: 'purchase', label: 'selected asset' },
+      { from: 'purchase', to: 'execution', label: 'verified data' },
     )
+  } else {
+    edges.push({ from: 'valuation', to: 'execution', label: 'selected asset' })
   }
 
   return {
     nodes,
     edges,
     recommendedCandidateId: candidate.id,
-    maxStep: hasGuixuHub ? 14 : 12,
+    maxStep: hasGuixuHub ? 15 : 12,
   }
 }
 
@@ -505,3 +541,5 @@ export const reviews = [
     stars: '★★★★★',
   },
 ] as const
+
+export const paperExportDatasetId = 'paper-safehat-premium'

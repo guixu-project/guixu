@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type PointerEventHandler, type Ref } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type PointerEventHandler, type Ref } from 'react'
 import type { WorkflowNode } from '../data'
 
 const easeOut = (t: number) => 1 - (1 - t) ** 2.4
@@ -10,39 +10,23 @@ const progressValue = (target: number, ratio: number) => {
   return Math.min(target, Math.max(1, Math.round(target * easeOut(ratio))))
 }
 
+import catPreparePy from '../../examples/cat-classification/prepare.py?raw'
+import trainCatPy from '../../examples/cat-classification/train_cat.py?raw'
+import helmetExportQueuePy from '../../examples/safetyhelmet-classification/export_queue.py?raw'
+import helmetPreparePy from '../../examples/safetyhelmet-classification/prepare.py?raw'
+import trainHelmetPy from '../../examples/safetyhelmet-classification/train_helmet.py?raw'
+
+type CodeFile = Extract<WorkflowNode['content'], { kind: 'code' }>['files'][number]
+
 const STATIC_CODE_PREVIEWS: Record<string, string> = {
-  'train_safehat.py': `from pathlib import Path
-from ultralytics import YOLO
-
-DATA_ROOT = Path("datasets/safehat")
-DATA_YAML = DATA_ROOT / "safehat.yaml"
-
-
-def build_model() -> YOLO:
-    model = YOLO("yolov8n.pt")
-    return model
-
-
-def train() -> None:
-    model = build_model()
-    model.train(
-        data=str(DATA_YAML),
-        imgsz=640,
-        epochs=30,
-        batch=16,
-        project="runs/safehat",
-        name="helmet-detector",
-    )
-
-
-if __name__ == "__main__":
-    print("launch preview for train_safehat.py")
-    train()
-`,
+  'cat-classification/train_cat.py': trainCatPy,
+  'cat-classification/prepare.py': catPreparePy,
+  'safetyhelmet-classification/train_helmet.py': trainHelmetPy,
+  'safetyhelmet-classification/prepare.py': helmetPreparePy,
+  'safetyhelmet-classification/export_queue.py': helmetExportQueuePy,
 }
 
-const trainingPreviewFor = (file: string) =>
-  STATIC_CODE_PREVIEWS[file] ?? '# preview unavailable\n'
+const trainingPreviewFor = (path: string) => STATIC_CODE_PREVIEWS[path] ?? '# preview unavailable\n'
 
 const parseEpochProgress = (stage: string) => {
   const match = stage.match(/(\d+)\s*\/\s*(\d+)/)
@@ -102,9 +86,9 @@ const ParserRunState = () => (
           <span className="parser-run-bar parser-run-bar-mid"></span>
         </div>
       </div>
-      <div className="parser-run-row">
-        <span className="parser-run-label">Task Type</span>
-        <span className="parser-run-bar parser-run-bar-short"></span>
+      <div className="parser-run-row parser-run-row-inline">
+        <span className="parser-run-label">Budget</span>
+        <span className="parser-run-bar parser-run-bar-inline"></span>
       </div>
       <div className="parser-run-row">
         <span className="parser-run-label">Keywords</span>
@@ -336,7 +320,14 @@ const WorkflowCard = ({
   onPointerDown?: PointerEventHandler<HTMLDivElement>
 }) => {
   const [codePreviewOpen, setCodePreviewOpen] = useState(false)
+  const [activeCodePath, setActiveCodePath] = useState<string | null>(
+    node.content.kind === 'code' ? node.content.files[0]?.path ?? null : null,
+  )
+  const codePreviewGutterRef = useRef<HTMLDivElement | null>(null)
+  const codePreviewContentRef = useRef<HTMLPreElement | null>(null)
   let body: JSX.Element
+  const codeFiles = node.content.kind === 'code' ? node.content.files : []
+  const codeFileKey = codeFiles.map(file => file.path).join('|')
 
   useEffect(() => {
     if (!codePreviewOpen)
@@ -350,6 +341,38 @@ const WorkflowCard = ({
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [codePreviewOpen])
+
+  useEffect(() => {
+    if (node.content.kind !== 'code') {
+      setActiveCodePath(null)
+      return
+    }
+
+    setActiveCodePath((current) => {
+      if (current && codeFiles.some(file => file.path === current))
+        return current
+
+      return codeFiles[0]?.path ?? null
+    })
+  }, [codeFileKey, codeFiles, node.content.kind])
+
+  useEffect(() => {
+    if (!codePreviewOpen) {
+      if (codePreviewGutterRef.current)
+        codePreviewGutterRef.current.scrollTop = 0
+      if (codePreviewContentRef.current)
+        codePreviewContentRef.current.scrollTop = 0
+      return
+    }
+
+    if (codePreviewGutterRef.current && codePreviewContentRef.current)
+      codePreviewGutterRef.current.scrollTop = codePreviewContentRef.current.scrollTop
+  }, [codePreviewOpen, activeCodePath])
+
+  const openCodePreview = (path: CodeFile['path']) => {
+    setActiveCodePath(path)
+    setCodePreviewOpen(true)
+  }
 
   if (node.content.kind === 'search' && node.status.phase === 'idle') {
     body = <div className="operator-placeholder idle"></div>
@@ -402,11 +425,9 @@ const WorkflowCard = ({
                 <p>{node.content.taskDescription}</p>
               </div>
             </div>
-            <div className="intent-section">
-              <span className="mini-title">Task Type</span>
-              <div className="profile-pill-row">
-                <span className="profile-pill">{node.content.taskType}</span>
-              </div>
+            <div className="intent-section intent-section-inline">
+              <span className="mini-title">Budget</span>
+              <span className="budget-value">{node.content.budget}</span>
             </div>
             <div className="intent-section">
               <span className="mini-title">Keywords</span>
@@ -439,26 +460,26 @@ const WorkflowCard = ({
                   )
                 : null}
             </div>
-            <div
-              className="code-file-line interactive"
-              role="button"
-              tabIndex={0}
-              title="Click to preview generated code"
-              onPointerDown={event => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation()
-                setCodePreviewOpen(true)
-              }}
-              onDoubleClick={event => event.stopPropagation()}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  setCodePreviewOpen(true)
-                }
-              }}
-            >
-              <code>{node.content.file}</code>
+            <div className="code-file-list">
+              {node.content.files.map(file => (
+                <button
+                  key={file.path}
+                  type="button"
+                  className={`code-file-line interactive${activeCodePath === file.path ? ' active' : ''}`}
+                  title={`Preview ${file.file}`}
+                  onPointerDown={event => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    openCodePreview(file.path)
+                  }}
+                >
+                  <code className="code-file-name">{file.file}</code>
+                  <span className="code-file-stats">
+                    +
+                    {file.addedLines}
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
         )
@@ -480,9 +501,12 @@ const WorkflowCard = ({
               <span>stage</span>
               <strong>{node.content.stage}</strong>
             </div>
-            <div className="inline-metric">
+            <div className="inline-metric result-metric">
               <span>result</span>
-              <strong>{node.content.result}</strong>
+              <div className="result-multiline">
+                <strong>acc {node.content.accuracy}</strong>
+                <strong className="result-loss">loss {node.content.loss}</strong>
+              </div>
             </div>
           </div>
         )
@@ -492,7 +516,7 @@ const WorkflowCard = ({
           <div className="ledger-node">
             {node.content.items.map(item => (
               <div key={item} className="inline-metric">
-                <span>record</span>
+                <span>step</span>
                 <strong>{item}</strong>
               </div>
             ))}
@@ -502,7 +526,11 @@ const WorkflowCard = ({
     }
   }
 
-  const previewCode = node.content.kind === 'code' ? trainingPreviewFor(node.content.file) : ''
+  const previewFile
+    = node.content.kind === 'code'
+      ? node.content.files.find(file => file.path === activeCodePath) ?? node.content.files[0]
+      : null
+  const previewCode = previewFile ? trainingPreviewFor(previewFile.path) : ''
 
   return (
     <>
@@ -523,7 +551,7 @@ const WorkflowCard = ({
         {body}
       </div>
 
-      {codePreviewOpen && node.content.kind === 'code' && (
+      {codePreviewOpen && node.content.kind === 'code' && previewFile && (
         <div className="code-preview-overlay" onClick={() => setCodePreviewOpen(false)}>
           <div
             className="code-preview-modal"
@@ -532,7 +560,22 @@ const WorkflowCard = ({
           >
             <div className="code-preview-header">
               <div className="code-preview-header-copy">
-                <h4>{node.content.file}</h4>
+                <h4>{previewFile.file}</h4>
+                <p>{previewFile.path}</p>
+                {node.content.files.length > 1 && (
+                  <div className="code-preview-tabs">
+                    {node.content.files.map(file => (
+                      <button
+                        key={file.path}
+                        type="button"
+                        className={`code-preview-tab${file.path === previewFile.path ? ' active' : ''}`}
+                        onClick={() => setActiveCodePath(file.path)}
+                      >
+                        {file.file}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <button
                 type="button"
@@ -544,12 +587,19 @@ const WorkflowCard = ({
             </div>
 
             <div className="code-preview-body">
-              <div className="code-preview-gutter" aria-hidden="true">
+              <div ref={codePreviewGutterRef} className="code-preview-gutter" aria-hidden="true">
                 {previewCode.split('\n').map((_, index) => (
                   <span key={index}>{index + 1}</span>
                 ))}
               </div>
-              <pre className="code-preview-content">
+              <pre
+                ref={codePreviewContentRef}
+                className="code-preview-content"
+                onScroll={(event) => {
+                  if (codePreviewGutterRef.current)
+                    codePreviewGutterRef.current.scrollTop = event.currentTarget.scrollTop
+                }}
+              >
                 <code>{previewCode}</code>
               </pre>
             </div>

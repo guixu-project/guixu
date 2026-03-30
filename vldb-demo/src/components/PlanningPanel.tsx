@@ -7,56 +7,61 @@ import {
   type WorkflowEdge,
   type WorkflowNode,
 } from '../data'
+import { demoTimingPresets, idlePlanningRuntimeState, type PlanningRuntimeState } from '../demoTimeline'
 import SectionTitle from './SectionTitle'
 import WorkflowCard from './WorkflowCard'
 
 type StageSize = { width: number; height: number }
 type DragState = { id: string; offsetX: number; offsetY: number }
-type RunConfig = { query: string; sources: PlanningSourceId[] } | null
+type RunConfig = { query: string; sources: PlanningSourceId[]; presetIndex: number; launchId: number } | null
 type AnchorSide = 'left' | 'right' | 'top' | 'bottom'
 type NodeFrame = { x: number; y: number; w: number; h: number }
 type NodeCardLayout = { width: number; height: number }
+type NodeSchedule = Record<string, { startMs: number; endMs: number }>
 
-const defaultQuery = 'Write an image classifier that checks whether Caesar is in the photo taken by my house monitor'
-const defaultSources: PlanningSourceId[] = ['kaggle', 'huggingface', 'guixu-hub']
+const presetQueries = [
+  'Train an image classifier that checks whether my cat is in the photo taken by my house monitor',
+  'Train an image classifier that determines whether workers in construction site images are wearing safety helmets correctly, with a total data procurement budget of $2.00.',
+]
+const presetDefaultSources: PlanningSourceId[][] = [
+  ['kaggle', 'huggingface'],
+  ['kaggle', 'huggingface', 'guixu-hub'],
+]
 const stageInset = {
   left: 18,
   right: 6,
   top: 18,
   bottom: 18,
 }
-const REVEAL_INTERVAL_MS = 680
-const EXECUTION_INTERVAL_MS = 1650
-const EXECUTION_START_DELAY_MS = 420
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
 
 const nodeCardLayout: Record<string, NodeCardLayout> = {
-  parser: { width: 170, height: 258 },
-  search: { width: 156, height: 220 },
-  code: { width: 156, height: 200 },
+  parser: { width: 165, height: 258 },
+  search: { width: 160, height: 220 },
+  code: { width: 160, height: 200 },
   valuation: { width: 152, height: 164 },
-  execution: { width: 156, height: 124 },
-  provenance: { width: 156, height: 230 },
+  purchase: { width: 165, height: 124 },
+  execution: { width: 165, height: 124 },
 }
 
 const layoutWorkflowNodes = (nodes: WorkflowNode[], stage: StageSize) => {
   const sizeFor = (nodeId: string) => nodeCardLayout[nodeId] ?? { width: 136, height: 136 }
-  const hasProvenance = nodes.some(node => node.id === 'provenance')
+  const hasPurchase = nodes.some(node => node.id === 'purchase')
   const safeWidth = Math.max(stage.width - stageInset.left - stageInset.right, 1)
   const preferredColWidths = [
     sizeFor('parser').width,
     Math.max(sizeFor('search').width, sizeFor('code').width),
     sizeFor('valuation').width,
-    Math.max(sizeFor('execution').width, hasProvenance ? sizeFor('provenance').width : 0),
+    Math.max(sizeFor('execution').width, hasPurchase ? sizeFor('purchase').width : 0),
   ]
   const minimumGap = 10
   const totalPreferredWidth = preferredColWidths.reduce((sum, width) => sum + width, 0) + minimumGap * 3
   const widthScale = totalPreferredWidth > safeWidth ? safeWidth / totalPreferredWidth : 1
   const colWidths = preferredColWidths.map(width => Math.max(72, Math.round(width * widthScale)))
   const actualGap = Math.max(8, Math.floor((safeWidth - colWidths.reduce((sum, width) => sum + width, 0)) / 3))
-  const upperBandHeight = Math.max(sizeFor('search').height, sizeFor('execution').height)
-  const lowerBandHeight = Math.max(sizeFor('code').height, hasProvenance ? sizeFor('provenance').height : sizeFor('code').height)
+  const upperBandHeight = Math.max(sizeFor('search').height, hasPurchase ? sizeFor('purchase').height : sizeFor('execution').height)
+  const lowerBandHeight = Math.max(sizeFor('code').height, hasPurchase ? sizeFor('execution').height : sizeFor('code').height)
   const topYBase = stageInset.top + 6
   const bottomYBase = stage.height - stageInset.bottom - 24
   const minRowGap = clamp(Math.round(stage.height * 0.06), 24, 40)
@@ -110,11 +115,11 @@ const layoutWorkflowNodes = (nodes: WorkflowNode[], stage: StageSize) => {
         break
       case 'execution':
         x = colX[3]
-        y = hasProvenance ? topY + Math.round((upperBandHeight - height) / 2) : centerY(height)
+        y = hasPurchase ? lowerY + Math.round((lowerBandHeight - height) / 2) : centerY(height)
         break
-      case 'provenance':
+      case 'purchase':
         x = colX[3]
-        y = lowerY + Math.round((lowerBandHeight - height) / 2)
+        y = topY + Math.round((upperBandHeight - height) / 2)
         break
       default:
         break
@@ -188,7 +193,7 @@ const getEdgeSides = (edge: WorkflowEdge, fromNode: MeasuredNode, toNode: Measur
   const toCenterX = toNode.frame.x + toNode.frame.w / 2
   const sameColumn = Math.abs(fromCenterX - toCenterX) < 16
 
-  if (edge.from === 'execution' && edge.to === 'provenance')
+  if (edge.from === 'purchase' && edge.to === 'execution')
     return { source: 'bottom' as const, target: 'top' as const }
 
   if (sameColumn && toNode.frame.y > fromNode.frame.y)
@@ -275,39 +280,123 @@ const buildEdgeGeometry = (fromNode: MeasuredNode, toNode: MeasuredNode, edge: W
   }
 }
 
-const statusForNode = (node: WorkflowNode, runStep: number) => {
-  if (runStep < node.lifecycle.showAt)
+const statusForNode = (node: WorkflowNode, elapsedMs: number, nodeSchedule: NodeSchedule | null) => {
+  if (!nodeSchedule || elapsedMs < 0)
     return { phase: 'idle' as const }
 
-  if (runStep < node.lifecycle.doneAt)
+  const schedule = nodeSchedule[node.id]
+  if (!schedule || elapsedMs < schedule.startMs)
+    return { phase: 'idle' as const }
+
+  if (elapsedMs < schedule.endMs)
     return { phase: 'running' as const }
 
   return { phase: 'done' as const }
 }
 
-const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candidateId: CandidateId) => void }) => {
+const progressForNode = (node: WorkflowNode, elapsedMs: number, nodeSchedule: NodeSchedule | null) => {
+  if (!nodeSchedule || elapsedMs < 0)
+    return 0
+
+  const schedule = nodeSchedule[node.id]
+  if (!schedule)
+    return 0
+  if (elapsedMs <= schedule.startMs)
+    return 0
+  if (elapsedMs >= schedule.endMs)
+    return 1
+
+  return (elapsedMs - schedule.startMs) / Math.max(schedule.endMs - schedule.startMs, 1)
+}
+
+const PlanningPanel = ({
+  onRecommendCandidate,
+  onRuntimeChange,
+  paperMode = false,
+}: {
+  onRecommendCandidate: (candidateId: CandidateId) => void
+  onRuntimeChange?: (runtime: PlanningRuntimeState) => void
+  paperMode?: boolean
+}) => {
   const stageRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const initialPresetIndex = paperMode ? 1 : 0
+  const initialQuery = presetQueries[initialPresetIndex]
+  const initialSources = presetDefaultSources[initialPresetIndex]
 
-  const [query, setQuery] = useState(defaultQuery)
-  const [sources, setSources] = useState<PlanningSourceId[]>(defaultSources)
-  const [runConfig, setRunConfig] = useState<RunConfig>(null)
+  const [presetIndex, setPresetIndex] = useState(initialPresetIndex)
+  const [query, setQuery] = useState(initialQuery)
+  const [sources, setSources] = useState<PlanningSourceId[]>(initialSources)
+  const [runConfig, setRunConfig] = useState<RunConfig>(
+    paperMode
+      ? {
+          query: initialQuery,
+          sources: initialSources,
+          presetIndex: initialPresetIndex,
+          launchId: 1,
+        }
+      : null,
+  )
   const [nodes, setNodes] = useState<WorkflowNode[]>([])
-  const [runStep, setRunStep] = useState(-1)
+  const [elapsedMs, setElapsedMs] = useState(-1)
   const [revealCount, setRevealCount] = useState(0)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [stageSize, setStageSize] = useState<StageSize>({ width: 0, height: 0 })
   const [cardFrames, setCardFrames] = useState<Record<string, NodeFrame>>({})
+  const [launchId, setLaunchId] = useState(paperMode ? 1 : 0)
 
   const workflow = useMemo(
-    () => (runConfig ? buildPlanningWorkflow(runConfig.query, runConfig.sources) : null),
+    () => (runConfig ? buildPlanningWorkflow(runConfig.query, runConfig.sources, runConfig.presetIndex) : null),
     [runConfig],
   )
+  const activePresetIndex = (runConfig?.presetIndex ?? presetIndex) as 0 | 1
+  const timingPreset = demoTimingPresets[activePresetIndex]
   const revealOrderIds = useMemo(
     () => workflow ? [...workflow.nodes].sort((a, b) => workflowOrder(a) - workflowOrder(b)).map(node => node.id) : [],
     [workflow],
+  )
+  const nodeSchedule = useMemo(() => {
+    if (!workflow || !runConfig)
+      return null
+
+    const durations = timingPreset.planningNodeDurationsMs
+    const derivedPurchaseDuration = workflow.nodes.some(node => node.id === 'purchase') && timingPreset.traceStageDurationsMs
+      ? timingPreset.traceStageDurationsMs.payment + timingPreset.traceStageDurationsMs.shards + timingPreset.traceStageDurationsMs.unlock
+      : 0
+    const parserEnd = durations.parser ?? 0
+    const searchStart = parserEnd
+    const codeStart = parserEnd
+    const searchEnd = searchStart + (durations.search ?? 0)
+    const codeEnd = codeStart + (durations.code ?? 0)
+    const valuationStart = Math.max(searchEnd, codeEnd)
+    const valuationEnd = valuationStart + (durations.valuation ?? 0)
+    const hasPurchase = workflow.nodes.some(node => node.id === 'purchase')
+    const purchaseStart = valuationEnd
+    const purchaseEnd = purchaseStart + (hasPurchase ? derivedPurchaseDuration : 0)
+    const executionStart = hasPurchase ? purchaseEnd : valuationEnd
+    const executionEnd = executionStart + (durations.execution ?? 0)
+
+    const schedule: NodeSchedule = {
+      parser: { startMs: 0, endMs: parserEnd },
+      search: { startMs: searchStart, endMs: searchEnd },
+      code: { startMs: codeStart, endMs: codeEnd },
+      valuation: { startMs: valuationStart, endMs: valuationEnd },
+      execution: { startMs: executionStart, endMs: executionEnd },
+    }
+
+    if (hasPurchase) {
+      schedule.purchase = { startMs: purchaseStart, endMs: purchaseEnd }
+    }
+
+    return schedule
+  }, [runConfig, timingPreset, workflow])
+  const totalRuntimeMs = useMemo(
+    () => nodeSchedule
+      ? Math.max(...Object.values(nodeSchedule).map(schedule => schedule.endMs), 0)
+      : 0,
+    [nodeSchedule],
   )
 
   useEffect(() => {
@@ -333,7 +422,7 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
   useEffect(() => {
     if (!workflow) {
       setNodes([])
-      setRunStep(-1)
+      setElapsedMs(-1)
       setRevealCount(0)
       setSelectedNodeId(null)
       setCardFrames({})
@@ -341,26 +430,36 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
     }
 
     setNodes(stageSize.width > 0 && stageSize.height > 0 ? layoutWorkflowNodes(workflow.nodes, stageSize) : workflow.nodes)
-    setRunStep(-1)
-    setRevealCount(0)
     setSelectedNodeId(null)
 
+    if (paperMode) {
+      setElapsedMs(totalRuntimeMs)
+      setRevealCount(revealOrderIds.length)
+      return
+    }
+
+    setElapsedMs(-1)
+    setRevealCount(0)
+
     let revealTimer: number | null = null
-    let executionTimer: number | null = null
+    let runtimeTimer: number | null = null
     let executionStartTimer: number | null = null
 
     const startExecution = () => {
-      setRunStep(0)
-      executionTimer = window.setInterval(() => {
-        setRunStep(prev => {
-          if (prev >= workflow.maxStep) {
-            if (executionTimer)
-              window.clearInterval(executionTimer)
-            return prev
-          }
-          return prev + 1
-        })
-      }, EXECUTION_INTERVAL_MS)
+      const startAt = performance.now()
+      setElapsedMs(0)
+
+      runtimeTimer = window.setInterval(() => {
+        const nextElapsedMs = performance.now() - startAt
+        if (nextElapsedMs >= totalRuntimeMs) {
+          setElapsedMs(totalRuntimeMs)
+          if (runtimeTimer)
+            window.clearInterval(runtimeTimer)
+          return
+        }
+
+        setElapsedMs(nextElapsedMs)
+      }, 100)
     }
 
     revealTimer = window.setInterval(() => {
@@ -369,28 +468,66 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
 
         if (next >= revealOrderIds.length && revealTimer) {
           window.clearInterval(revealTimer)
-          executionStartTimer = window.setTimeout(startExecution, EXECUTION_START_DELAY_MS)
+          executionStartTimer = window.setTimeout(startExecution, timingPreset.executionStartDelayMs)
         }
 
         return next
       })
-    }, REVEAL_INTERVAL_MS)
+    }, timingPreset.revealIntervalMs)
 
     return () => {
       if (revealTimer)
         window.clearInterval(revealTimer)
-      if (executionTimer)
-        window.clearInterval(executionTimer)
+      if (runtimeTimer)
+        window.clearInterval(runtimeTimer)
       if (executionStartTimer)
         window.clearTimeout(executionStartTimer)
     }
-  }, [revealOrderIds, workflow])
+  }, [paperMode, revealOrderIds, timingPreset, totalRuntimeMs, workflow])
 
   useEffect(() => {
+    if (!workflow || !runConfig) {
+      onRuntimeChange?.(idlePlanningRuntimeState)
+      return
+    }
+
+    const phases = {
+      ...idlePlanningRuntimeState.nodePhases,
+    }
+    const progress = {
+      ...idlePlanningRuntimeState.nodeProgress,
+    }
+
+    workflow.nodes.forEach((node) => {
+      if (node.id in phases) {
+        phases[node.id as keyof typeof phases] = statusForNode(node, elapsedMs, nodeSchedule).phase
+        progress[node.id as keyof typeof progress] = progressForNode(node, elapsedMs, nodeSchedule)
+      }
+    })
+
+    onRuntimeChange?.({
+      launchId: runConfig.launchId,
+      launched: true,
+      hasGuixuHub: runConfig.sources.includes('guixu-hub'),
+      presetIndex: runConfig.presetIndex as 0 | 1,
+      nodePhases: phases,
+      nodeProgress: progress,
+    })
+  }, [elapsedMs, nodeSchedule, onRuntimeChange, runConfig, workflow])
+
+  useEffect(() => {
+    if (paperMode) {
+      const preferredNode = workflow?.nodes.find(node => node.id === 'execution')
+        ?? workflow?.nodes.find(node => node.id === 'purchase')
+        ?? (workflow ? workflow.nodes[workflow.nodes.length - 1] : undefined)
+      setSelectedNodeId(preferredNode?.id ?? null)
+      return
+    }
+
     if (!workflow)
       return
 
-    const runningNode = workflow.nodes.find(node => runStep >= node.lifecycle.showAt && runStep < node.lifecycle.doneAt)
+    const runningNode = workflow.nodes.find(node => statusForNode(node, elapsedMs, nodeSchedule).phase === 'running')
     if (runningNode) {
       setSelectedNodeId(runningNode.id)
       return
@@ -398,20 +535,20 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
 
     const finishedNode = [...workflow.nodes]
       .reverse()
-      .find(node => runStep >= node.lifecycle.doneAt)
+      .find(node => statusForNode(node, elapsedMs, nodeSchedule).phase === 'done')
 
     if (finishedNode)
       setSelectedNodeId(finishedNode.id)
-  }, [runStep, workflow])
+  }, [elapsedMs, nodeSchedule, paperMode, workflow])
 
   useEffect(() => {
-    if (runStep >= 0 || revealCount <= 0)
+    if (elapsedMs >= 0 || revealCount <= 0)
       return
 
     const latestVisibleId = revealOrderIds[revealCount - 1]
     if (latestVisibleId)
       setSelectedNodeId(latestVisibleId)
-  }, [revealCount, revealOrderIds, runStep])
+  }, [elapsedMs, revealCount, revealOrderIds])
 
   useEffect(() => {
     if (!workflow || stageSize.width <= 0 || stageSize.height <= 0)
@@ -473,14 +610,14 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
     return nodes
       .filter(node => visibleIds.has(node.id))
       .map(node => {
-        const status = statusForNode(node, runStep)
+        const status = statusForNode(node, elapsedMs, nodeSchedule)
         return {
           ...node,
           status,
           px: toPixels(node, stageSize),
         }
       })
-  }, [nodes, revealCount, revealOrderIds, runStep, stageSize]) as PositionedNode[]
+  }, [elapsedMs, nodeSchedule, nodes, revealCount, revealOrderIds, stageSize]) as PositionedNode[]
 
   useLayoutEffect(() => {
     if (!stageRef.current) {
@@ -553,9 +690,23 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
     }) as PositionedEdge[]
   }, [measuredNodes, workflow])
 
+  const switchPreset = () => {
+    if (paperMode)
+      return
+
+    const next = (presetIndex + 1) % presetQueries.length
+    setPresetIndex(next)
+    setQuery(presetQueries[next])
+    setSources(presetDefaultSources[next])
+    setRunConfig(null)
+  }
+
   const canLaunch = query.trim().length > 0 && sources.length > 0
 
   const toggleSource = (sourceId: PlanningSourceId) => {
+    if (paperMode)
+      return
+
     setSources(prev => (
       prev.includes(sourceId)
         ? prev.filter(id => id !== sourceId)
@@ -564,21 +715,28 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
   }
 
   const launchWorkflow = () => {
+    if (paperMode)
+      return
+
     if (!canLaunch)
       return
 
-    const nextWorkflow = buildPlanningWorkflow(query.trim(), sources)
+    const nextWorkflow = buildPlanningWorkflow(query.trim(), sources, presetIndex)
+    const nextLaunchId = launchId + 1
+    setLaunchId(nextLaunchId)
     onRecommendCandidate(nextWorkflow.recommendedCandidateId)
     setRunConfig({
       query: query.trim(),
       sources,
+      presetIndex,
+      launchId: nextLaunchId,
     })
   }
 
   return (
     <section className="panel planning-panel">
       <div className="panel-heading">
-        <SectionTitle variant="planning" title="Agent Planning & Step-wise Discovery" />
+        <SectionTitle variant="planning" title="Agent Planning" />
       </div>
 
       <div className="planning-launcher">
@@ -588,6 +746,15 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
             type="text"
             value={query}
             onChange={event => setQuery(event.target.value)}
+            readOnly={paperMode}
+          />
+          <button
+            type="button"
+            className="preset-toggle"
+            title={`Switch to preset ${(presetIndex + 1) % presetQueries.length + 1}`}
+            onClick={switchPreset}
+            tabIndex={-1}
+            aria-hidden="true"
           />
         </div>
 
@@ -599,6 +766,7 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
                 type="button"
                 className={`source-chip source-chip-${source.id}${sources.includes(source.id) ? ' active' : ''}`}
                 onClick={() => toggleSource(source.id)}
+                disabled={paperMode}
               >
                 <span className="source-check" aria-hidden="true">{sources.includes(source.id) ? '✓' : ''}</span>
                 <span className={`source-icon source-icon-${source.id}`} aria-hidden="true">
@@ -620,10 +788,10 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
           <button
             type="button"
             className="launch-button"
-            disabled={!canLaunch}
+            disabled={!canLaunch || paperMode}
             onClick={launchWorkflow}
           >
-            Start
+            {paperMode ? 'Paper Mode' : 'Start'}
           </button>
         </div>
       </div>
@@ -708,6 +876,9 @@ const PlanningPanel = ({ onRecommendCandidate }: { onRecommendCandidate: (candid
               transform: `translate(${node.px.x}px, ${node.px.y}px)`,
             }}
             onPointerDown={(event) => {
+              if (paperMode)
+                return
+
               if (!stageRef.current)
                 return
 
