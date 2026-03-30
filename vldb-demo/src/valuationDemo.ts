@@ -4,7 +4,7 @@ export type ValuationSearchCandidate = {
   key: string
   candidateId?: CandidateId
   name: string
-  platform: 'guixu-hub' | 'huggingface' | 'kaggle' | 'roboflow' | 'torrent'
+  platform: 'guixu-hub' | 'huggingface' | 'kaggle'
   dataType: 'image'
   size: string
   cost: string
@@ -166,13 +166,13 @@ export const valuationSearchCandidates: ValuationSearchCandidate[] = [
     rescoredRecords: 18,
   },
   {
-    key: 'roboflow-hardhat',
+    key: 'hf-hardhat-tailset',
     candidateId: 'roboflow-hardhat',
-    name: 'RF_Hardhat_Scenes',
-    platform: 'roboflow',
+    name: 'HF_Hardhat_Tailset',
+    platform: 'huggingface',
     dataType: 'image',
     size: '2.9 GB',
-    cost: '$5',
+    cost: '$1.60',
     reviewCount: 6,
     coarseScore: 74,
     sampleScore: 73,
@@ -195,7 +195,7 @@ export const valuationSearchCandidates: ValuationSearchCandidate[] = [
     platform: 'guixu-hub',
     dataType: 'image',
     size: '2.3 GB',
-    cost: '$10',
+    cost: '$1.10',
     reviewCount: 32,
     coarseScore: 87,
     sampleScore: 94,
@@ -234,10 +234,10 @@ export const valuationSearchCandidates: ValuationSearchCandidate[] = [
     rescoredRecords: 6,
   },
   {
-    key: 'bt-safetyframes',
+    key: 'kaggle-safetyframes',
     candidateId: 'bt-safetyframes',
-    name: 'BT_SafetyFrames',
-    platform: 'torrent',
+    name: 'Kaggle_SafetyFrames',
+    platform: 'kaggle',
     dataType: 'image',
     size: '4.4 GB',
     cost: 'Free',
@@ -257,9 +257,9 @@ export const valuationSearchCandidates: ValuationSearchCandidate[] = [
     rescoredRecords: 20,
   },
   {
-    key: 'helmet-compliance-archive',
-    name: 'Helmet_Compliance_Archive',
-    platform: 'torrent',
+    key: 'hf-helmet-compliance-archive',
+    name: 'HF_Helmet_Compliance_Archive',
+    platform: 'huggingface',
     dataType: 'image',
     size: '6.1 GB',
     cost: 'Free',
@@ -284,25 +284,25 @@ export const selectedBundles: Record<CandidateId, BundleCard[]> = {
   'safehat-premium': [
     { name: 'SafeHat_Premium', role: 'highest final utility', utility: '+0.94' },
     { name: 'HF_HelmetScenes', role: 'cheap scene diversity', utility: '+0.61' },
-    { name: 'RF_Hardhat_Scenes', role: 'fills edge cases', utility: '+0.38' },
+    { name: 'HF_Hardhat_Tailset', role: 'fills edge cases', utility: '+0.38' },
   ],
   'warehouse-ppe': [
     { name: 'HF_HelmetScenes', role: 'best public fit', utility: '+0.86' },
     { name: 'SafeHat_Premium', role: 'adds trust signal', utility: '+0.72' },
-    { name: 'RF_Hardhat_Scenes', role: 'fills edge cases', utility: '+0.34' },
+    { name: 'HF_Hardhat_Tailset', role: 'fills edge cases', utility: '+0.34' },
   ],
   'kaggle-construction': [
     { name: 'Kaggle_Construction', role: 'broad coverage', utility: '+0.71' },
     { name: 'HF_HelmetScenes', role: 'better labels', utility: '+0.58' },
-    { name: 'RF_Hardhat_Scenes', role: 'more hardhat frames', utility: '+0.29' },
+    { name: 'HF_Hardhat_Tailset', role: 'more hardhat frames', utility: '+0.29' },
   ],
   'bt-safetyframes': [
-    { name: 'BT_SafetyFrames', role: 'low-cost tail data', utility: '+0.52' },
+    { name: 'Kaggle_SafetyFrames', role: 'low-cost tail data', utility: '+0.52' },
     { name: 'HF_HelmetScenes', role: 'better label prior', utility: '+0.57' },
     { name: 'SafeHat_Premium', role: 'trust-weighted boost', utility: '+0.74' },
   ],
   'roboflow-hardhat': [
-    { name: 'RF_Hardhat_Scenes', role: 'tail hardhat scenes', utility: '+0.63' },
+    { name: 'HF_Hardhat_Tailset', role: 'tail hardhat scenes', utility: '+0.63' },
     { name: 'SafeHat_Premium', role: 'best overall fit', utility: '+0.76' },
     { name: 'HF_HelmetScenes', role: 'label stability', utility: '+0.45' },
   ],
@@ -319,19 +319,19 @@ export const knapsackDisplay: KnapsackDisplay = {
       label: 'Round 1',
       state: 'infeasible',
       rows: [
-        { name: 'SafeHat_Premium', score: 94, price: '$2.30', size: '2.3' },
-        { name: 'HF_HelmetScenes', score: 86, price: 'Free', size: '3.8' },
-        { name: 'SiteCam_Helmet_Longtail', score: 66, price: '$1.10', size: '1.8' },
+        { name: 'SafeHat_Premium', score: 94, price: '$1.10', size: '2.3' },
+        { name: 'SiteCam_Helmet_Longtail', score: 66, price: '$6.00', size: '1.8' },
+        { name: 'Factory_PPE_MicroSet', score: 67, price: '$4.00', size: '1.1' },
       ],
     },
     {
       label: 'Round 2',
       state: 'feasible',
       rows: [
+        { name: 'SafeHat_Premium', score: 94, price: '$1.10', size: '2.3', chosen: true },
         { name: 'HF_HelmetScenes', score: 86, price: 'Free', size: '3.8', chosen: true },
-        { name: 'RF_Hardhat_Scenes', score: 73, price: '$0.60', size: '2.9', chosen: true },
         { name: 'Construction_StillFrames', score: 62, price: '$0.40', size: '4.0' },
-        { name: 'Factory_PPE_MicroSet', score: 67, price: '$0.50', size: '1.1' },
+        { name: 'HF_Hardhat_Tailset', score: 73, price: '$1.60', size: '2.9' },
       ],
     },
     {
@@ -343,12 +343,12 @@ export const knapsackDisplay: KnapsackDisplay = {
   ],
   selected: {
     datasets: [
+      { name: 'SafeHat_Premium', score: 94 },
       { name: 'HF_HelmetScenes', score: 86 },
-      { name: 'RF_Hardhat_Scenes', score: 73 },
     ],
-    totalPrice: '$0.60',
-    totalSize: '6.7 GB',
-    totalScore: 159,
+    totalPrice: '$1.10',
+    totalSize: '6.1 GB',
+    totalScore: 180,
   },
 }
 

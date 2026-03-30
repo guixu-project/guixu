@@ -59,12 +59,14 @@ const CandidateButton = ({
 const ValuationPanel = ({
   selectedId,
   onSelectCandidate,
+  onTracePaymentCommit,
   onTraceReviewCommit,
   planningRuntime = idlePlanningRuntimeState,
   completedMode = false,
 }: {
   selectedId: CandidateId
   onSelectCandidate: (candidateId: CandidateId) => void
+  onTracePaymentCommit?: (candidateId: CandidateId) => void
   onTraceReviewCommit?: (candidateId: CandidateId) => void
   planningRuntime?: PlanningRuntimeState
   completedMode?: boolean
@@ -137,6 +139,7 @@ const ValuationPanel = ({
 
           <OnChainAgentTrace
             candidate={selected}
+            onTracePaymentCommit={onTracePaymentCommit}
             onTraceReviewCommit={onTraceReviewCommit}
             planningRuntime={planningRuntime}
             completedMode={completedMode}

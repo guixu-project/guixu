@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { Candidate, CandidateId } from '../data'
+import { type Candidate, type CandidateId, getExecutionSummary } from '../data'
 import { demoTimingPresets, idlePlanningRuntimeState, type PlanningRuntimeState } from '../demoTimeline'
 
 const paymentSequenceSteps = [
@@ -455,6 +455,7 @@ const TraceVisual = ({
 
 type OnChainAgentTraceProps = {
   candidate: Candidate
+  onTracePaymentCommit?: (candidateId: CandidateId) => void
   onTraceReviewCommit?: (candidateId: CandidateId) => void
   planningRuntime?: PlanningRuntimeState
   completedMode?: boolean
@@ -462,12 +463,13 @@ type OnChainAgentTraceProps = {
 
 const OnChainAgentTrace = ({
   candidate,
+  onTracePaymentCommit,
   onTraceReviewCommit,
   planningRuntime = idlePlanningRuntimeState,
   completedMode = false,
 }: OnChainAgentTraceProps) => {
   const trace = buildDeliveryTrace(candidate)
-  const reviewExecutionMetric = '95.2%'
+  const reviewExecutionMetric = getExecutionSummary(candidate.id).accuracy
   const [traceClockMs, setTraceClockMs] = useState(0)
   const [reviewTraceStartedAt, setReviewTraceStartedAt] = useState<number | null>(null)
   const committedReviewRef = useRef<string | null>(null)
@@ -507,15 +509,17 @@ const OnChainAgentTrace = ({
       setTraceClockMs(0)
       setReviewTraceStartedAt(0)
       committedReviewRef.current = candidate.id
-      if (trace.isOnChain)
+      if (trace.isOnChain) {
+        onTracePaymentCommit?.(candidate.id)
         onTraceReviewCommit?.(candidate.id)
+      }
       return
     }
 
     setTraceClockMs(0)
     setReviewTraceStartedAt(null)
     committedReviewRef.current = null
-  }, [completedMode, candidate.id, trace.isOnChain, trace.stages.length, onTraceReviewCommit])
+  }, [completedMode, candidate.id, trace.isOnChain, trace.stages.length, onTracePaymentCommit, onTraceReviewCommit])
 
   useEffect(() => {
     if (completedMode)

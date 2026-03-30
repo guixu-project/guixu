@@ -101,6 +101,21 @@ const preferredCandidate = (sources: PlanningSourceId[]) => {
   return { id: 'kaggle-construction' as CandidateId, name: 'Kaggle_Construction' }
 }
 
+export const getExecutionSummary = (candidateId: CandidateId) => {
+  switch (candidateId) {
+    case 'safehat-premium':
+      return { accuracy: '96.4%', loss: '0.02' }
+    case 'warehouse-ppe':
+      return { accuracy: '93.1%', loss: '0.05' }
+    case 'bt-safetyframes':
+      return { accuracy: '90.4%', loss: '0.07' }
+    case 'roboflow-hardhat':
+      return { accuracy: '88.9%', loss: '0.09' }
+    case 'kaggle-construction':
+      return { accuracy: '89.7%', loss: '0.08' }
+  }
+}
+
 export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[], presetIndex = 0) => {
   const activeSources = sources.length ? sources : defaultSources
   const candidate = preferredCandidate(activeSources)
@@ -109,6 +124,11 @@ export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]
         taskDescription: 'Build an image classifier to detect the presence of the user\'s cat in photos captured by a house monitor.',
         keywords: ['cat', 'image'],
         budget: '$0',
+        totalResults: 47,
+        candidateCount: 10,
+        valuationSelected: 'HF_NightVision_Cats',
+        valuationAction: '3-dataset bundle',
+        valuationDetail: 'budget: Free',
         codeFiles: [
           { path: 'cat-classification/train_cat.py', file: 'train_cat.py', addedLines: 93 },
           { path: 'cat-classification/prepare.py', file: 'prepare.py', addedLines: 304 },
@@ -118,6 +138,11 @@ export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]
         taskDescription: 'Train an image classifier to determine whether workers in construction site images are wearing safety helmets correctly.',
         keywords: ['safety helmet', 'worker'],
         budget: '$2.00',
+        totalResults: 22,
+        candidateCount: 10,
+        valuationSelected: 'SafeHat_Premium',
+        valuationAction: '2-dataset bundle',
+        valuationDetail: 'budget: $1.10',
         codeFiles: [
           { path: 'safetyhelmet-classification/train_helmet.py', file: 'train_helmet.py', addedLines: 118 },
           { path: 'safetyhelmet-classification/prepare.py', file: 'prepare.py', addedLines: 348 },
@@ -125,8 +150,8 @@ export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]
         ],
       }
   const hasGuixuHub = activeSources.includes('guixu-hub')
-  const totalResults = 25
-  const candidateCount = 5
+  const { totalResults, candidateCount } = preset
+  const executionSummary = getExecutionSummary(candidate.id)
 
   const nodes: WorkflowNode[] = [
     {
@@ -174,9 +199,9 @@ export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]
       statusText: { running: 'valuating', done: 'selected' },
       content: {
         kind: 'valuation',
-        selected: candidate.name,
-        action: hasGuixuHub ? 'purchase path prepared' : 'download prepared',
-        detail: hasGuixuHub ? 'valuation uses code fit + market memory' : 'valuation uses code fit + public-source signals',
+        selected: preset.valuationSelected,
+        action: preset.valuationAction,
+        detail: preset.valuationDetail,
       },
     },
     {
@@ -209,9 +234,9 @@ export const buildPlanningWorkflow = (query: string, sources: PlanningSourceId[]
       statusText: { running: 'training', done: 'completed' },
       content: {
         kind: 'execution',
-        stage: 'epoch 14/30',
-        accuracy: candidate.id === 'safehat-premium' ? '95.2%' : candidate.id === 'warehouse-ppe' ? '93.1%' : '89.7%',
-        loss: candidate.id === 'safehat-premium' ? '0.03' : candidate.id === 'warehouse-ppe' ? '0.05' : '0.08',
+        stage: 'epoch 20/20',
+        accuracy: executionSummary.accuracy,
+        loss: executionSummary.loss,
       },
     },
   ]
@@ -263,8 +288,8 @@ export const candidates: Record<CandidateId, Candidate> = {
     id: 'safehat-premium',
     name: 'SafeHat_Premium',
     source: 'decentralized',
-    cost: '$10',
-    meta: 'decentralized · $10 · strong labels',
+    cost: '$1.10',
+    meta: 'decentralized · $1.10 · strong labels',
     score: 92,
     roi: 'ROI: +12% expected mAP lift',
     confidence: 'recommended',
@@ -289,7 +314,7 @@ export const candidates: Record<CandidateId, Candidate> = {
       'Generate training code ... done',
       'Bind shortlisted dataset schema ... done',
       'Run valuation model ... SafeHat_Premium selected',
-      'Start training job ... epoch 14/30  mAP=0.81',
+      'Start training job ... epoch 20/20  mAP=0.81',
     ],
     steps: [
       { label: 'Valuation input binding', status: 'done' },
@@ -502,7 +527,7 @@ export const candidates: Record<CandidateId, Candidate> = {
 }
 
 export const marketRows = [
-  { seller: 'did:example:123', cid: 'bafybe...', dataset: 'SafeHat_Premium', price: '$10', rating: '4.8 (32)' },
+  { seller: 'did:example:123', cid: 'bafybe...', dataset: 'SafeHat_Premium', price: '$1.10', rating: '4.8 (32)' },
   { seller: 'did:example:723', cid: 'bafyab...', dataset: 'Warehouse_PPE_Set', price: '$7', rating: '4.3 (18)' },
   { seller: 'did:example:552', cid: 'bafybq...', dataset: 'Construction_Images_v2', price: '$5', rating: '4.1 (20)' },
   { seller: 'did:example:884', cid: 'bafycc...', dataset: 'HelmetAndVest', price: '$6', rating: '4.5 (11)' },

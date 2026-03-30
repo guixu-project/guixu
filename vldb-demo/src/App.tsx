@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import LedgerPanel from './components/LedgerPanel'
+import LedgerPanel, { type HistoryRow } from './components/LedgerPanel'
 import PlanningPanel from './components/PlanningPanel'
 import ValuationPanel from './components/ValuationPanel'
-import type { CandidateId, MarketReview } from './data'
+import { candidates, type CandidateId, type MarketReview } from './data'
 import { idlePlanningRuntimeState, type PlanningRuntimeState } from './demoTimeline'
 
 const demoUiMode = true
@@ -34,10 +34,36 @@ const completedPlanningRuntimeState: PlanningRuntimeState = {
 const App = () => {
   const [selectedId, setSelectedId] = useState<CandidateId>('safehat-premium')
   const [activeMarketDatasetId, setActiveMarketDatasetId] = useState<string | null>(null)
+  const [sessionHistoryRowsByDatasetId, setSessionHistoryRowsByDatasetId] = useState<Record<string, HistoryRow>>({})
   const [sessionReviewsByDatasetId, setSessionReviewsByDatasetId] = useState<Record<string, MarketReview>>({})
   const [planningRuntime, setPlanningRuntime] = useState<PlanningRuntimeState>(
     completedMode ? completedPlanningRuntimeState : idlePlanningRuntimeState,
   )
+
+  const handleTracePaymentCommit = (candidateId: CandidateId) => {
+    if (!activeMarketDatasetId)
+      return
+
+    setSessionHistoryRowsByDatasetId((prev) => {
+      if (prev[activeMarketDatasetId])
+        return prev
+
+      return {
+        ...prev,
+        [activeMarketDatasetId]: {
+          time: 'Mar 29, 19:11',
+          timeTitle: '2026 Mar 29 19:11:00',
+          eventType: 'PURCHASE',
+          eventTone: 'purchased',
+          buyer: '0x72bc...881f',
+          buyerTitle: '0x72bc4e34c7f08e2f4bb1a413d9c8a3bfa2fd881f',
+          value: candidates[candidateId].cost === 'Free' ? '0 USDC' : '1.10 USDC',
+          txHash: '0xc19f8d8a7b31e4cf20c5ad9174ef8a33b6d41a8c0f72b9de55a3c18f9b27d8ea',
+          txShort: '0xc19f...d8ea',
+        },
+      }
+    })
+  }
 
   const handleTraceReviewCommit = (_candidateId: CandidateId) => {
     if (!activeMarketDatasetId)
@@ -52,7 +78,7 @@ const App = () => {
         [activeMarketDatasetId]: {
           id: `session-review-${activeMarketDatasetId}`,
           reviewer_address: '0x72bc4e34c7f08e2f4bb1a413d9c8a3bfa2fd881f',
-          content: 'Strong task fit with stable gain after execution. Reliable candidate for future agent runs.',
+          content: 'Strong task fit with stable gain after execution on SafeHat_Premium.',
           source: 'on-chain',
           tx_hash: null,
           created_at: new Date().toISOString(),
@@ -72,6 +98,7 @@ const App = () => {
         <ValuationPanel
           selectedId={selectedId}
           onSelectCandidate={setSelectedId}
+          onTracePaymentCommit={handleTracePaymentCommit}
           onTraceReviewCommit={handleTraceReviewCommit}
           planningRuntime={planningRuntime}
           completedMode={completedMode}
@@ -80,10 +107,9 @@ const App = () => {
 
       <LedgerPanel
         selectedCandidateId={selectedId}
+        sessionHistoryRowsByDatasetId={sessionHistoryRowsByDatasetId}
         sessionReviewsByDatasetId={sessionReviewsByDatasetId}
         onActiveDatasetChange={setActiveMarketDatasetId}
-        preferredDatasetTitle={demoUiMode ? 'Design Paper' : undefined}
-        disableCandidateAutoMatch={demoUiMode}
       />
     </div>
   )

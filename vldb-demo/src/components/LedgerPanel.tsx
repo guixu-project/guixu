@@ -63,7 +63,7 @@ interface ContractHistoryResponse {
   events: ContractHistoryEvent[]
 }
 
-interface HistoryRow {
+export interface HistoryRow {
   time: string
   timeTitle: string
   eventType: string
@@ -223,6 +223,52 @@ function normalizeHistoryRows(payload: ContractHistoryResponse | null): HistoryR
 
 const normalizeLookup = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '')
 
+const datasetDisplayPriority = (dataset: Pick<HubDataset, 'id' | 'title'>) => {
+  const keys = [dataset.id, dataset.title].map(normalizeLookup)
+
+  if (keys.some(key => key.includes('coolavatar') || key.includes('coolavator') || key.includes('safehatpremium')))
+    return 0
+  if (keys.some(key => key.includes('designpaper')))
+    return 1
+
+  return 10
+}
+
+const isCoolAvatarDataset = (dataset: Pick<HubDataset, 'id' | 'title'>) => {
+  const keys = [dataset.id, dataset.title].map(normalizeLookup)
+  return keys.some(key => key.includes('coolavatar') || key.includes('coolavator'))
+}
+
+const normalizeHubDatasetForDemo = (dataset: HubDataset): HubDataset => {
+  if (!isCoolAvatarDataset(dataset))
+    return dataset
+
+  return {
+    ...dataset,
+    title: 'SafeHat_Premium',
+    description: 'Task-fit construction helmet detection dataset with strong labels and on-chain trade memory.',
+    price: {
+      amount: 1.1,
+      currency: 'USDC',
+      label: '$1.10',
+      is_free: false,
+    },
+    tags: dataset.tags.length ? dataset.tags : ['helmet', 'construction', 'bbox'],
+  }
+}
+
+const sortHubDatasets = (datasets: HubDataset[]) =>
+  datasets
+    .map((dataset, index) => ({ dataset, index }))
+    .sort((left, right) => {
+      const priorityDiff = datasetDisplayPriority(left.dataset) - datasetDisplayPriority(right.dataset)
+      if (priorityDiff !== 0)
+        return priorityDiff
+
+      return left.index - right.index
+    })
+    .map(entry => entry.dataset)
+
 const datasetMatchesCandidate = (dataset: HubDataset, candidateId: CandidateId) => {
   const candidateKeys = [candidateId, candidates[candidateId].name].map(normalizeLookup)
   const datasetKeys = [dataset.id, dataset.title].map(normalizeLookup)
@@ -243,12 +289,14 @@ const datasetMatchesPreferredTitle = (dataset: HubDataset, preferredTitle: strin
 
 const LedgerPanel = ({
   selectedCandidateId,
+  sessionHistoryRowsByDatasetId,
   sessionReviewsByDatasetId,
   onActiveDatasetChange,
   preferredDatasetTitle,
   disableCandidateAutoMatch = false,
 }: {
   selectedCandidateId: CandidateId
+  sessionHistoryRowsByDatasetId: Record<string, HistoryRow>
   sessionReviewsByDatasetId: Record<string, MarketReview>
   onActiveDatasetChange?: (datasetId: string | null) => void
   preferredDatasetTitle?: string
@@ -277,7 +325,10 @@ const LedgerPanel = ({
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json() as Promise<HubDataset[]>
       })
-      .then(data => { if (!cancelled) setDatasets(data) })
+      .then(data => {
+        if (!cancelled)
+          setDatasets(sortHubDatasets(data.map(normalizeHubDatasetForDemo)))
+      })
       .catch(err => { if (!cancelled) setError(err.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -481,6 +532,13 @@ const LedgerPanel = ({
   }, [activeDatasetId])
 
   const sessionReview = activeDatasetId ? sessionReviewsByDatasetId[activeDatasetId] ?? null : null
+  const sessionHistoryRow = activeDatasetId ? sessionHistoryRowsByDatasetId[activeDatasetId] ?? null : null
+  const historyRowsToDisplay = useMemo(() => {
+    if (!sessionHistoryRow)
+      return historyRows
+
+    return [sessionHistoryRow, ...historyRows.filter(row => row.txHash !== sessionHistoryRow.txHash)]
+  }, [historyRows, sessionHistoryRow])
 
   const displayReviews = useMemo(() => {
     if (!sessionReview)
@@ -490,7 +548,7 @@ const LedgerPanel = ({
     if (baseReviews.length === 0)
       return [sessionReview]
 
-    return [baseReviews[0], sessionReview, ...baseReviews.slice(1)]
+    return [...baseReviews, sessionReview]
   }, [sessionReview, reviews])
 
   const toggleSeller = (datasetId: string) => {
@@ -602,10 +660,10 @@ const LedgerPanel = ({
                 {!historyLoading && !historyError && activeDataset && !hasOnChainContract(activeDataset.contract_address) && (
                   <tr><td colSpan={5} style={{ textAlign: 'center', opacity: 0.5 }}>This dataset does not have an on-chain contract.</td></tr>
                 )}
-                {!historyLoading && !historyError && hasOnChainContract(activeDataset?.contract_address) && historyRows.length === 0 && (
+                {!historyLoading && !historyError && hasOnChainContract(activeDataset?.contract_address) && historyRowsToDisplay.length === 0 && (
                   <tr><td colSpan={5} style={{ textAlign: 'center', opacity: 0.5 }}>No contract events recorded yet.</td></tr>
                 )}
-                {historyRows.map((row, index) => (
+                {historyRowsToDisplay.map((row, index) => (
                   <tr
                     key={`${row.txHash}-${row.eventType}`}
                     className={`interactive-row${index === activeHistoryIndex ? ' highlight-row' : ''}`}
@@ -651,6 +709,11 @@ const LedgerPanel = ({
             )}
             {displayReviews.map((review: MarketReview, index: number) => {
               const avatarSrc = index < avatarImages.length ? avatarImages[index] : null
+              const reviewMetaText = review.id.startsWith('session-review-')
+                ? `User · ${formatTimeAgo(review.created_at)}`
+                : review.source === 'on-chain'
+                  ? 'On-chain memo'
+                  : `User · ${formatTimeAgo(review.created_at)}`
               return (
               <article key={review.id} className={`review-card${index === 0 ? ' highlighted' : ''}`}>
                 <div className={`review-avatar${review.source === 'on-chain' ? ' agent' : review.source === 'user' ? ' human' : ''}`}>
@@ -664,7 +727,7 @@ const LedgerPanel = ({
                   <h4>{maskAddress(review.reviewer_address)}</h4>
                   <p className="review-text">{review.content}</p>
                 </div>
-                <div className="stars">{review.source === 'on-chain' ? 'On-chain memo' : `User · ${formatTimeAgo(review.created_at)}`}</div>
+                <div className="stars">{reviewMetaText}</div>
               </article>
             )
             })}
