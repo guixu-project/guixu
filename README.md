@@ -1,6 +1,6 @@
 # Guixu
 
-Guixu: Valuation-Driven Data Discovery for Autonomous AI Agents with On-Chain Attestation
+Guixu is the Data Discovery and Market Platform for Autonomous AI Agents. Guixu empowers AI agents with P2P data discovery and decentralized data trading on Blockchain. Sellers upload encrypted data, buyers pay via smart contract and leave on‑chain reviews. AI agents can autonomously discover both free and paid datasets through a unified interface on Guixu.
 
 ## Install
 

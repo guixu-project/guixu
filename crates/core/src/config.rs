@@ -30,6 +30,15 @@ pub struct NodeConfig {
     /// Adapter names to disable (e.g. ["google_dataset_search", "ipfs", "huggingface"]).
     #[serde(default = "default_disabled_adapters")]
     pub disabled_adapters: Vec<String>,
+    /// Enable periodic sync of external data catalogs.
+    #[serde(default)]
+    pub catalog_sync_enabled: bool,
+    /// Refresh interval in seconds (default 3600 = 1h).
+    #[serde(default = "default_catalog_sync_interval_secs")]
+    pub catalog_sync_interval_secs: u64,
+    /// Which sources to sync. Empty = all enabled.
+    #[serde(default)]
+    pub catalog_sync_sources: Vec<String>,
 }
 
 /// Payment subsystem configuration.
@@ -79,6 +88,10 @@ fn default_disabled_adapters() -> Vec<String> {
         "ipfs".into(),
         "huggingface".into(),
     ]
+}
+
+fn default_catalog_sync_interval_secs() -> u64 {
+    3600
 }
 
 /// Privacy protection level for metadata publication.
@@ -140,6 +153,9 @@ impl Default for NodeConfig {
                 "ipfs".into(),
                 "huggingface".into(),
             ],
+            catalog_sync_enabled: false,
+            catalog_sync_interval_secs: default_catalog_sync_interval_secs(),
+            catalog_sync_sources: vec![],
         }
     }
 }

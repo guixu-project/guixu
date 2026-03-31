@@ -55,7 +55,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_search".into(),
-            description: "Search datasets across Kaggle, HuggingFace, IPFS, BitTorrent, PostgreSQL, DuckDB and P2P network".into(),
+            description: "Search datasets across DefiLlama, RWA.xyz, Kaggle, HuggingFace, IPFS, BitTorrent, and P2P network. Supports free open data discovery.".into(),
             annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
@@ -73,7 +73,21 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                             "max_price": { "type": "number" },
                             "license": { "type": "string" },
                             "min_quality": { "type": "number" },
-                            "source": { "type": "string", "enum": ["kaggle", "huggingface", "ipfs", "bittorrent", "postgresql", "duckdb", "p2p"] }
+                            "source": {
+                                "type": "string",
+                                "enum": [
+                                    "defillama", "rwa_xyz", "thegraph",
+                                    "guixuhub", "kaggle", "huggingface",
+                                    "ipfs", "bittorrent", "postgresql",
+                                    "duckdb", "googledatasetsearch",
+                                    "datacitecommons", "p2p"
+                                ]
+                            },
+                            "chain": { "type": "string", "description": "Filter by blockchain (e.g. ethereum, polygon)" },
+                            "protocol": { "type": "string", "description": "Filter by protocol (e.g. circle, aave)" },
+                            "asset": { "type": "string", "description": "Filter by token/asset symbol (e.g. USDC)" },
+                            "category": { "type": "string", "description": "Filter by domain (stablecoin, rwa, defi, bridge, yield)" },
+                            "free_only": { "type": "boolean", "description": "Only return free/open datasets" }
                         }
                     },
                     "limit": { "type": "integer", "default": 10 }

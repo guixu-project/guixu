@@ -28,6 +28,11 @@ pub struct SearchFilters {
     pub license: Option<String>,
     pub min_quality: Option<f64>,
     pub source: Option<String>,
+    pub chain: Option<String>,
+    pub protocol: Option<String>,
+    pub asset: Option<String>,
+    pub category: Option<String>,
+    pub free_only: Option<bool>,
 }
 
 /// Callback to fetch community signal for a dataset CID.
@@ -178,7 +183,7 @@ impl SearchEngine {
             });
         }
 
-        apply_intent_hard_filters(&mut all, profile, &local_metadata_by_cid);
+        apply_intent_hard_filters(&mut all, profile, &local_metadata_by_cid, filters);
 
         // Deduplicate by CID
         let mut seen = HashSet::new();
@@ -322,6 +327,7 @@ impl SearchEngine {
                 balance_score,
                 metadata_quality,
                 on_chain_score,
+                compute_freshness_bonus(&ranked.result),
             );
 
             candidates.push(ValuationCandidateState {
@@ -923,10 +929,32 @@ fn apply_intent_hard_filters(
     results: &mut Vec<SearchResult>,
     profile: &QueryProfile,
     _metadata_by_cid: &HashMap<&str, &DatasetMetadata>,
+    filters: &SearchFilters,
 ) {
     if let Some(required_type) = required_data_type(profile) {
         results.retain(|result| result.data_type == required_type);
     }
+    if let Some(ref chain) = filters.chain {
+        results.retain(|r| attr_matches(&r.source_attributes, "chain", chain));
+    }
+    if let Some(ref protocol) = filters.protocol {
+        results.retain(|r| attr_matches(&r.source_attributes, "protocol", protocol));
+    }
+    if let Some(ref category) = filters.category {
+        results.retain(|r| attr_matches(&r.source_attributes, "category", category));
+    }
+    if Some(true) == filters.free_only {
+        results.retain(|r| r.price.is_free());
+    }
+}
+
+fn attr_matches(attrs: &Option<serde_json::Value>, key: &str, expected: &str) -> bool {
+    attrs
+        .as_ref()
+        .and_then(|v| v.get(key))
+        .and_then(|v| v.as_str())
+        .map(|v| v.eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
 }
 
 fn required_data_type(profile: &QueryProfile) -> Option<data_core::types::DataType> {
@@ -965,21 +993,42 @@ fn strict_task_data_type(task_type: Option<&str>) -> Option<data_core::types::Da
     }
 }
 
-fn compose_coarse_score(
+pub(crate) fn compose_coarse_score(
     task_similarity: f64,
     schema_fit: f64,
     scale_score: f64,
     balance_score: f64,
     metadata_quality: f64,
     on_chain_score: f64,
+    freshness_bonus: f64,
 ) -> f64 {
-    (0.55 * task_similarity
+    (0.50 * task_similarity
         + 0.15 * schema_fit
         + 0.15 * scale_score
         + 0.10 * balance_score
         + 0.05 * metadata_quality
-        + ON_CHAIN_COARSE_ADJUST_WEIGHT * (on_chain_score - ON_CHAIN_SCORE_NEUTRAL))
+        + ON_CHAIN_COARSE_ADJUST_WEIGHT * (on_chain_score - ON_CHAIN_SCORE_NEUTRAL)
+        + 0.05 * freshness_bonus)
         .clamp(0.0, 100.0)
+}
+
+fn compute_freshness_bonus(result: &SearchResult) -> f64 {
+    let cadence = result
+        .source_attributes
+        .as_ref()
+        .and_then(|v| v.get("refresh_cadence"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if cadence.is_empty() {
+        return 0.0;
+    }
+    let age_hours = (chrono::Utc::now() - result.created_at).num_hours().max(0) as f64;
+    match cadence {
+        "daily" if age_hours < 24.0 => 100.0,
+        "daily" if age_hours < 168.0 => 70.0,
+        "weekly" if age_hours < 336.0 => 50.0,
+        _ => 0.0,
+    }
 }
 
 async fn compute_on_chain_score(result: &SearchResult) -> Result<f64> {
@@ -2154,6 +2203,7 @@ fn metadata_to_search_result(m: &DatasetMetadata) -> SearchResult {
         data_type: m.data_type,
         created_at: m.created_at,
         seller_endpoint: None,
+        source_attributes: m.source_attributes.clone(),
     }
 }
 
@@ -2195,16 +2245,18 @@ mod engine_unit_tests {
 
     #[test]
     fn coarse_score_keeps_neutral_on_chain_signal_aligned() {
-        let baseline = 0.55 * 82.0 + 0.15 * 74.0 + 0.15 * 68.0 + 0.10 * 57.0 + 0.05 * 91.0;
-        let coarse = compose_coarse_score(82.0, 74.0, 68.0, 57.0, 91.0, ON_CHAIN_SCORE_NEUTRAL);
+        let baseline = 0.50 * 82.0 + 0.15 * 74.0 + 0.15 * 68.0 + 0.10 * 57.0 + 0.05 * 91.0;
+        let coarse =
+            compose_coarse_score(82.0, 74.0, 68.0, 57.0, 91.0, ON_CHAIN_SCORE_NEUTRAL, 0.0);
         assert!((coarse - baseline).abs() < 1e-6);
     }
 
     #[test]
     fn coarse_score_applies_centered_on_chain_adjustment() {
-        let neutral = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, ON_CHAIN_SCORE_NEUTRAL);
-        let boosted = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, 90.0);
-        let penalized = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, 10.0);
+        let neutral =
+            compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, ON_CHAIN_SCORE_NEUTRAL, 0.0);
+        let boosted = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, 90.0, 0.0);
+        let penalized = compose_coarse_score(80.0, 70.0, 60.0, 50.0, 40.0, 10.0, 0.0);
 
         assert!((boosted - neutral - ON_CHAIN_COARSE_ADJUST_WEIGHT * 40.0).abs() < 1e-6);
         assert!((neutral - penalized - ON_CHAIN_COARSE_ADJUST_WEIGHT * 40.0).abs() < 1e-6);
@@ -2296,7 +2348,7 @@ mod selection_tests {
     ) -> DatasetMetadata {
         DatasetMetadata {
             cid: DatasetCid(format!("cid-{cid_suffix}")),
-            info_hash: format!("hash-{cid_suffix}"),
+            info_hash: Some(format!("hash-{cid_suffix}")),
             title: title.into(),
             description: Some(description.into()),
             tags: vec!["cat".into()],
@@ -2334,6 +2386,7 @@ mod selection_tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             verifiable_credential: None,
+            source_attributes: None,
         }
     }
 

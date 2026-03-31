@@ -223,6 +223,21 @@ async fn cmd_start() -> Result<()> {
         }
     });
 
+    // External catalog periodic sync
+    if config.catalog_sync_enabled {
+        let store_sync = store.clone();
+        let refresh_secs = config.catalog_sync_interval_secs;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(refresh_secs));
+            loop {
+                interval.tick().await;
+                if let Err(e) = sync_external_catalogs(&store_sync).await {
+                    tracing::warn!(error = %e, "catalog sync failed");
+                }
+            }
+        });
+    }
+
     // Start embedded Web UI + MCP HTTP server
     let state = Arc::new(McpServer::new(
         AppState::with_payment_config(
@@ -368,4 +383,53 @@ fn shellexpand(s: String) -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from(s)
+}
+
+async fn sync_external_catalogs(store: &MetadataStore) -> Result<()> {
+    use data_core::metadata::{DatasetMetadata, Provenance};
+    use data_core::types::{AccessMode, DataSource, SearchResult};
+    use data_search::adapters::{DefiLlamaAdapter, RwaXyzAdapter};
+
+    fn search_result_to_metadata(r: &SearchResult, _source: DataSource) -> DatasetMetadata {
+        DatasetMetadata {
+            cid: r.cid.clone(),
+            info_hash: None,
+            title: r.title.clone(),
+            description: r.description.clone(),
+            tags: r.tags.clone(),
+            data_type: r.data_type,
+            schema: r.schema.clone(),
+            stats: None,
+            video_meta: None,
+            access: AccessMode::Open,
+            price: r.price.clone(),
+            license: r.license.clone(),
+            provider: r.provider.clone(),
+            signature: String::new(),
+            provenance: Provenance::Original,
+            created_at: r.created_at,
+            updated_at: chrono::Utc::now(),
+            verifiable_credential: None,
+            source_attributes: r.source_attributes.clone(),
+        }
+    }
+
+    let defillama = DefiLlamaAdapter::default();
+    for result in defillama
+        .fetch_full_stablecoin_catalog()
+        .await
+        .unwrap_or_default()
+    {
+        let metadata = search_result_to_metadata(&result, DataSource::DefiLlama);
+        let _ = store.put(&metadata);
+    }
+
+    let rwa = RwaXyzAdapter::default();
+    for result in rwa.fetch_full_treasury_catalog().await.unwrap_or_default() {
+        let metadata = search_result_to_metadata(&result, DataSource::RwaXyz);
+        let _ = store.put(&metadata);
+    }
+
+    info!("catalog sync completed");
+    Ok(())
 }

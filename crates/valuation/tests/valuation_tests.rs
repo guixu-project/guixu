@@ -6,7 +6,7 @@ use data_core::types::*;
 fn make_metadata(title: &str, columns: &[(&str, &str)], price: f64) -> DatasetMetadata {
     DatasetMetadata {
         cid: DatasetCid(format!("cid-{title}")),
-        info_hash: String::new(),
+        info_hash: None,
         title: title.into(),
         description: Some(format!("{title} dataset")),
         tags: vec!["test".into()],
@@ -44,6 +44,7 @@ fn make_metadata(title: &str, columns: &[(&str, &str)], price: f64) -> DatasetMe
         verifiable_credential: None,
         data_type: DataType::Tabular,
         video_meta: None,
+        source_attributes: None,
     }
 }
 

@@ -33,6 +33,23 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             .get("source")
             .and_then(|v| v.as_str())
             .map(String::from),
+        chain: filter_obj
+            .get("chain")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        protocol: filter_obj
+            .get("protocol")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        asset: filter_obj
+            .get("asset")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        category: filter_obj
+            .get("category")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        free_only: filter_obj.get("free_only").and_then(|v| v.as_bool()),
     };
 
     let local_metadata = state.store.list_all()?;
@@ -65,6 +82,40 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         )
         .await?;
 
+    // Persist external search results so downstream tools (evaluate, purchase)
+    // can look them up by CID without requiring catalog sync.
+    for ranked in &search_output.results {
+        let r = &ranked.result;
+        if state.store.get(&r.cid).ok().flatten().is_none() {
+            let metadata = data_core::metadata::DatasetMetadata {
+                cid: r.cid.clone(),
+                info_hash: None,
+                title: r.title.clone(),
+                description: r.description.clone(),
+                tags: r.tags.clone(),
+                data_type: r.data_type,
+                schema: r.schema.clone(),
+                stats: None,
+                video_meta: None,
+                access: if r.price.is_free() {
+                    data_core::types::AccessMode::Open
+                } else {
+                    data_core::types::AccessMode::Paid
+                },
+                price: r.price.clone(),
+                license: r.license.clone(),
+                provider: r.provider.clone(),
+                signature: String::new(),
+                provenance: data_core::metadata::Provenance::Original,
+                created_at: r.created_at,
+                updated_at: r.created_at,
+                verifiable_credential: None,
+                source_attributes: r.source_attributes.clone(),
+            };
+            let _ = state.store.put(&metadata);
+        }
+    }
+
     let output: Vec<serde_json::Value> = search_output
         .results
         .iter()
@@ -92,7 +143,8 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
                     "avg_relevance": format!("{:.2}", r.signal.avg_relevance),
                     "positive_rate": format!("{:.0}%", r.signal.positive_rate * 100.0),
                     "negative_rate": format!("{:.0}%", r.signal.negative_rate * 100.0),
-                }
+                },
+                "source_attributes": r.result.source_attributes,
             })
         })
         .collect();
