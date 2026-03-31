@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// This is the stable intermediate representation between
 /// natural-language input and downstream discovery logic.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QueryProfile {
     pub raw_query: String,
     pub task_type: Option<String>,
@@ -23,20 +23,6 @@ pub struct QueryProfile {
     pub data_standard: DataStandard,
     #[serde(default)]
     pub user_profile: UserProfile,
-}
-
-impl Default for QueryProfile {
-    fn default() -> Self {
-        Self {
-            raw_query: String::new(),
-            task_type: None,
-            task_description: None,
-            target_entity: None,
-            keywords: Vec::new(),
-            data_standard: DataStandard::default(),
-            user_profile: UserProfile::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -925,24 +911,7 @@ fn fallback_task_description(query: &str) -> String {
 }
 
 pub(crate) fn load_setting_env_value(key: &str) -> Option<String> {
-    let path = resolve_setting_env_path()?;
-    let contents = std::fs::read_to_string(path).ok()?;
-    contents.lines().find_map(|line| {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            return None;
-        }
-        let (name, value) = line.split_once('=')?;
-        if name.trim() != key {
-            return None;
-        }
-        let value = value.trim().trim_matches('"').trim_matches('\'').trim();
-        if value.is_empty() {
-            None
-        } else {
-            Some(value.to_string())
-        }
-    })
+    data_core::env::load_setting_env_value(key)
 }
 
 fn collect_intent_context(query: &str, include_memories: bool) -> IntentContext {
@@ -998,27 +967,6 @@ fn resolve_memory_path() -> Option<PathBuf> {
     {
         if let Some(path) = find_memory_path_from_base(&base) {
             return Some(path);
-        }
-    }
-
-    None
-}
-
-fn resolve_setting_env_path() -> Option<PathBuf> {
-    for base in [
-        std::env::current_dir().ok(),
-        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR"))),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        for ancestor in base.ancestors() {
-            for file_name in ["settings.env", "setting.env"] {
-                let candidate = ancestor.join("local").join(file_name);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
         }
     }
 

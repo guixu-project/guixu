@@ -1184,11 +1184,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             "data_type": result.get("data_type").cloned().unwrap_or(Value::Null),
             "price": result.get("price").cloned().unwrap_or(Value::Null),
             "schema": result.get("schema").cloned().unwrap_or_else(|| json!({})),
-            "evaluation_mode": if state.store.get(&dataset_cid)?.is_some() {
-                "selection_pipeline"
-            } else {
-                "selection_pipeline"
-            },
+            "evaluation_mode": "selection_pipeline",
             "coarse_score": coarse_score,
             "on_chain_score": on_chain_score,
             "raw_final_score": raw_final_score,
