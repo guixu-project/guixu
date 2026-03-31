@@ -61,7 +61,7 @@ pub async fn publish_file_with_privacy(
     let cid = DatasetCid(content_hash.clone());
 
     // 3. Compute Merkle-style info hash (SHA-256 of entire file for M1; proper piece tree later)
-    let info_hash = content_hash.clone();
+    let info_hash = Some(content_hash.clone());
 
     // 4. Infer basic schema from file extension
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -106,6 +106,7 @@ pub async fn publish_file_with_privacy(
         created_at: now,
         updated_at: now,
         verifiable_credential: None,
+        source_attributes: None,
     };
 
     // 7. Apply privacy sanitization (DP noise, column hashing, tag filtering)

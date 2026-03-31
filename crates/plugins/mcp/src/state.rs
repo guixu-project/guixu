@@ -4,7 +4,7 @@ use data_core::identity::NodeIdentity;
 use data_p2p::dht::DhtIndex;
 use data_p2p::network::NetworkHandle;
 use data_p2p::torrent::TorrentEngine;
-use data_search::adapters::default_adapters;
+use data_search::adapters::default_adapters_filtered;
 use data_search::engine::SearchEngine;
 use data_search::intent::IntentParser;
 use data_search::vector_index::VectorIndex;
@@ -100,7 +100,7 @@ impl AppState {
     ) -> Self {
         let vector_index = VectorIndex;
         let intent_parser = IntentParser::default();
-        let adapters = default_adapters();
+        let adapters = default_adapters_filtered(&[]);
         let search_engine = SearchEngine::new(vector_index, intent_parser, adapters);
 
         let wallet = AgentWallet::from_keyfile(&payment.wallet_key_path).unwrap_or_else(|_| {

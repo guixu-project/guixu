@@ -39,7 +39,7 @@ impl MetadataResolver for SearchResultMetadataResolver {
     async fn resolve_metadata(&self, result: &SearchResult) -> Result<Option<DatasetMetadata>> {
         Ok(Some(DatasetMetadata {
             cid: result.cid.clone(),
-            info_hash: String::new(),
+            info_hash: None,
             title: result.title.clone(),
             description: result.description.clone(),
             tags: result.tags.clone(),
@@ -60,6 +60,7 @@ impl MetadataResolver for SearchResultMetadataResolver {
             created_at: result.created_at,
             updated_at: result.created_at,
             verifiable_credential: None,
+            source_attributes: result.source_attributes.clone(),
         }))
     }
 }
@@ -370,6 +371,23 @@ fn collect_search_filters(search_args: &Value) -> (SearchFilters, usize) {
             .get("source")
             .and_then(|v| v.as_str())
             .map(String::from),
+        chain: filter_obj
+            .get("chain")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        protocol: filter_obj
+            .get("protocol")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        asset: filter_obj
+            .get("asset")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        category: filter_obj
+            .get("category")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        free_only: filter_obj.get("free_only").and_then(|v| v.as_bool()),
     };
     let limit = search_args
         .get("limit")
@@ -1415,6 +1433,7 @@ mod tests {
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
                 seller_endpoint: None,
+                source_attributes: None,
             }
         }
 
@@ -1493,6 +1512,7 @@ mod tests {
                 data_type: DataType::Tabular,
                 created_at: Utc::now(),
                 seller_endpoint: None,
+                source_attributes: None,
             },
             coarse_score: 80.0,
             final_score: 80.0,

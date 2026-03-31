@@ -9,7 +9,8 @@ use crate::types::*;
 pub struct DatasetMetadata {
     // --- Identity ---
     pub cid: DatasetCid,
-    pub info_hash: String, // BT v2 info hash hex
+    #[serde(default)]
+    pub info_hash: Option<String>, // BT v2 info hash hex (None for external catalog sources)
 
     // --- Descriptive ---
     pub title: String,
@@ -34,6 +35,10 @@ pub struct DatasetMetadata {
 
     // --- Optional VC ---
     pub verifiable_credential: Option<serde_json::Value>,
+
+    /// Adapter-specific domain attributes (mirrors SearchResult.source_attributes)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_attributes: Option<serde_json::Value>,
 }
 
 /// How this dataset was produced.

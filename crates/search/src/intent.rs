@@ -1108,14 +1108,60 @@ fn extract_named_entities(query: &str) -> Vec<String> {
     dedupe_strings(entities)
 }
 
+const KNOWN_CHAINS: &[&str] = &[
+    "ethereum",
+    "polygon",
+    "arbitrum",
+    "optimism",
+    "base",
+    "avalanche",
+    "bsc",
+    "solana",
+    "tron",
+];
+const KNOWN_PROTOCOLS: &[&str] = &[
+    "aave",
+    "uniswap",
+    "compound",
+    "makerdao",
+    "lido",
+    "circle",
+    "tether",
+    "ondo",
+    "centrifuge",
+];
+const KNOWN_DOMAIN_CATEGORIES: &[&str] = &[
+    "stablecoin",
+    "rwa",
+    "defi",
+    "bridge",
+    "yield",
+    "lending",
+    "dex",
+    "treasury",
+    "payments",
+];
+
+fn is_domain_keyword(token: &str) -> bool {
+    KNOWN_CHAINS.contains(&token)
+        || KNOWN_PROTOCOLS.contains(&token)
+        || KNOWN_DOMAIN_CATEGORIES.contains(&token)
+}
+
 fn extract_salient_terms(query: &str) -> Vec<String> {
     dedupe_strings(
         tokenize_for_search(query)
             .into_iter()
             .filter(|token| token.len() > 1)
-            .filter(|token| !is_stop_word(token))
+            .filter(|token| is_domain_keyword(token) || !is_stop_word(token))
             .collect(),
     )
+}
+
+/// Test-only accessor for `extract_salient_terms`.
+#[cfg(test)]
+pub fn extract_salient_terms_for_test(query: &str) -> Vec<String> {
+    extract_salient_terms(query)
 }
 
 fn format_memory_context(related_memories: &[String]) -> String {

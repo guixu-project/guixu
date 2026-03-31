@@ -165,6 +165,9 @@ pub struct SearchResult {
     /// x402-compatible payment endpoint (e.g. from Guixu Hub).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seller_endpoint: Option<String>,
+    /// Adapter-specific attributes (chain, protocol, category, etc.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_attributes: Option<serde_json::Value>,
 }
 
 /// Where a dataset was discovered.
@@ -182,6 +185,9 @@ pub enum DataSource {
     GoogleDatasetSearch,
     DataCiteCommons,
     GuixuHub,
+    DefiLlama,
+    RwaXyz,
+    TheGraph,
 }
 
 /// Payment protocol used for a transaction.

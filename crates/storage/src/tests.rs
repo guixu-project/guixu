@@ -18,7 +18,7 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 fn make_metadata(cid: &str) -> DatasetMetadata {
     DatasetMetadata {
         cid: DatasetCid(cid.into()),
-        info_hash: String::new(),
+        info_hash: None,
         title: format!("Dataset {cid}"),
         description: Some("test".into()),
         tags: vec!["test".into()],
@@ -43,6 +43,7 @@ fn make_metadata(cid: &str) -> DatasetMetadata {
         created_at: Utc::now(),
         updated_at: Utc::now(),
         verifiable_credential: None,
+        source_attributes: None,
     }
 }
 
@@ -146,4 +147,19 @@ fn feedback_compute_signal_mixed() {
     assert_eq!(signal.total_reviews, 2);
     assert!((signal.positive_rate - 0.5).abs() < f64::EPSILON);
     assert!((signal.negative_rate - 0.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn sync_state_put_and_get() {
+    let dir = temp_dir("sync-state");
+    let store = MetadataStore::open(&dir).unwrap();
+
+    assert!(store.get_sync_state("defillama").unwrap().is_none());
+    store.put_sync_state("defillama", 1700000000).unwrap();
+    assert_eq!(store.get_sync_state("defillama").unwrap(), Some(1700000000));
+    // Overwrite
+    store.put_sync_state("defillama", 1700001000).unwrap();
+    assert_eq!(store.get_sync_state("defillama").unwrap(), Some(1700001000));
+    // Different source
+    assert!(store.get_sync_state("rwa_xyz").unwrap().is_none());
 }

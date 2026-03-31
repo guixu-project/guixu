@@ -26,7 +26,7 @@ pub fn verify(metadata: &DatasetMetadata, data: Option<&[u8]>) -> Result<Verific
     let integrity_valid = match data {
         Some(bytes) => {
             let hash = hex::encode(Sha256::digest(bytes));
-            hash == metadata.info_hash
+            hash == metadata.info_hash.as_deref().unwrap_or_default()
         }
         None => false,
     };

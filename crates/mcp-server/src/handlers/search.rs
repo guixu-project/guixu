@@ -33,6 +33,23 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             .get("source")
             .and_then(|v| v.as_str())
             .map(String::from),
+        chain: filter_obj
+            .get("chain")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        protocol: filter_obj
+            .get("protocol")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        asset: filter_obj
+            .get("asset")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        category: filter_obj
+            .get("category")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        free_only: filter_obj.get("free_only").and_then(|v| v.as_bool()),
     };
 
     let local_metadata = state.store.list_all()?;
@@ -92,7 +109,8 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
                     "avg_relevance": format!("{:.2}", r.signal.avg_relevance),
                     "positive_rate": format!("{:.0}%", r.signal.positive_rate * 100.0),
                     "negative_rate": format!("{:.0}%", r.signal.negative_rate * 100.0),
-                }
+                },
+                "source_attributes": r.result.source_attributes,
             })
         })
         .collect();

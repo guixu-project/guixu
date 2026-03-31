@@ -89,6 +89,7 @@ impl KaggleAdapter {
                     data_type: infer_data_type_from_title(title),
                     created_at: created,
                     seller_endpoint: None,
+                    source_attributes: None,
                 })
             })
             .collect()
@@ -224,6 +225,7 @@ impl HuggingFaceAdapter {
                     data_type: infer_data_type_from_title(id),
                     created_at: created,
                     seller_endpoint: None,
+                    source_attributes: None,
                 })
             })
             .collect()
@@ -376,6 +378,7 @@ impl ExternalAdapter for IpfsAdapter {
                     data_type: infer_data_type_from_title(title),
                     created_at: created,
                     seller_endpoint: None,
+                    source_attributes: None,
                 })
             })
             .collect())
@@ -490,6 +493,7 @@ impl BitTorrentAdapter {
             data_type: infer_data_type_from_title(name),
             created_at: created,
             seller_endpoint: None,
+            source_attributes: None,
         })
     }
 
@@ -550,6 +554,7 @@ impl BitTorrentAdapter {
             data_type: infer_data_type_from_title(title),
             created_at: created,
             seller_endpoint: None,
+            source_attributes: None,
         })
     }
 
@@ -602,6 +607,7 @@ impl BitTorrentAdapter {
                     data_type: infer_data_type_from_title(title),
                     created_at: chrono::Utc::now(),
                     seller_endpoint: None,
+                    source_attributes: None,
                 })
             })
             .collect())
@@ -834,6 +840,7 @@ impl GoogleDatasetSearchAdapter {
                     data_type: infer_data_type_from_title(title),
                     created_at: chrono::Utc::now(),
                     seller_endpoint: None,
+                    source_attributes: None,
                 })
             })
             .collect()
@@ -974,6 +981,7 @@ impl ExternalAdapter for DataCiteCommonsAdapter {
                     data_type: infer_data_type_from_title(title),
                     created_at: created,
                     seller_endpoint: None,
+                    source_attributes: None,
                 })
             })
             .collect())
@@ -1168,6 +1176,7 @@ impl ExternalAdapter for GuixuHubAdapter {
                             format!("{base}{ep}")
                         }
                     }),
+                    source_attributes: None,
                 }
             })
             .collect())
@@ -1187,6 +1196,8 @@ pub fn default_adapters_filtered(disabled: &[String]) -> Vec<Box<dyn ExternalAda
         Box::new(LocalFileAdapter::default()),
         Box::new(GoogleDatasetSearchAdapter::default()),
         Box::new(DataCiteCommonsAdapter::default()),
+        Box::new(DefiLlamaAdapter::default()),
+        Box::new(RwaXyzAdapter::default()),
     ];
     if disabled.is_empty() {
         return all;
@@ -1318,6 +1329,7 @@ impl LocalFileAdapter {
             data_type: DataType::from_ext(ext),
             created_at: chrono::Utc::now(),
             seller_endpoint: None,
+            source_attributes: None,
         })
     }
 
@@ -1467,4 +1479,495 @@ fn parse_data_type(value: &str) -> Option<DataType> {
         "text" => Some(DataType::Text),
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// DefiLlama — free open DeFi data (stablecoins, bridges, protocols)
+// ---------------------------------------------------------------------------
+
+const DEFILLAMA_STABLECOINS_URL: &str =
+    "https://stablecoins.llama.fi/stablecoins?includePrices=true";
+const DEFILLAMA_BRIDGES_URL: &str = "https://api.llama.fi/v2/bridges";
+const DEFILLAMA_PROTOCOLS_URL: &str = "https://api.llama.fi/protocols";
+
+pub struct DefiLlamaAdapter {
+    client: reqwest::Client,
+}
+
+impl Default for DefiLlamaAdapter {
+    fn default() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for DefiLlamaAdapter {
+    fn name(&self) -> &str {
+        "defillama"
+    }
+    fn source_type(&self) -> DataSource {
+        DataSource::DefiLlama
+    }
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let q = query.to_lowercase();
+        let mut results = Vec::new();
+
+        if contains_any_adapter(&q, &["stablecoin", "usdc", "usdt", "dai", "stable", "peg"]) {
+            results.extend(self.search_stablecoins(&q, limit).await.unwrap_or_default());
+        }
+        if contains_any_adapter(&q, &["bridge", "cross-chain", "crosschain"]) {
+            results.extend(self.search_bridges(&q, limit).await.unwrap_or_default());
+        }
+        if results.is_empty() {
+            results.extend(self.search_protocols(&q, limit).await.unwrap_or_default());
+        }
+
+        results.truncate(limit);
+        Ok(results)
+    }
+}
+
+impl DefiLlamaAdapter {
+    async fn search_stablecoins(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let resp: serde_json::Value = self
+            .client
+            .get(DEFILLAMA_STABLECOINS_URL)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let empty = vec![];
+        let assets = resp
+            .get("peggedAssets")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+
+        Ok(assets
+            .iter()
+            .filter(|a| {
+                let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let symbol = a.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+                name.to_lowercase().contains(query)
+                    || symbol.to_lowercase().contains(query)
+                    || query.contains(&symbol.to_lowercase())
+            })
+            .take(limit)
+            .filter_map(|asset| self.stablecoin_to_result(asset))
+            .collect())
+    }
+
+    fn stablecoin_to_result(&self, asset: &serde_json::Value) -> Option<SearchResult> {
+        let name = asset.get("name")?.as_str()?;
+        let symbol = asset.get("symbol")?.as_str()?;
+        let id = asset.get("id")?.as_u64()?;
+        let chains: Vec<String> = asset
+            .get("chains")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|c| c.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let peg_type = asset
+            .get("pegType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        Some(SearchResult {
+            cid: DatasetCid(format!("defillama:stablecoin:{}", symbol.to_lowercase())),
+            title: format!("{name} ({symbol}) — Stablecoin Market Data"),
+            description: Some(format!(
+                "Market cap, circulating supply, and chain distribution for {name}. \
+                 Peg type: {peg_type}. Available on {} chains.",
+                chains.len()
+            )),
+            tags: {
+                let mut t = vec![
+                    "stablecoin".into(),
+                    symbol.to_lowercase(),
+                    peg_type.into(),
+                    "defi".into(),
+                    "free".into(),
+                ];
+                for c in &chains {
+                    t.push(c.to_lowercase());
+                }
+                t
+            },
+            schema: DatasetSchema {
+                columns: vec![],
+                row_count: 0,
+                size_bytes: 0,
+            },
+            quality: None,
+            price: Price::free(),
+            license: License {
+                spdx_id: "open-data".into(),
+                commercial_use: true,
+                derivative_allowed: true,
+            },
+            provider: Did("source:defillama".into()),
+            source: DataSource::DefiLlama,
+            market: None,
+            data_type: DataType::Tabular,
+            created_at: chrono::Utc::now(),
+            seller_endpoint: None,
+            source_attributes: Some(serde_json::json!({
+                "chain": chains.first().unwrap_or(&"multi-chain".to_string()),
+                "chains": chains,
+                "protocol": symbol.to_lowercase(),
+                "token_symbols": [symbol],
+                "category": "stablecoin",
+                "peg_type": peg_type,
+                "refresh_cadence": "daily",
+                "origin_url": format!("https://defillama.com/stablecoin/{name}"),
+                "api_url": format!("https://stablecoins.llama.fi/stablecoin/{id}"),
+                "is_open_data": true,
+                "defillama_id": id,
+            })),
+        })
+    }
+
+    async fn search_bridges(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let resp: serde_json::Value = self
+            .client
+            .get(DEFILLAMA_BRIDGES_URL)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let empty = vec![];
+        let bridges = resp
+            .get("bridges")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+
+        Ok(bridges
+            .iter()
+            .filter(|b| {
+                let name = b
+                    .get("displayName")
+                    .or_else(|| b.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                name.to_lowercase().contains(query) || query.contains("bridge")
+            })
+            .take(limit)
+            .filter_map(|bridge| {
+                let name = bridge
+                    .get("displayName")
+                    .or_else(|| bridge.get("name"))?
+                    .as_str()?;
+                let id = bridge.get("id")?.as_u64()?;
+                let chains: Vec<String> = bridge
+                    .get("chains")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|c| c.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                Some(SearchResult {
+                    cid: DatasetCid(format!("defillama:bridge:{id}")),
+                    title: format!("{name} — Bridge Volume Data"),
+                    description: Some(format!(
+                        "Cross-chain bridge volume for {name}. Covers {} chains.",
+                        chains.len()
+                    )),
+                    tags: vec![
+                        "bridge".into(),
+                        "cross-chain".into(),
+                        "defi".into(),
+                        "free".into(),
+                    ],
+                    schema: DatasetSchema {
+                        columns: vec![],
+                        row_count: 0,
+                        size_bytes: 0,
+                    },
+                    quality: None,
+                    price: Price::free(),
+                    license: License {
+                        spdx_id: "open-data".into(),
+                        commercial_use: true,
+                        derivative_allowed: true,
+                    },
+                    provider: Did("source:defillama".into()),
+                    source: DataSource::DefiLlama,
+                    market: None,
+                    data_type: DataType::Tabular,
+                    created_at: chrono::Utc::now(),
+                    seller_endpoint: None,
+                    source_attributes: Some(serde_json::json!({
+                        "chains": chains,
+                        "category": "bridge",
+                        "refresh_cadence": "daily",
+                        "origin_url": format!("https://defillama.com/bridge/{id}"),
+                        "api_url": format!("https://api.llama.fi/v2/bridge/{id}"),
+                        "is_open_data": true,
+                    })),
+                })
+            })
+            .collect())
+    }
+
+    async fn search_protocols(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let resp: Vec<serde_json::Value> = self
+            .client
+            .get(DEFILLAMA_PROTOCOLS_URL)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        Ok(resp
+            .iter()
+            .filter(|p| {
+                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let symbol = p.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+                let category = p.get("category").and_then(|v| v.as_str()).unwrap_or("");
+                name.to_lowercase().contains(query)
+                    || symbol.to_lowercase().contains(query)
+                    || category.to_lowercase().contains(query)
+            })
+            .take(limit)
+            .filter_map(|proto| {
+                let name = proto.get("name")?.as_str()?;
+                let slug = proto.get("slug")?.as_str()?;
+                let category = proto
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("defi");
+                let chains: Vec<String> = proto
+                    .get("chains")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|c| c.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                Some(SearchResult {
+                    cid: DatasetCid(format!("defillama:protocol:{slug}")),
+                    title: format!("{name} — DeFi Protocol TVL Data"),
+                    description: Some(format!("{name} TVL and metrics. Category: {category}.")),
+                    tags: vec![
+                        category.to_lowercase(),
+                        "defi".into(),
+                        "tvl".into(),
+                        "free".into(),
+                    ],
+                    schema: DatasetSchema {
+                        columns: vec![],
+                        row_count: 0,
+                        size_bytes: 0,
+                    },
+                    quality: None,
+                    price: Price::free(),
+                    license: License {
+                        spdx_id: "open-data".into(),
+                        commercial_use: true,
+                        derivative_allowed: true,
+                    },
+                    provider: Did("source:defillama".into()),
+                    source: DataSource::DefiLlama,
+                    market: None,
+                    data_type: DataType::Tabular,
+                    created_at: chrono::Utc::now(),
+                    seller_endpoint: None,
+                    source_attributes: Some(serde_json::json!({
+                        "chains": chains,
+                        "protocol": slug,
+                        "category": category.to_lowercase(),
+                        "refresh_cadence": "daily",
+                        "origin_url": format!("https://defillama.com/protocol/{slug}"),
+                        "api_url": format!("https://api.llama.fi/protocol/{slug}"),
+                        "is_open_data": true,
+                    })),
+                })
+            })
+            .collect())
+    }
+
+    /// Pull full stablecoin catalog (for periodic sync).
+    pub async fn fetch_full_stablecoin_catalog(&self) -> Result<Vec<SearchResult>> {
+        let resp: serde_json::Value = self
+            .client
+            .get(DEFILLAMA_STABLECOINS_URL)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let empty = vec![];
+        let assets = resp
+            .get("peggedAssets")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+
+        Ok(assets
+            .iter()
+            .filter_map(|a| self.stablecoin_to_result(a))
+            .collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RWA.xyz — tokenized real-world asset data
+// ---------------------------------------------------------------------------
+
+const RWA_XYZ_TREASURIES_URL: &str = "https://api.rwa.xyz/v1/treasuries";
+
+pub struct RwaXyzAdapter {
+    client: reqwest::Client,
+    api_key: Option<String>,
+}
+
+impl Default for RwaXyzAdapter {
+    fn default() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
+            api_key: std::env::var("RWA_XYZ_API_KEY").ok(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ExternalAdapter for RwaXyzAdapter {
+    fn name(&self) -> &str {
+        "rwa_xyz"
+    }
+    fn source_type(&self) -> DataSource {
+        DataSource::RwaXyz
+    }
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let q = query.to_lowercase();
+        let mut results = self.search_treasuries(&q, limit).await.unwrap_or_default();
+        results.truncate(limit);
+        Ok(results)
+    }
+}
+
+impl RwaXyzAdapter {
+    async fn search_treasuries(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        let mut req = self.client.get(RWA_XYZ_TREASURIES_URL);
+        if let Some(ref key) = self.api_key {
+            req = req.header("x-api-key", key);
+        }
+
+        let items: Vec<serde_json::Value> = req.send().await?.error_for_status()?.json().await?;
+
+        Ok(items
+            .iter()
+            .filter(|item| {
+                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let issuer = item.get("issuer").and_then(|v| v.as_str()).unwrap_or("");
+                let symbol = item
+                    .get("token_symbol")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                name.to_lowercase().contains(query)
+                    || issuer.to_lowercase().contains(query)
+                    || symbol.to_lowercase().contains(query)
+                    || query.contains("rwa")
+                    || query.contains("treasury")
+            })
+            .take(limit)
+            .filter_map(|item| self.treasury_to_result(item))
+            .collect())
+    }
+
+    fn treasury_to_result(&self, item: &serde_json::Value) -> Option<SearchResult> {
+        let name = item.get("name")?.as_str()?;
+        let issuer = item
+            .get("issuer")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let chain = item
+            .get("chain")
+            .and_then(|v| v.as_str())
+            .unwrap_or("ethereum");
+        let symbol = item
+            .get("token_symbol")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let tvl = item.get("tvl").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let apy = item.get("apy").and_then(|v| v.as_f64());
+        let slug = name.to_lowercase().replace(' ', "-");
+
+        Some(SearchResult {
+            cid: DatasetCid(format!("rwa_xyz:treasury:{slug}")),
+            title: format!("{name} — Tokenized Treasury by {issuer}"),
+            description: Some(format!(
+                "Tokenized treasury product by {issuer} on {chain}. TVL: ${:.0}M.{}",
+                tvl / 1_000_000.0,
+                apy.map(|a| format!(" APY: {a:.2}%.")).unwrap_or_default()
+            )),
+            tags: vec![
+                "rwa".into(),
+                "treasury".into(),
+                "tokenized".into(),
+                issuer.to_lowercase(),
+                chain.to_lowercase(),
+                "free".into(),
+            ],
+            schema: DatasetSchema {
+                columns: vec![],
+                row_count: 0,
+                size_bytes: 0,
+            },
+            quality: None,
+            price: Price::free(),
+            license: License {
+                spdx_id: "open-data".into(),
+                commercial_use: true,
+                derivative_allowed: true,
+            },
+            provider: Did(format!("source:rwa_xyz:{}", issuer.to_lowercase())),
+            source: DataSource::RwaXyz,
+            market: None,
+            data_type: DataType::Tabular,
+            created_at: chrono::Utc::now(),
+            seller_endpoint: None,
+            source_attributes: Some(serde_json::json!({
+                "chain": chain.to_lowercase(),
+                "protocol": issuer.to_lowercase(),
+                "token_symbols": if symbol.is_empty() { vec![] } else { vec![symbol] },
+                "issuer": issuer,
+                "category": "rwa",
+                "tvl_usd": tvl,
+                "apy": apy,
+                "refresh_cadence": "daily",
+                "origin_url": format!("https://app.rwa.xyz/treasuries/{slug}"),
+                "is_open_data": true,
+            })),
+        })
+    }
+
+    /// Pull full treasury catalog (for periodic sync).
+    pub async fn fetch_full_treasury_catalog(&self) -> Result<Vec<SearchResult>> {
+        self.search_treasuries("", usize::MAX).await
+    }
+}
+
+fn contains_any_adapter(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|n| haystack.contains(n))
 }

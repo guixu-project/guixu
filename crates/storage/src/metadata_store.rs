@@ -68,4 +68,22 @@ impl MetadataStore {
             None => Ok(None),
         }
     }
+
+    /// Record last sync timestamp for an external source.
+    pub fn put_sync_state(&self, source: &str, timestamp_secs: u64) -> Result<()> {
+        let key = format!("sync:{source}");
+        self.db.put(key.as_bytes(), timestamp_secs.to_le_bytes())?;
+        Ok(())
+    }
+
+    /// Get last sync timestamp for an external source.
+    pub fn get_sync_state(&self, source: &str) -> Result<Option<u64>> {
+        let key = format!("sync:{source}");
+        match self.db.get(key.as_bytes())? {
+            Some(bytes) if bytes.len() == 8 => {
+                Ok(Some(u64::from_le_bytes(bytes[..8].try_into().unwrap())))
+            }
+            _ => Ok(None),
+        }
+    }
 }
