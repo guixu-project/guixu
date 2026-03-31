@@ -98,14 +98,14 @@ pub struct ToolAnnotations {
     pub open_world_hint: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TextContent {
     #[serde(rename = "type")]
     pub kind: String,
     pub text: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CallToolResult {
     pub content: Vec<TextContent>,
     #[serde(rename = "isError", skip_serializing_if = "is_false")]
@@ -123,7 +123,7 @@ pub fn is_supported_protocol_version(version: &str) -> bool {
 }
 
 /// MCP tool definition for capabilities/tools/list.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,

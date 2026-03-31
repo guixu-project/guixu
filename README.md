@@ -8,11 +8,12 @@ Guixu: Valuation-Driven Data Discovery for Autonomous AI Agents with On-Chain At
 curl -fsSL https://raw.githubusercontent.com/guixu-project/guixu/main/install.sh | bash
 ```
 
-### install local guixu MCP（still have some bugs, will affect run-demo.sh if we install local guixu MCP）
+### configure local guixu MCP for Codex
 ```bash
-cargo build --release -p data-node
-./target/release/data-node mcp --mode codex
+./scripts/configure_codex_mcp.sh
 ```
+
+This script configures `~/.codex/config.toml` and writes a managed Guixu MCP guidance block into `AGENTS.md`.
 
 ## License
 

@@ -1,5 +1,35 @@
-//! MCP server — re-exports from split modules for backward compatibility.
+use crate::catalog::build_registry;
+use crate::registry::ToolRegistry;
+use crate::session::SessionManager;
 
 pub use crate::http::run_http;
 pub use crate::state::AppState;
 pub use crate::stdio::run_stdio;
+
+pub struct McpServer {
+    state: AppState,
+    registry: ToolRegistry,
+    sessions: SessionManager,
+}
+
+impl McpServer {
+    pub fn new(state: AppState) -> Self {
+        Self {
+            state,
+            registry: build_registry(),
+            sessions: SessionManager::default(),
+        }
+    }
+
+    pub fn state(&self) -> &AppState {
+        &self.state
+    }
+
+    pub fn registry(&self) -> &ToolRegistry {
+        &self.registry
+    }
+
+    pub fn sessions(&self) -> &SessionManager {
+        &self.sessions
+    }
+}

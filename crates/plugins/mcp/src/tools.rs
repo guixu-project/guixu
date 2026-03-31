@@ -28,91 +28,12 @@ fn local_side_effect_annotations() -> Option<ToolAnnotations> {
     })
 }
 
-fn task_pipeline_definition(allow_source_filter: bool) -> ToolDefinition {
-    let mut search_filter_properties = json!({
-        "topic": { "type": "string" },
-        "min_rows": { "type": "integer" },
-        "max_price": { "type": "number" },
-        "license": { "type": "string" },
-        "min_quality": { "type": "number" }
-    });
-    if allow_source_filter {
-        search_filter_properties["source"] = json!({ "type": "string" });
-    }
-
-    ToolDefinition {
-        name: "task_pipeline".into(),
-        description: "Primary Guixu workflow entrypoint for agents. Call this once with raw_query, and the server will execute intent_parse -> dataset_search -> dataset_normalize -> dataset_evaluate in order until stop_after. Returns only the compact workflow result, not per-stage debug output.".into(),
-        annotations: read_only_annotations(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Backward-compatible task field. If raw_query is present, this may contain an agent-side working rewrite."
-                },
-                "raw_query": {
-                    "type": "string",
-                    "description": "The user's original request verbatim. Prefer this field for workflow execution."
-                },
-                "task_type": {
-                    "type": "string",
-                    "description": "Optional task category override"
-                },
-                "stop_after": {
-                    "type": "string",
-                    "enum": ["intent_parse", "dataset_search", "dataset_evaluate"],
-                    "default": "dataset_evaluate",
-                    "description": "Execute the fixed workflow in order and stop after this stage."
-                },
-                    "search": {
-                        "type": "object",
-                        "description": "Search parameters used once the workflow reaches dataset_search",
-                        "properties": {
-                            "limit": { "type": "integer", "default": 10 },
-                            "filters": {
-                                "type": "object",
-                                "properties": search_filter_properties
-                            }
-                        }
-                    },
-                "evaluate": {
-                    "type": "object",
-                    "description": "Evaluation settings used once the workflow reaches dataset_evaluate. External datasets fall back to the demo UI heuristic when no local metadata is available.",
-                    "properties": {
-                        "top_k": { "type": "integer" },
-                        "budget": {
-                            "anyOf": [
-                                { "type": "number" },
-                                { "type": "string" }
-                            ],
-                            "description": "Maximum budget, ideally preserving the unit or currency such as $20 or 20 USD"
-                        },
-                        "required_columns": {
-                            "type": "array",
-                            "items": { "type": "string" }
-                        }
-                    }
-                }
-            },
-            "anyOf": [
-                { "required": ["query"] },
-                { "required": ["raw_query"] }
-            ]
-        }),
-    }
-}
-
-pub fn codex_tool_definitions() -> Vec<ToolDefinition> {
-    vec![task_pipeline_definition(false)]
-}
-
 /// Returns all MCP tool definitions exposed by this server.
 pub fn all_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "intent_parse".into(),
-            description: "Parse a natural-language task into a structured QueryProfile for inspection or debugging. Pass the user's original request verbatim in raw_query when available; do not paraphrase it first. Use task_pipeline instead when you want Guixu to run the full query flow.".into(),
+            description: "Parse a natural-language task into a structured QueryProfile for inspection or debugging. Pass the user's original request verbatim in raw_query when available; do not paraphrase it first.".into(),
             annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
@@ -132,7 +53,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 ]
             }),
         },
-        task_pipeline_definition(true),
         ToolDefinition {
             name: "dataset_search".into(),
             description: "Search datasets across Kaggle, HuggingFace, IPFS, BitTorrent, PostgreSQL, DuckDB and P2P network".into(),
@@ -323,4 +243,22 @@ pub fn validate_tool_definitions(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::all_tool_definitions;
+
+    #[test]
+    fn task_pipeline_is_not_exposed() {
+        let tool_names: Vec<String> = all_tool_definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+
+        assert!(tool_names.iter().any(|name| name == "intent_parse"));
+        assert!(tool_names.iter().any(|name| name == "dataset_search"));
+        assert!(tool_names.iter().any(|name| name == "dataset_evaluate"));
+        assert!(!tool_names.iter().any(|name| name == "task_pipeline"));
+    }
 }

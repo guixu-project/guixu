@@ -2,15 +2,13 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use toml_edit::{value, Array, DocumentMut, Item, Table};
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use data_core::config::{NodeConfig, NodeMode};
 use data_core::identity::NodeIdentity;
 use data_core::types::AccessMode;
-use data_mcp_server::server::AppState;
-use data_mcp_server::state::ToolProfile;
+use data_mcp_server::server::{AppState, McpServer};
 use data_p2p::dht::DhtIndex;
 use data_storage::feedback_store::FeedbackStore;
 use data_storage::metadata_store::MetadataStore;
@@ -221,7 +219,7 @@ async fn cmd_start() -> Result<()> {
     });
 
     // Start embedded Web UI + MCP HTTP server
-    let state = Arc::new(
+    let state = Arc::new(McpServer::new(
         AppState::with_payment_config(
             NodeIdentity::from_seed(identity.seed()),
             DhtIndex::new(data_p2p::network::NetworkHandle {
@@ -231,10 +229,9 @@ async fn cmd_start() -> Result<()> {
             store,
             feedback_store,
             &config.payment,
-            ToolProfile::Full,
         )
         .await,
-    );
+    ));
     let http_port = 3927;
     info!("Web UI → http://localhost:{http_port}");
     tokio::spawn(async move {
@@ -250,10 +247,7 @@ async fn cmd_start() -> Result<()> {
 
 async fn cmd_mcp(mode: String) -> Result<()> {
     if mode == "codex" {
-        if let Err(e) = ensure_codex_mcp_config() {
-            tracing::warn!(err = %e, "failed to update Codex MCP config");
-        }
-        let state = Arc::new(AppState::for_codex().await?);
+        let state = Arc::new(McpServer::new(build_codex_state().await?));
         return data_mcp_server::server::run_stdio(state).await;
     }
 
@@ -295,23 +289,48 @@ async fn cmd_mcp(mode: String) -> Result<()> {
         }
     });
 
-    let state = Arc::new(
+    let state = Arc::new(McpServer::new(
         AppState::with_payment_config(
             NodeIdentity::from_seed(identity.seed()),
             dht,
             store,
             feedback_store,
             &config.payment,
-            ToolProfile::Full,
         )
         .await,
-    );
+    ));
 
     if mode == "http" {
         data_mcp_server::server::run_http(state, 3927).await
     } else {
         data_mcp_server::server::run_stdio(state).await
     }
+}
+
+async fn build_codex_state() -> Result<AppState> {
+    match try_build_codex_state_from_local_store().await {
+        Ok(state) => Ok(state),
+        Err(e) => {
+            tracing::warn!(
+                err = %e,
+                "local node state unavailable for codex MCP, falling back to session state"
+            );
+            AppState::for_codex().await
+        }
+    }
+}
+
+async fn try_build_codex_state_from_local_store() -> Result<AppState> {
+    let (config, identity) = load_config_and_identity()?;
+    let store = MetadataStore::open(&NodeConfig::db_path())?;
+    let feedback_store = FeedbackStore::open(&NodeConfig::config_dir().join("feedback_db"))?;
+    Ok(AppState::for_local_store(
+        NodeIdentity::from_seed(identity.seed()),
+        store,
+        feedback_store,
+        &config.payment,
+    )
+    .await)
 }
 
 fn load_config_and_identity() -> Result<(NodeConfig, NodeIdentity)> {
@@ -344,43 +363,4 @@ fn shellexpand(s: String) -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from(s)
-}
-
-fn ensure_codex_mcp_config() -> Result<()> {
-    let Some(home) = dirs::home_dir() else {
-        anyhow::bail!("unable to determine home directory");
-    };
-
-    let codex_dir = home.join(".codex");
-    std::fs::create_dir_all(&codex_dir)?;
-    let config_path = codex_dir.join("config.toml");
-
-    let mut document = if config_path.exists() {
-        std::fs::read_to_string(&config_path)?
-            .parse::<DocumentMut>()
-            .map_err(|e| anyhow::anyhow!("parse {}: {e}", config_path.display()))?
-    } else {
-        DocumentMut::new()
-    };
-
-    if !document.as_table().contains_key("mcp_servers") || !document["mcp_servers"].is_table() {
-        document["mcp_servers"] = Item::Table(Table::new());
-    }
-    if !document["mcp_servers"]["guixu"].is_table() {
-        document["mcp_servers"]["guixu"] = Item::Table(Table::new());
-    }
-
-    let exe = std::env::current_exe()?;
-    let exe = exe.canonicalize().unwrap_or(exe);
-
-    let mut args = Array::new();
-    args.push("mcp");
-    args.push("--mode");
-    args.push("codex");
-
-    document["mcp_servers"]["guixu"]["command"] = value(exe.to_string_lossy().to_string());
-    document["mcp_servers"]["guixu"]["args"] = value(args);
-
-    std::fs::write(config_path, document.to_string())?;
-    Ok(())
 }

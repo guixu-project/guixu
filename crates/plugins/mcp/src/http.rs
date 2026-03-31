@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::body::Bytes;
 use axum::extract::{Multipart, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -17,11 +17,11 @@ use data_core::types::AccessMode;
 use crate::demo_ui;
 use crate::protocol::McpRequest;
 use crate::rpc::handle_request;
-use crate::state::AppState;
+use crate::server::McpServer;
 use crate::web_ui::INDEX_HTML;
 
 /// HTTP server: MCP JSON-RPC + REST API + embedded Web UI.
-pub async fn run_http(state: Arc<AppState>, port: u16) -> Result<()> {
+pub async fn run_http(server: Arc<McpServer>, port: u16) -> Result<()> {
     let app = Router::new()
         .route("/", get(serve_ui))
         .route("/demo", get(demo_ui::serve_demo))
@@ -32,7 +32,7 @@ pub async fn run_http(state: Arc<AppState>, port: u16) -> Result<()> {
         .route("/mcp", post(http_rpc_handler))
         .route("/rpc", post(http_rpc_handler))
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(server);
 
     let addr = format!("0.0.0.0:{port}");
     info!("Guixu Web UI → http://localhost:{port}");
@@ -48,9 +48,9 @@ async fn serve_ui() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
-async fn api_list_datasets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn api_list_datasets(State(server): State<Arc<McpServer>>) -> impl IntoResponse {
     info!("api.list_datasets");
-    match state.store.list_all() {
+    match server.state().store.list_all() {
         Ok(datasets) => {
             let items: Vec<serde_json::Value> = datasets
                 .iter()
@@ -87,7 +87,7 @@ async fn api_list_datasets(State(state): State<Arc<AppState>>) -> impl IntoRespo
 }
 
 async fn api_publish(
-    State(state): State<Arc<AppState>>,
+    State(server): State<Arc<McpServer>>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     let mut file_data: Option<(String, Bytes)> = None;
@@ -177,9 +177,9 @@ async fn api_publish(
 
     match data_p2p::publish::publish_file_with_privacy(
         &tmp_path,
-        &state.identity,
-        &state.dht,
-        &state.store,
+        &server.state().identity,
+        &server.state().dht,
+        &server.state().store,
         access_mode,
         price,
         &privacy,
@@ -257,13 +257,26 @@ pub(crate) fn parse_publish_privacy(
 }
 
 async fn http_rpc_handler(
-    State(state): State<Arc<AppState>>,
+    State(server): State<Arc<McpServer>>,
+    headers: HeaderMap,
     Json(req): Json<McpRequest>,
 ) -> impl IntoResponse {
-    match handle_request(req, &state).await {
+    let session_id = http_session_id(&headers);
+    match handle_request(req, &server, &session_id).await {
         Some(response) => Json(response).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
     }
+}
+
+fn http_session_id(headers: &HeaderMap) -> String {
+    headers
+        .get("mcp-session-id")
+        .or_else(|| headers.get("x-guixu-session-id"))
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| "http-default".to_string())
 }
 
 #[cfg(test)]
