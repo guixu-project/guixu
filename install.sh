@@ -120,7 +120,7 @@ build_from_source() {
 
 echo -e "${CYAN}"
 echo "  ╔═══════════════════════════════════════╗"
-echo "  ║   Guixu — Data Valuation Protocol     ║"
+echo "  ║   Guixu — Data Discovery Protocol     ║"
 echo "  ╚═══════════════════════════════════════╝"
 echo -e "${NC}"
 
