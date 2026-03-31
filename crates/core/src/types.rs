@@ -189,6 +189,7 @@ pub enum DataSource {
     RwaXyz,
     TheGraph,
     PanSearch,
+    Dblp,
 }
 
 /// Payment protocol used for a transaction.

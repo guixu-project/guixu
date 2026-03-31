@@ -8,34 +8,27 @@ Guixu is the Data Discovery and Market Platform for Autonomous AI Agents. Guixu 
 curl -fsSL https://raw.githubusercontent.com/guixu-project/guixu/main/install.sh | bash
 ```
 
-The installer downloads a prebuilt binary (or builds from source), initializes a local node, and auto-detects installed AI clients to register the Guixu MCP server.
+That's it. The installer downloads the binary, initializes a local node, auto-detects your AI clients (Codex, Cursor, Claude Code, OpenCode), and registers the Guixu MCP server with each one.
 
-## Quick Start
-
-```bash
-guixu start                # Start node + Web UI
-open http://localhost:3927  # Drag & drop to publish datasets
-```
 
 ## AI Agent Integration (MCP)
 
 Guixu exposes an MCP server so AI agents can discover, evaluate, and purchase datasets.
 
-### One-Command Setup
+### Register / Unregister
 
 ```bash
-guixu mcp install claude     # Claude Desktop
-guixu mcp install cursor     # Cursor
-guixu mcp install codex      # Codex
-guixu mcp install kiro       # Kiro
-guixu mcp install windsurf   # Windsurf
+guixu mcp install codex       # Codex
+guixu mcp install cursor      # Cursor
+guixu mcp install claude-code # Claude Code
+guixu mcp install opencode    # OpenCode
 ```
 
 To remove: `guixu mcp uninstall <client>`
 
 ### Manual Configuration
 
-Add to your client's MCP config (e.g. `claude_desktop_config.json`, `.cursor/mcp.json`):
+Add to your client's MCP config:
 
 ```json
 {

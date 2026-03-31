@@ -1,6 +1,7 @@
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use anyhow::{Context, Result};
 
@@ -32,29 +33,26 @@ Do not use Guixu MCP when the task is purely about local code changes, refactori
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Client {
-    Claude,
-    Cursor,
-    Windsurf,
-    Kiro,
     Codex,
+    Cursor,
+    ClaudeCode,
+    OpenCode,
 }
 
 impl Client {
     pub const ALL: &[Client] = &[
-        Client::Claude,
-        Client::Cursor,
-        Client::Windsurf,
-        Client::Kiro,
         Client::Codex,
+        Client::Cursor,
+        Client::ClaudeCode,
+        Client::OpenCode,
     ];
 
     pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "claude" => Some(Self::Claude),
-            "cursor" => Some(Self::Cursor),
-            "windsurf" => Some(Self::Windsurf),
-            "kiro" => Some(Self::Kiro),
+        match s.to_lowercase().replace(['-', '_'], "").as_str() {
             "codex" => Some(Self::Codex),
+            "cursor" => Some(Self::Cursor),
+            "claudecode" | "claude" => Some(Self::ClaudeCode),
+            "opencode" => Some(Self::OpenCode),
             _ => None,
         }
     }
@@ -62,35 +60,31 @@ impl Client {
     fn config_path(&self) -> Option<PathBuf> {
         let home = dirs::home_dir()?;
         Some(match self {
-            Self::Claude => {
-                if cfg!(target_os = "macos") {
-                    home.join("Library/Application Support/Claude/claude_desktop_config.json")
-                } else {
-                    home.join(".config/Claude/claude_desktop_config.json")
-                }
-            }
-            Self::Cursor => home.join(".cursor/mcp.json"),
-            Self::Windsurf => home.join(".codeium/windsurf/mcp_config.json"),
-            Self::Kiro => home.join(".kiro/settings/mcp.json"),
             Self::Codex => home.join(".codex/config.toml"),
+            Self::Cursor => home.join(".cursor/mcp.json"),
+            Self::ClaudeCode => home.join(".claude.json"),
+            Self::OpenCode => home.join(".config/opencode/opencode.json"),
         })
     }
 
     pub fn is_detected(&self) -> bool {
-        self.config_path()
-            .and_then(|p| p.parent().map(|d| d.exists()))
-            .unwrap_or(false)
+        match self {
+            Self::ClaudeCode => which("claude").is_some(),
+            _ => self
+                .config_path()
+                .and_then(|p| p.parent().map(|d| d.exists()))
+                .unwrap_or(false),
+        }
     }
 }
 
 impl fmt::Display for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Claude => write!(f, "claude"),
-            Self::Cursor => write!(f, "cursor"),
-            Self::Windsurf => write!(f, "windsurf"),
-            Self::Kiro => write!(f, "kiro"),
             Self::Codex => write!(f, "codex"),
+            Self::Cursor => write!(f, "cursor"),
+            Self::ClaudeCode => write!(f, "claude-code"),
+            Self::OpenCode => write!(f, "opencode"),
         }
     }
 }
@@ -102,17 +96,29 @@ fn guixu_bin() -> Result<String> {
         .context("non-UTF-8 executable path")
 }
 
+fn which(cmd: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let full = dir.join(cmd);
+            full.is_file().then_some(full)
+        })
+    })
+}
+
 // ── Install ──────────────────────────────────────────────────────────────────
 
 pub fn install(client: Client) -> Result<()> {
     let bin = guixu_bin()?;
     match client {
         Client::Codex => install_codex(&bin),
-        _ => install_json_client(client, &bin),
+        Client::Cursor => install_json_mcp_servers(client, &bin),
+        Client::ClaudeCode => install_claude_code(&bin),
+        Client::OpenCode => install_opencode(client, &bin),
     }
 }
 
-fn install_json_client(client: Client, bin: &str) -> Result<()> {
+/// Cursor: standard `{ "mcpServers": { "guixu": { "command", "args" } } }`
+fn install_json_mcp_servers(client: Client, bin: &str) -> Result<()> {
     let path = client.config_path().context("cannot determine home dir")?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -141,6 +147,7 @@ fn install_json_client(client: Client, bin: &str) -> Result<()> {
     Ok(())
 }
 
+/// Codex: TOML `[mcp_servers.guixu]` in `~/.codex/config.toml`
 fn install_codex(bin: &str) -> Result<()> {
     let path = Client::Codex
         .config_path()
@@ -155,7 +162,6 @@ fn install_codex(bin: &str) -> Result<()> {
         String::new()
     };
 
-    // Remove old [mcp_servers.guixu] section
     content = remove_toml_section(&content, "mcp_servers.guixu");
 
     if !content.is_empty() && !content.ends_with('\n') {
@@ -170,6 +176,93 @@ fn install_codex(bin: &str) -> Result<()> {
     write_agents_md()?;
 
     println!("✅ codex configured");
+    println!("   Config: {}", path.display());
+    Ok(())
+}
+
+/// Claude Code: prefer `claude mcp add` CLI, fall back to editing `~/.claude.json`
+fn install_claude_code(bin: &str) -> Result<()> {
+    if let Some(claude) = which("claude") {
+        let status = Command::new(claude)
+            .args([
+                "mcp",
+                "add",
+                "--transport",
+                "stdio",
+                "--scope",
+                "user",
+                "guixu",
+                "--",
+                bin,
+                "mcp",
+            ])
+            .status();
+        if let Ok(s) = status {
+            if s.success() {
+                println!("✅ claude-code configured (via `claude mcp add`)");
+                return Ok(());
+            }
+        }
+    }
+
+    // Fallback: edit ~/.claude.json directly
+    let path = Client::ClaudeCode
+        .config_path()
+        .context("cannot determine home dir")?;
+
+    let mut root: serde_json::Value = if path.exists() {
+        serde_json::from_str(&fs::read_to_string(&path)?)?
+    } else {
+        serde_json::json!({})
+    };
+
+    root.as_object_mut()
+        .context("config is not a JSON object")?
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("mcpServers not object")?
+        .insert(
+            "guixu".into(),
+            serde_json::json!({ "type": "stdio", "command": bin, "args": ["mcp"] }),
+        );
+
+    fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
+    println!("✅ claude-code configured");
+    println!("   Config: {}", path.display());
+    Ok(())
+}
+
+/// OpenCode: `{ "mcp": { "guixu": { "type": "local", "command": [...], "enabled": true } } }`
+fn install_opencode(client: Client, bin: &str) -> Result<()> {
+    let path = client.config_path().context("cannot determine home dir")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut root: serde_json::Value = if path.exists() {
+        serde_json::from_str(&fs::read_to_string(&path)?)?
+    } else {
+        serde_json::json!({})
+    };
+
+    root.as_object_mut()
+        .context("config is not a JSON object")?
+        .entry("mcp")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("mcp not object")?
+        .insert(
+            "guixu".into(),
+            serde_json::json!({
+                "type": "local",
+                "command": [bin, "mcp"],
+                "enabled": true
+            }),
+        );
+
+    fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
+    println!("✅ {client} configured");
     println!("   Config: {}", path.display());
     Ok(())
 }
@@ -247,11 +340,13 @@ fn strip_between(content: &str, begin: &str, end: &str) -> String {
 pub fn uninstall(client: Client) -> Result<()> {
     match client {
         Client::Codex => uninstall_codex(),
-        _ => uninstall_json_client(client),
+        Client::ClaudeCode => uninstall_claude_code(),
+        Client::OpenCode => uninstall_opencode_entry(client),
+        Client::Cursor => uninstall_json_mcp_servers(client),
     }
 }
 
-fn uninstall_json_client(client: Client) -> Result<()> {
+fn uninstall_json_mcp_servers(client: Client) -> Result<()> {
     let path = client.config_path().context("cannot determine home dir")?;
     if !path.exists() {
         println!("Nothing to remove — {} does not exist.", path.display());
@@ -280,12 +375,43 @@ fn uninstall_codex() -> Result<()> {
     Ok(())
 }
 
+fn uninstall_claude_code() -> Result<()> {
+    if let Some(claude) = which("claude") {
+        let status = Command::new(claude)
+            .args(["mcp", "remove", "guixu"])
+            .status();
+        if let Ok(s) = status {
+            if s.success() {
+                println!("✅ claude-code — guixu MCP removed (via `claude mcp remove`)");
+                return Ok(());
+            }
+        }
+    }
+    // Fallback
+    uninstall_json_mcp_servers(Client::ClaudeCode)
+}
+
+fn uninstall_opencode_entry(client: Client) -> Result<()> {
+    let path = client.config_path().context("cannot determine home dir")?;
+    if !path.exists() {
+        println!("Nothing to remove — {} does not exist.", path.display());
+        return Ok(());
+    }
+    let mut root: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
+    if let Some(mcp) = root.get_mut("mcp").and_then(|v| v.as_object_mut()) {
+        mcp.remove("guixu");
+    }
+    fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
+    println!("✅ {client} — guixu MCP removed");
+    Ok(())
+}
+
 // ── List ─────────────────────────────────────────────────────────────────────
 
 pub fn list_detected() {
     println!("Supported clients:");
     for c in Client::ALL {
         let tag = if c.is_detected() { "detected" } else { "—" };
-        println!("  {c:<12} {tag}");
+        println!("  {c:<14} {tag}");
     }
 }

@@ -1,5 +1,6 @@
 mod bittorrent;
 mod datacite_commons;
+mod dblp;
 mod defillama;
 mod duckdb;
 mod google_dataset_search;
@@ -18,6 +19,7 @@ use data_core::types::{DataSource, SearchResult};
 
 pub use bittorrent::BitTorrentAdapter;
 pub use datacite_commons::DataCiteCommonsAdapter;
+pub use dblp::DblpAdapter;
 pub use defillama::DefiLlamaAdapter;
 pub use duckdb::DuckDbAdapter;
 pub use google_dataset_search::GoogleDatasetSearchAdapter;
@@ -57,6 +59,7 @@ pub fn default_adapters_filtered(disabled: &[String]) -> Vec<Box<dyn ExternalAda
         Box::new(DefiLlamaAdapter::default()),
         Box::new(RwaXyzAdapter::default()),
         Box::new(PanSearchAdapter::default()),
+        Box::new(DblpAdapter::default()),
     ];
     if disabled.is_empty() {
         return all;
