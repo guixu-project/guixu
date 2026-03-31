@@ -19,10 +19,10 @@ jobs:
             os: ubuntu-latest
             artifact: guixu-linux-arm64
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             artifact: guixu-darwin-amd64
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-latest
             artifact: guixu-darwin-arm64
 
     runs-on: ${{ matrix.os }}
