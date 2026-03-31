@@ -34,6 +34,19 @@ pub struct SearchFilters {
 /// Allows the search engine to rank by TCV without owning the feedback store.
 pub type SignalFetcher = Box<dyn Fn(&str) -> CommunitySignal + Send + Sync>;
 
+/// Input bundle for the higher-level "search, then value" workflow.
+pub struct SearchAndValueRequest<'a> {
+    pub query: &'a str,
+    pub filters: &'a SearchFilters,
+    pub local_metadata: &'a [DatasetMetadata],
+    pub signal_fetcher: &'a SignalFetcher,
+    pub metadata_resolver: Option<&'a dyn MetadataResolver>,
+    pub sample_evaluator: Option<&'a dyn SampleEvaluator>,
+    pub task: Option<&'a DatasetSelectionTask>,
+    pub config: &'a DatasetValuationConfig,
+    pub limit: usize,
+}
+
 /// The unified search engine. Merges results from local store, DHT,
 /// and external adapters (Kaggle, HuggingFace, IPFS, PostgreSQL, DuckDB).
 pub struct SearchEngine {
@@ -209,31 +222,30 @@ impl SearchEngine {
     /// candidates without downloading each full dataset.
     pub async fn search_and_value(
         &self,
-        query: &str,
-        filters: &SearchFilters,
-        local_metadata: &[DatasetMetadata],
-        signal_fetcher: &SignalFetcher,
-        metadata_resolver: Option<&dyn MetadataResolver>,
-        sample_evaluator: Option<&dyn SampleEvaluator>,
-        task: Option<&DatasetSelectionTask>,
-        config: &DatasetValuationConfig,
-        limit: usize,
+        request: SearchAndValueRequest<'_>,
     ) -> Result<DatasetSelectionOutput> {
-        let profile = self.intent_parser.profile(query).await?;
-        let task = task
+        let profile = self.intent_parser.profile(request.query).await?;
+        let task = request
+            .task
             .cloned()
             .unwrap_or_else(|| DatasetSelectionTask::from(&profile));
         let search_output = self
-            .search_with_profile(&profile, filters, local_metadata, signal_fetcher, limit)
+            .search_with_profile(
+                &profile,
+                request.filters,
+                request.local_metadata,
+                request.signal_fetcher,
+                request.limit,
+            )
             .await?;
 
         self.value_search_output(
             &search_output,
-            local_metadata,
-            metadata_resolver,
-            sample_evaluator,
+            request.local_metadata,
+            request.metadata_resolver,
+            request.sample_evaluator,
             &task,
-            config,
+            request.config,
         )
         .await
     }
@@ -2452,8 +2464,10 @@ mod selection_tests {
             seen: seen.clone(),
         };
         let task = test_task(5.0, 30, 45);
-        let mut config = DatasetValuationConfig::default();
-        config.coarse_top_k = 2;
+        let config = DatasetValuationConfig {
+            coarse_top_k: 2,
+            ..DatasetValuationConfig::default()
+        };
 
         let output = test_engine()
             .value_search_output(
@@ -2510,8 +2524,10 @@ mod selection_tests {
             seen: seen.clone(),
         };
         let task = test_task(3.0, 35, 45);
-        let mut config = DatasetValuationConfig::default();
-        config.coarse_top_k = 2;
+        let config = DatasetValuationConfig {
+            coarse_top_k: 2,
+            ..DatasetValuationConfig::default()
+        };
 
         let output = test_engine()
             .value_search_output(
