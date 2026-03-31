@@ -1,5 +1,6 @@
 mod bittorrent;
 mod datacite_commons;
+mod dblp;
 mod defillama;
 mod duckdb;
 mod google_dataset_search;
@@ -8,6 +9,7 @@ mod huggingface;
 mod ipfs;
 mod kaggle;
 mod local_file;
+pub mod pan_search;
 mod postgresql;
 mod rwa_xyz;
 pub(crate) mod util;
@@ -17,6 +19,7 @@ use data_core::types::{DataSource, SearchResult};
 
 pub use bittorrent::BitTorrentAdapter;
 pub use datacite_commons::DataCiteCommonsAdapter;
+pub use dblp::DblpAdapter;
 pub use defillama::DefiLlamaAdapter;
 pub use duckdb::DuckDbAdapter;
 pub use google_dataset_search::GoogleDatasetSearchAdapter;
@@ -25,6 +28,7 @@ pub use huggingface::HuggingFaceAdapter;
 pub use ipfs::IpfsAdapter;
 pub use kaggle::KaggleAdapter;
 pub use local_file::LocalFileAdapter;
+pub use pan_search::PanSearchAdapter;
 pub use postgresql::PostgreSqlAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
 
@@ -54,6 +58,8 @@ pub fn default_adapters_filtered(disabled: &[String]) -> Vec<Box<dyn ExternalAda
         Box::new(DataCiteCommonsAdapter::default()),
         Box::new(DefiLlamaAdapter::default()),
         Box::new(RwaXyzAdapter::default()),
+        Box::new(PanSearchAdapter::default()),
+        Box::new(DblpAdapter::default()),
     ];
     if disabled.is_empty() {
         return all;

@@ -3,7 +3,7 @@
 # Guixu Installer — One-line install:
 #   curl -fsSL https://raw.githubusercontent.com/guixu-project/guixu/main/install.sh | bash
 #
-# Tries prebuilt binary from GitHub Releases first, falls back to source build.
+# Downloads binary → inits node → detects AI clients → registers MCP. Done.
 # =============================================================================
 set -euo pipefail
 
@@ -51,7 +51,6 @@ try_download_release() {
     local artifact="$1"
     step "Checking for prebuilt binary..."
 
-    # Get latest release tag
     local release_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
     local tag
     tag=$(curl -fsSL "$release_url" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/') || true
@@ -87,7 +86,6 @@ try_download_release() {
 build_from_source() {
     step "Building from source..."
 
-    # Rust
     if ! command -v cargo &>/dev/null; then
         warn "Rust not found. Installing via rustup..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
@@ -95,10 +93,8 @@ build_from_source() {
     fi
     info "Rust $(rustc --version | awk '{print $2}')"
 
-    # Git
     command -v git &>/dev/null || fail "Git is required. Install it first."
 
-    # Clone or update
     if [ -d "$INSTALL_DIR/src" ]; then
         info "Updating existing source..."
         cd "$INSTALL_DIR/src"
@@ -131,12 +127,12 @@ echo -e "${NC}"
 ARTIFACT=$(detect_platform)
 info "Platform: $ARTIFACT"
 
-# Try prebuilt binary first, fall back to source
+# ① Install binary
 if ! try_download_release "$ARTIFACT"; then
     build_from_source
 fi
 
-# --- Add to PATH ---
+# ② Add to PATH
 SHELL_RC=""
 if [ -f "$HOME/.zshrc" ]; then
     SHELL_RC="$HOME/.zshrc"
@@ -156,19 +152,39 @@ if [ -n "$SHELL_RC" ]; then
 fi
 export PATH="$BIN_DIR:$PATH"
 
-# --- Initialize node ---
-step "Initializing node..."
-
+# ③ Initialize node (silent — user doesn't need to know)
 if [ ! -f "$HOME/.data-node/config.toml" ]; then
-    "$BIN_DIR/guixu" init --data-dir "$DATA_DIR"
+    "$BIN_DIR/guixu" init --data-dir "$DATA_DIR" >/dev/null 2>&1 && \
+        info "Node initialized" || warn "Node init skipped"
 else
-    info "Node already initialized, skipping"
+    info "Node already initialized"
 fi
 
-# --- Done ---
+# ④ Auto-detect AI clients and register MCP
+step "Detecting AI clients..."
+
+DETECTED=()
+[ -d "$HOME/.codex" ]                          && DETECTED+=("codex")
+[ -d "$HOME/.cursor" ]                         && DETECTED+=("cursor")
+command -v claude &>/dev/null                   && DETECTED+=("claude-code")
+[ -d "$HOME/.config/opencode" ]                && DETECTED+=("opencode")
+
+if [ ${#DETECTED[@]} -gt 0 ]; then
+    for client in "${DETECTED[@]}"; do
+        if "$BIN_DIR/guixu" mcp install "$client" 2>/dev/null; then
+            info "Registered MCP → $client"
+        else
+            warn "Failed to register MCP → $client"
+        fi
+    done
+else
+    info "No AI clients detected. Register later with: guixu mcp install <client>"
+fi
+
+# ⑤ Done
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  ✅ Guixu installed successfully!${NC}"
+echo -e "${GREEN}  ✅ Guixu installed!${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════${NC}"
 echo ""
 echo "  Quick start:"
@@ -176,14 +192,12 @@ echo ""
 echo "    guixu start                # Start node + Web UI"
 echo "    open http://localhost:3927  # Drag & drop to publish datasets"
 echo ""
-echo "  Or publish from CLI:"
+echo "  Register MCP with more clients:"
 echo ""
-echo "    cp my_data.csv ~/shared-datasets/   # Auto-published!"
-echo ""
-echo "  For AI agent integration:"
-echo ""
-echo "    guixu mcp                  # stdio MCP (Claude, Cursor, etc.)"
-echo "    guixu mcp --mode http      # HTTP MCP on :3927/rpc"
+echo "    guixu mcp install codex       # Codex"
+echo "    guixu mcp install cursor      # Cursor"
+echo "    guixu mcp install claude-code # Claude Code"
+echo "    guixu mcp install opencode    # OpenCode"
 echo ""
 if [ -n "$SHELL_RC" ]; then
     echo -e "  ${YELLOW}Restart your shell or run: source $SHELL_RC${NC}"

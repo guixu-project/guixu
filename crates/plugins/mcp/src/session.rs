@@ -110,6 +110,11 @@ impl SessionManager {
                     session.last_selected_cid = Some(cid.to_string());
                 }
             }
+            "pan_search" => {
+                session.last_search_result_summary = Some(json!({
+                    "results": parsed.get("results").cloned().unwrap_or_else(|| json!([])),
+                }));
+            }
             _ => {}
         }
     }

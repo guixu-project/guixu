@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -13,6 +13,8 @@ use data_mcp_server::server::{AppState, McpServer};
 use data_p2p::dht::DhtIndex;
 use data_storage::feedback_store::FeedbackStore;
 use data_storage::metadata_store::MetadataStore;
+
+mod mcp_install;
 
 #[derive(Parser)]
 #[command(
@@ -35,8 +37,25 @@ enum Commands {
     Start,
     /// Run as MCP server only (for Agent integration).
     Mcp {
-        #[arg(long, default_value = "light")]
+        #[command(subcommand)]
+        action: Option<McpAction>,
+
+        #[arg(long, default_value = "light", global = true)]
         mode: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpAction {
+    /// Register Guixu MCP with an AI client.
+    Install {
+        /// Target client: codex, cursor, claude-code, opencode
+        client: Option<String>,
+    },
+    /// Remove Guixu MCP from an AI client.
+    Uninstall {
+        /// Target client: codex, cursor, claude-code, opencode
+        client: String,
     },
 }
 
@@ -52,7 +71,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Init { data_dir } => cmd_init(data_dir)?,
         Commands::Start => cmd_start().await?,
-        Commands::Mcp { mode } => cmd_mcp(mode).await?,
+        Commands::Mcp { action, mode } => match action {
+            Some(McpAction::Install { client }) => cmd_mcp_install(client)?,
+            Some(McpAction::Uninstall { client }) => cmd_mcp_uninstall(&client)?,
+            None => cmd_mcp(mode).await?,
+        },
     }
 
     Ok(())
@@ -61,7 +84,7 @@ async fn main() -> Result<()> {
 fn init_logging(command: &Commands) {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let use_stderr_only = matches!(command, Commands::Mcp { mode } if mode == "codex");
+    let use_stderr_only = matches!(command, Commands::Mcp { mode, .. } if mode == "codex");
     if use_stderr_only {
         init_stderr_logging(env_filter);
         return;
@@ -263,6 +286,28 @@ async fn cmd_start() -> Result<()> {
     info!("full node running. Press Ctrl+C to stop.");
     tokio::signal::ctrl_c().await?;
     Ok(())
+}
+
+fn cmd_mcp_install(client: Option<String>) -> Result<()> {
+    match client {
+        Some(name) => {
+            let c = mcp_install::Client::parse(&name).context(format!(
+                "unknown client '{name}'. Use: claude, cursor, windsurf, kiro, codex"
+            ))?;
+            mcp_install::install(c)
+        }
+        None => {
+            mcp_install::list_detected();
+            Ok(())
+        }
+    }
+}
+
+fn cmd_mcp_uninstall(client: &str) -> Result<()> {
+    let c = mcp_install::Client::parse(client).context(format!(
+        "unknown client '{client}'. Use: claude, cursor, windsurf, kiro, codex"
+    ))?;
+    mcp_install::uninstall(c)
 }
 
 async fn cmd_mcp(mode: String) -> Result<()> {

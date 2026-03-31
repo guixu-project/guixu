@@ -104,6 +104,13 @@ fn bt_stats_executor<'a>(
     Box::pin(crate::handlers::bt_download::handle_stats(args, state))
 }
 
+fn pan_search_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::pan_search::handle(args, state))
+}
+
 pub fn build_registry() -> ToolRegistry {
     let mut definitions = collect_definitions();
     let mut registry = ToolRegistry::new();
@@ -151,6 +158,10 @@ pub fn build_registry() -> ToolRegistry {
     registry.register(legacy_json_tool(
         require_definition(&mut definitions, "dataset_bt_stats"),
         executor_from_fn(bt_stats_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "pan_search"),
+        executor_from_fn(pan_search_executor),
     ));
 
     let all_definitions = registry.list_definitions();
