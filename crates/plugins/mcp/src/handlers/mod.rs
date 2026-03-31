@@ -3,6 +3,7 @@ pub mod evaluate;
 pub mod feedback;
 pub mod intent;
 pub mod misc;
+pub mod pan_search;
 pub mod purchase;
 pub mod reviews;
 pub mod search;

@@ -8,6 +8,7 @@ mod huggingface;
 mod ipfs;
 mod kaggle;
 mod local_file;
+pub mod pan_search;
 mod postgresql;
 mod rwa_xyz;
 pub(crate) mod util;
@@ -25,6 +26,7 @@ pub use huggingface::HuggingFaceAdapter;
 pub use ipfs::IpfsAdapter;
 pub use kaggle::KaggleAdapter;
 pub use local_file::LocalFileAdapter;
+pub use pan_search::PanSearchAdapter;
 pub use postgresql::PostgreSqlAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
 
@@ -54,6 +56,7 @@ pub fn default_adapters_filtered(disabled: &[String]) -> Vec<Box<dyn ExternalAda
         Box::new(DataCiteCommonsAdapter::default()),
         Box::new(DefiLlamaAdapter::default()),
         Box::new(RwaXyzAdapter::default()),
+        Box::new(PanSearchAdapter::default()),
     ];
     if disabled.is_empty() {
         return all;

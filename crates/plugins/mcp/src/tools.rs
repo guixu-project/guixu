@@ -80,7 +80,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                                     "guixuhub", "kaggle", "huggingface",
                                     "ipfs", "bittorrent", "postgresql",
                                     "duckdb", "googledatasetsearch",
-                                    "datacitecommons", "p2p"
+                                    "datacitecommons", "pansearch", "p2p"
                                 ]
                             },
                             "chain": { "type": "string", "description": "Filter by blockchain (e.g. ethereum, polygon)" },
@@ -235,6 +235,24 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "info_hash": { "type": "string", "description": "BitTorrent info hash (hex)" }
                 },
                 "required": ["info_hash"]
+            }),
+        },
+        ToolDefinition {
+            name: "pan_search".into(),
+            description: "Search public cloud-drive share links (Baidu, Quark, Aliyun, 115, OneDrive) across aggregated indexes. Returns share URLs with access codes. Only accesses publicly shared content.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search keywords (e.g. movie/TV show name)" },
+                    "platform": {
+                        "type": "string",
+                        "enum": ["baidu", "quark", "aliyun", "xunlei", "onedrive", "115"],
+                        "description": "Optional: filter by cloud-drive platform"
+                    },
+                    "limit": { "type": "integer", "default": 20, "description": "Max results to return" }
+                },
+                "required": ["query"]
             }),
         },
     ]

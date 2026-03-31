@@ -182,9 +182,30 @@ echo "    cp my_data.csv ~/shared-datasets/   # Auto-published!"
 echo ""
 echo "  For AI agent integration:"
 echo ""
-echo "    guixu mcp                  # stdio MCP (Claude, Cursor, etc.)"
-echo "    guixu mcp --mode http      # HTTP MCP on :3927/rpc"
+echo "    guixu mcp install claude   # Claude Desktop"
+echo "    guixu mcp install cursor   # Cursor"
+echo "    guixu mcp install codex    # Codex"
+echo "    guixu mcp install kiro     # Kiro"
+echo "    guixu mcp install windsurf # Windsurf"
 echo ""
+
+# --- Auto-detect and register AI clients ---
+DETECTED=()
+[ -d "$HOME/Library/Application Support/Claude" ] || [ -d "$HOME/.config/Claude" ] && DETECTED+=("claude")
+[ -d "$HOME/.cursor" ] && DETECTED+=("cursor")
+[ -d "$HOME/.codex" ] && DETECTED+=("codex")
+[ -d "$HOME/.kiro" ] && DETECTED+=("kiro")
+[ -d "$HOME/.codeium/windsurf" ] && DETECTED+=("windsurf")
+
+if [ ${#DETECTED[@]} -gt 0 ]; then
+    echo -e "  ${CYAN}Detected AI clients: ${DETECTED[*]}${NC}"
+    for client in "${DETECTED[@]}"; do
+        "$BIN_DIR/guixu" mcp install "$client" 2>/dev/null && \
+            echo -e "    ${GREEN}✓${NC} $client"
+    done
+    echo ""
+fi
+
 if [ -n "$SHELL_RC" ]; then
     echo -e "  ${YELLOW}Restart your shell or run: source $SHELL_RC${NC}"
     echo ""

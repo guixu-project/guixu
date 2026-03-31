@@ -32,7 +32,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                                     "ipfs", "bittorrent", "postgresql",
                                     "duckdb", "localfile",
                                     "googledatasetsearch",
-                                    "datacitecommons", "p2p"
+                                    "datacitecommons", "pansearch", "p2p"
                                 ]
                             },
                             "chain": { "type": "string", "description": "Filter by blockchain (e.g. ethereum, polygon)" },
