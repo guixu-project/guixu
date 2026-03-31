@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use crate::protocol::{McpRequest, McpResponse};
 use crate::rpc::handle_request;
-use crate::state::AppState;
+use crate::server::McpServer;
 
 enum MessageFormat {
     Framed,
@@ -14,15 +14,16 @@ enum MessageFormat {
 }
 
 /// MCP Server — reads JSON-RPC from stdin, writes to stdout.
-pub async fn run_stdio(state: Arc<AppState>) -> Result<()> {
+pub async fn run_stdio(server: Arc<McpServer>) -> Result<()> {
     let mut stdin = BufReader::new(io::stdin());
     let mut stdout = io::stdout();
+    let session_id = format!("stdio-{}", std::process::id());
 
     info!("MCP server started on stdio");
 
     while let Some((payload, format)) = read_message(&mut stdin).await? {
         let response = match serde_json::from_str::<McpRequest>(&payload) {
-            Ok(req) => handle_request(req, &state).await,
+            Ok(req) => handle_request(req, &server, &session_id).await,
             Err(e) => Some(McpResponse::error(
                 serde_json::Value::Null,
                 -32700,

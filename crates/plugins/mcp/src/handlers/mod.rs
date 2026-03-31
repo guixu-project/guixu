@@ -6,4 +6,3 @@ pub mod misc;
 pub mod purchase;
 pub mod reviews;
 pub mod search;
-pub mod task_pipeline;

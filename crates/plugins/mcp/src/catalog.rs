@@ -1,0 +1,161 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::registry::{ToolExecutor, ToolFuture, ToolRegistry};
+use crate::tool_adapters::legacy_json_tool;
+use crate::tools::{all_tool_definitions, validate_tool_definitions};
+
+fn collect_definitions() -> HashMap<String, crate::protocol::ToolDefinition> {
+    all_tool_definitions()
+        .into_iter()
+        .map(|definition| (definition.name.clone(), definition))
+        .collect()
+}
+
+fn require_definition(
+    definitions: &mut HashMap<String, crate::protocol::ToolDefinition>,
+    name: &str,
+) -> crate::protocol::ToolDefinition {
+    definitions
+        .remove(name)
+        .unwrap_or_else(|| panic!("missing MCP tool definition for {name}"))
+}
+
+fn executor_from_fn(
+    f: for<'a> fn(serde_json::Value, &'a crate::state::AppState) -> ToolFuture<'a>,
+) -> Arc<ToolExecutor> {
+    Arc::new(f)
+}
+
+fn intent_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::intent::handle(args, state))
+}
+
+fn search_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::search::handle(args, state))
+}
+
+fn evaluate_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::evaluate::handle(args, state))
+}
+
+fn feedback_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::feedback::handle(args, state))
+}
+
+fn purchase_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::purchase::handle(args, state))
+}
+
+fn verify_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::misc::handle_verify(args, state))
+}
+
+fn publish_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::misc::handle_publish(args, state))
+}
+
+fn reviews_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::reviews::handle(args, state))
+}
+
+fn bt_download_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::bt_download::handle(args, state))
+}
+
+fn bt_preview_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::bt_download::handle_preview(args, state))
+}
+
+fn bt_stats_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::bt_download::handle_stats(args, state))
+}
+
+pub fn build_registry() -> ToolRegistry {
+    let mut definitions = collect_definitions();
+    let mut registry = ToolRegistry::new();
+
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "intent_parse"),
+        executor_from_fn(intent_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_search"),
+        executor_from_fn(search_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_evaluate"),
+        executor_from_fn(evaluate_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_purchase"),
+        executor_from_fn(purchase_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_feedback"),
+        executor_from_fn(feedback_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_reviews"),
+        executor_from_fn(reviews_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_verify"),
+        executor_from_fn(verify_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_publish"),
+        executor_from_fn(publish_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_bt_download"),
+        executor_from_fn(bt_download_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_bt_preview"),
+        executor_from_fn(bt_preview_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_bt_stats"),
+        executor_from_fn(bt_stats_executor),
+    ));
+
+    let all_definitions = registry.list_definitions();
+    validate_tool_definitions(&all_definitions)
+        .unwrap_or_else(|message| panic!("invalid MCP tool registry: {message}"));
+
+    registry
+}
