@@ -97,7 +97,7 @@ notify = { version = "7", features = ["macos_fsevent"] }
 # HTTP
 axum = { version = "0.8", features = ["multipart"] }
 tower-http = { version = "0.6", features = ["cors"] }
-reqwest = { version = "0.12", features = ["json", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # BitTorrent
 librqbit = "8"
