@@ -131,7 +131,14 @@ impl ExternalAdapter for SemanticScholarAdapter {
                     data_type: DataType::Text,
                     created_at: parse_year(year),
                     seller_endpoint: None,
-                    source_attributes: None,
+                    source_attributes: Some(serde_json::json!({
+                        "academic": true,
+                        "venue": venue,
+                        "citation_count": citations,
+                        "authors": authors,
+                        "year": year,
+                        "has_pdf": !pdf_url.is_empty(),
+                    })),
                 })
             })
             .collect())

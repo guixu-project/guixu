@@ -185,9 +185,31 @@ impl SearchEngine {
 
         apply_intent_hard_filters(&mut all, profile, &local_metadata_by_cid, filters);
 
-        // Deduplicate by CID
-        let mut seen = HashSet::new();
-        all.retain(|r| seen.insert(r.cid.0.clone()));
+        // Deduplicate by CID, preferring results with richer source_attributes
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        let mut deduped: Vec<SearchResult> = Vec::with_capacity(all.len());
+        for r in all {
+            if let Some(&existing_idx) = seen.get(&r.cid.0) {
+                // Replace if the new result has source_attributes and the existing one doesn't
+                let existing_attrs_len = deduped[existing_idx]
+                    .source_attributes
+                    .as_ref()
+                    .map(|v| v.as_object().map_or(0, |o| o.len()))
+                    .unwrap_or(0);
+                let new_attrs_len = r
+                    .source_attributes
+                    .as_ref()
+                    .map(|v| v.as_object().map_or(0, |o| o.len()))
+                    .unwrap_or(0);
+                if new_attrs_len > existing_attrs_len {
+                    deduped[existing_idx] = r;
+                }
+            } else {
+                seen.insert(r.cid.0.clone(), deduped.len());
+                deduped.push(r);
+            }
+        }
+        let all = deduped;
 
         // Rank with community signal (TCV-lite for search ranking)
         let mut ranked: Vec<RankedResult> = all
@@ -277,6 +299,8 @@ impl SearchEngine {
 
         let mut candidates = Vec::with_capacity(search_output.results.len());
 
+        let scoring_profile = detect_scoring_profile(task, &search_output.results);
+
         for ranked in &search_output.results {
             let mut metadata = local_metadata_by_cid
                 .get(ranked.result.cid.0.as_str())
@@ -305,10 +329,6 @@ impl SearchEngine {
             }
 
             let task_similarity = compute_task_similarity(task, &ranked.result, metadata.as_ref());
-            let schema_fit = compute_schema_fit(task, &ranked.result, metadata.as_ref());
-            let scale_score = compute_scale_score(config, &ranked.result, metadata.as_ref());
-            let balance_score = compute_balance_score(task, &ranked.result, metadata.as_ref());
-            let metadata_quality = compute_metadata_quality(&ranked.result, metadata.as_ref());
             let on_chain_score = match compute_on_chain_score(&ranked.result).await {
                 Ok(score) => score,
                 Err(error) => {
@@ -320,15 +340,43 @@ impl SearchEngine {
                     ON_CHAIN_SCORE_NEUTRAL
                 }
             };
-            let coarse_score = compose_coarse_score(
-                task_similarity,
-                schema_fit,
-                scale_score,
-                balance_score,
-                metadata_quality,
-                on_chain_score,
-                compute_freshness_bonus(&ranked.result),
-            );
+
+            let (coarse_score, schema_fit, scale_score, balance_score, metadata_quality) =
+                match scoring_profile {
+                    ScoringProfile::Academic => {
+                        let citation = compute_citation_score(&ranked.result);
+                        let venue = compute_venue_score(&ranked.result);
+                        let recency = compute_academic_recency(&ranked.result);
+                        let abstract_q = compute_abstract_quality(&ranked.result);
+                        let score = compose_academic_score(
+                            task_similarity,
+                            citation,
+                            venue,
+                            recency,
+                            abstract_q,
+                            on_chain_score,
+                        );
+                        // Map academic dimensions into the existing struct fields
+                        // schema_fit → citation, scale_score → venue, balance_score → recency
+                        (score, citation, venue, recency, abstract_q)
+                    }
+                    ScoringProfile::Dataset => {
+                        let sf = compute_schema_fit(task, &ranked.result, metadata.as_ref());
+                        let sc = compute_scale_score(config, &ranked.result, metadata.as_ref());
+                        let ba = compute_balance_score(task, &ranked.result, metadata.as_ref());
+                        let mq = compute_metadata_quality(&ranked.result, metadata.as_ref());
+                        let score = compose_coarse_score(
+                            task_similarity,
+                            sf,
+                            sc,
+                            ba,
+                            mq,
+                            on_chain_score,
+                            compute_freshness_bonus(&ranked.result),
+                        );
+                        (score, sf, sc, ba, mq)
+                    }
+                };
 
             candidates.push(ValuationCandidateState {
                 metadata: metadata.clone(),
@@ -887,7 +935,22 @@ fn rank_with_signal(
         None => 0.0,
     };
 
-    // Weighted combination
+    // Academic results get citation/venue boost instead of generic quality/community
+    if is_academic_result(result) {
+        let citation = compute_citation_score(result);
+        let venue = compute_venue_score(result);
+        let recency = compute_academic_recency(result);
+        return (0.40 * relevance
+            + 0.25 * citation
+            + 0.15 * venue
+            + 0.10 * recency
+            + 0.05 * community
+            + 0.05 * market_boost
+            - price_penalty)
+            .clamp(0.0, 100.0);
+    }
+
+    // Weighted combination (default dataset profile)
     0.30 * relevance
         + 0.25 * quality
         + 0.25 * community
@@ -1009,6 +1072,223 @@ pub(crate) fn compose_coarse_score(
         + 0.05 * metadata_quality
         + ON_CHAIN_COARSE_ADJUST_WEIGHT * (on_chain_score - ON_CHAIN_SCORE_NEUTRAL)
         + 0.05 * freshness_bonus)
+        .clamp(0.0, 100.0)
+}
+
+// ── Scoring profile auto-detection ──────────────────────────────────────
+
+/// Scoring profiles for different data discovery scenarios.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScoringProfile {
+    /// Default: tabular/structured dataset evaluation.
+    Dataset,
+    /// Academic literature discovery (papers from DBLP, S2, arXiv, etc.).
+    Academic,
+}
+
+/// Detect the appropriate scoring profile from the task and candidate results.
+pub(crate) fn detect_scoring_profile(
+    task: &DatasetSelectionTask,
+    results: &[RankedResult],
+) -> ScoringProfile {
+    // Check task type hints
+    let task_type = task.task_type.to_lowercase();
+    if task_type == "retrieval" || task_type == "literature_review" || task_type == "survey" {
+        let desc = task.task_description.to_lowercase();
+        if desc.contains("paper")
+            || desc.contains("literature")
+            || desc.contains("survey")
+            || desc.contains("academic")
+            || desc.contains("publication")
+            || desc.contains("文献")
+            || desc.contains("论文")
+            || desc.contains("调研")
+        {
+            return ScoringProfile::Academic;
+        }
+    }
+
+    // Check if majority of results are academic
+    if results.len() >= 3 {
+        let academic_count = results
+            .iter()
+            .filter(|r| is_academic_result(&r.result))
+            .count();
+        if academic_count * 2 >= results.len() {
+            return ScoringProfile::Academic;
+        }
+    }
+
+    ScoringProfile::Dataset
+}
+
+/// Check if a search result is from an academic source.
+fn is_academic_result(result: &SearchResult) -> bool {
+    matches!(
+        result.source,
+        DataSource::Dblp | DataSource::SemanticScholar | DataSource::Arxiv
+    ) || result
+        .source_attributes
+        .as_ref()
+        .and_then(|v| v.get("academic"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    || result.cid.0.contains("arxiv.org")
+    || result.cid.0.starts_with("10.")  // DOI
+    || result.cid.0.starts_with("s2:")
+    || result.cid.0.starts_with("dblp:")
+}
+
+/// Extract citation count from source_attributes, falling back to description text.
+fn extract_citation_count(result: &SearchResult) -> u64 {
+    // Primary: source_attributes
+    if let Some(count) = result
+        .source_attributes
+        .as_ref()
+        .and_then(|v| v.get("citation_count"))
+        .and_then(|v| v.as_u64())
+    {
+        return count;
+    }
+    // Fallback: parse "Citations: N" from description (Semantic Scholar format)
+    if let Some(desc) = &result.description {
+        if let Some(pos) = desc.find("Citations: ") {
+            let after = &desc[pos + 11..];
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = num_str.parse::<u64>() {
+                return n;
+            }
+        }
+    }
+    0
+}
+
+/// Compute citation impact score (log-saturating, 0-100).
+fn compute_citation_score(result: &SearchResult) -> f64 {
+    let citations = extract_citation_count(result);
+    if citations == 0 {
+        return 20.0; // neutral baseline for uncited/unknown
+    }
+    // log saturation: 100 citations → ~80, 1000 → ~95
+    let score = (citations as f64).ln() / (500.0_f64).ln() * 80.0 + 20.0;
+    score.clamp(0.0, 100.0)
+}
+
+/// Compute venue quality score based on known venue tiers.
+fn compute_venue_score(result: &SearchResult) -> f64 {
+    // Primary: source_attributes
+    let venue = result
+        .source_attributes
+        .as_ref()
+        .and_then(|v| v.get("venue"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !venue.is_empty() {
+        return score_venue_name(venue);
+    }
+    // Fallback: tags
+    if let Some(tag) = result.tags.first() {
+        if !tag.is_empty() {
+            return score_venue_name(tag);
+        }
+    }
+    // Fallback: parse venue from DBLP-style description "Author (Year). Venue."
+    if let Some(desc) = &result.description {
+        if let Some(pos) = desc.find("). ") {
+            let after = &desc[pos + 3..];
+            let venue_part: String = after
+                .chars()
+                .take_while(|&c| c != '.' && c != '\n')
+                .collect();
+            if !venue_part.is_empty() && venue_part.len() < 80 {
+                return score_venue_name(&venue_part);
+            }
+        }
+    }
+    30.0
+}
+
+fn score_venue_name(venue: &str) -> f64 {
+    let v = venue.to_lowercase();
+    // Top-tier venues
+    if [
+        "neurips", "nips", "icml", "iclr", "aaai", "ijcai", "cvpr", "iccv", "eccv", "acl", "emnlp",
+        "naacl", "sigmod", "vldb", "icde", "kdd", "www", "sigir", "nature", "science", "cell",
+        "pnas", "jmlr", "tmlr",
+    ]
+    .iter()
+    .any(|t| v.contains(t))
+    {
+        return 95.0;
+    }
+    // Strong venues
+    if ["corr", "arxiv", "transactions", "journal", "ieee", "acm"]
+        .iter()
+        .any(|t| v.contains(t))
+    {
+        return 60.0;
+    }
+    // Conference/workshop
+    if v.contains("conference") || v.contains("workshop") || v.contains("proceedings") {
+        return 50.0;
+    }
+    40.0
+}
+
+/// Compute recency score for academic papers (newer = better for survey tasks).
+fn compute_academic_recency(result: &SearchResult) -> f64 {
+    let age_days = (chrono::Utc::now() - result.created_at).num_days().max(0) as f64;
+    if age_days < 180.0 {
+        100.0 // < 6 months
+    } else if age_days < 365.0 {
+        85.0 // < 1 year
+    } else if age_days < 730.0 {
+        70.0 // < 2 years
+    } else if age_days < 1825.0 {
+        50.0 // < 5 years
+    } else {
+        30.0
+    }
+}
+
+/// Compute abstract/description quality for academic results.
+fn compute_abstract_quality(result: &SearchResult) -> f64 {
+    let desc_len = result.description.as_ref().map(|d| d.len()).unwrap_or(0);
+    let has_pdf = result
+        .source_attributes
+        .as_ref()
+        .and_then(|v| v.get("has_pdf"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let mut score: f64 = match desc_len {
+        0 => 10.0,
+        1..=50 => 30.0,
+        51..=200 => 60.0,
+        _ => 80.0,
+    };
+    if has_pdf {
+        score += 20.0;
+    }
+    score.clamp(0.0, 100.0)
+}
+
+/// Academic scoring: replaces schema_fit/scale_score/balance_score with
+/// citation_impact/venue_quality/recency for literature discovery.
+pub(crate) fn compose_academic_score(
+    task_similarity: f64,
+    citation_score: f64,
+    venue_score: f64,
+    recency_score: f64,
+    abstract_quality: f64,
+    on_chain_score: f64,
+) -> f64 {
+    (0.40 * task_similarity
+        + 0.25 * citation_score
+        + 0.15 * venue_score
+        + 0.10 * recency_score
+        + 0.05 * abstract_quality
+        + 0.05 * (on_chain_score - ON_CHAIN_SCORE_NEUTRAL + 50.0))
         .clamp(0.0, 100.0)
 }
 
@@ -1961,15 +2241,22 @@ fn supports_sampling_without_shape_estimate(result: &SearchResult) -> bool {
 }
 
 fn build_valuation_explanation(valuation: &DatasetValuation) -> String {
-    let mut parts = vec![
-        format!("coarse={:.1}", valuation.coarse_score),
-        format!("task={:.1}", valuation.task_similarity),
-        format!("schema={:.1}", valuation.schema_fit),
-        format!("scale={:.1}", valuation.scale_score),
-        format!("balance={:.1}", valuation.balance_score),
-        format!("meta={:.1}", valuation.metadata_quality),
-        format!("onchain={:.1}", valuation.on_chain_score),
-    ];
+    let academic = is_academic_result(&valuation.result);
+    let mut parts = vec![format!("coarse={:.1}", valuation.coarse_score)];
+
+    parts.push(format!("task={:.1}", valuation.task_similarity));
+    if academic {
+        parts.push(format!("citation={:.1}", valuation.schema_fit));
+        parts.push(format!("venue={:.1}", valuation.scale_score));
+        parts.push(format!("recency={:.1}", valuation.balance_score));
+        parts.push(format!("abstract={:.1}", valuation.metadata_quality));
+    } else {
+        parts.push(format!("schema={:.1}", valuation.schema_fit));
+        parts.push(format!("scale={:.1}", valuation.scale_score));
+        parts.push(format!("balance={:.1}", valuation.balance_score));
+        parts.push(format!("meta={:.1}", valuation.metadata_quality));
+    }
+    parts.push(format!("onchain={:.1}", valuation.on_chain_score));
 
     if let Some(plan) = &valuation.sample_plan {
         parts.push(format!(
