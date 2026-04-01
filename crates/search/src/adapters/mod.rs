@@ -1,3 +1,4 @@
+mod arxiv;
 mod bittorrent;
 mod datacite_commons;
 mod dblp;
@@ -12,6 +13,7 @@ mod local_file;
 pub mod pan_search;
 mod postgresql;
 mod rwa_xyz;
+mod semantic_scholar;
 mod sql_endpoint;
 pub(crate) mod util;
 
@@ -19,6 +21,7 @@ use anyhow::Result;
 use data_core::config::{DuckDbCatalog, PostgreSqlCatalog, SqlEndpointCatalog};
 use data_core::types::{DataSource, SearchResult};
 
+pub use arxiv::ArxivAdapter;
 pub use bittorrent::BitTorrentAdapter;
 pub use datacite_commons::DataCiteCommonsAdapter;
 pub use dblp::DblpAdapter;
@@ -33,6 +36,7 @@ pub use local_file::LocalFileAdapter;
 pub use pan_search::PanSearchAdapter;
 pub use postgresql::PostgreSqlAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
+pub use semantic_scholar::SemanticScholarAdapter;
 pub use sql_endpoint::SqlEndpointAdapter;
 
 #[cfg(test)]
@@ -74,6 +78,8 @@ pub fn adapters_with_config(
         Box::new(RwaXyzAdapter::default()),
         Box::new(PanSearchAdapter::default()),
         Box::new(DblpAdapter::default()),
+        Box::new(SemanticScholarAdapter::default()),
+        Box::new(ArxivAdapter::default()),
     ];
     if disabled.is_empty() {
         return all;
