@@ -1,10 +1,12 @@
 use anyhow::Result;
-use data_core::config::PaymentConfig;
+use data_core::config::{
+    DuckDbCatalog, NodeConfig, PaymentConfig, PostgreSqlCatalog, SqlEndpointCatalog,
+};
 use data_core::identity::NodeIdentity;
 use data_p2p::dht::DhtIndex;
 use data_p2p::network::NetworkHandle;
 use data_p2p::torrent::TorrentEngine;
-use data_search::adapters::default_adapters_filtered;
+use data_search::adapters::adapters_with_config;
 use data_search::engine::SearchEngine;
 use data_search::intent::IntentParser;
 use data_search::vector_index::VectorIndex;
@@ -98,9 +100,23 @@ impl AppState {
         feedback_store: FeedbackStore,
         payment: &PaymentConfig,
     ) -> Self {
+        Self::with_full_config(identity, dht, store, feedback_store, payment, &[], &[], &[]).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn with_full_config(
+        identity: NodeIdentity,
+        dht: DhtIndex,
+        store: MetadataStore,
+        feedback_store: FeedbackStore,
+        payment: &PaymentConfig,
+        duckdb_catalogs: &[DuckDbCatalog],
+        pg_catalogs: &[PostgreSqlCatalog],
+        sql_catalogs: &[SqlEndpointCatalog],
+    ) -> Self {
         let vector_index = VectorIndex;
         let intent_parser = IntentParser::default();
-        let adapters = default_adapters_filtered(&[]);
+        let adapters = adapters_with_config(&[], duckdb_catalogs, pg_catalogs, sql_catalogs);
         let search_engine = SearchEngine::new(vector_index, intent_parser, adapters);
 
         let wallet = AgentWallet::from_keyfile(&payment.wallet_key_path).unwrap_or_else(|_| {
@@ -114,7 +130,7 @@ impl AppState {
             .expect("hardcoded key")
         });
 
-        let download_dir = data_core::config::NodeConfig::config_dir().join("downloads");
+        let download_dir = NodeConfig::config_dir().join("downloads");
         let torrent_engine = match TorrentEngine::new(download_dir).await {
             Ok(engine) => {
                 tracing::info!("torrent engine initialized");

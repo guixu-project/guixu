@@ -1685,3 +1685,206 @@ async fn rwa_xyz_live_treasury_search() {
 // ---------------------------------------------------------------------------
 // Sync state storage — tested in data-storage crate
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// DuckDB / PostgreSQL / SQL Endpoint adapter tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn duckdb_adapter_returns_empty_when_unconfigured() {
+    let adapter = adapters::DuckDbAdapter::default();
+    assert_eq!(adapter.name(), "duckdb");
+    assert_eq!(adapter.source_type(), DataSource::DuckDb);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let results = rt.block_on(adapter.search("anything", 10)).unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn postgresql_adapter_returns_empty_when_unconfigured() {
+    let adapter = adapters::PostgreSqlAdapter::default();
+    assert_eq!(adapter.name(), "postgresql");
+    assert_eq!(adapter.source_type(), DataSource::PostgreSql);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let results = rt.block_on(adapter.search("anything", 10)).unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn sql_endpoint_adapter_returns_empty_when_unconfigured() {
+    let adapter = adapters::SqlEndpointAdapter::default();
+    assert_eq!(adapter.name(), "sql_endpoint");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let results = rt.block_on(adapter.search("anything", 10)).unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn dblp_adapter_returns_empty_name_and_source() {
+    let adapter = adapters::DblpAdapter::default();
+    assert_eq!(adapter.name(), "dblp");
+    assert_eq!(adapter.source_type(), DataSource::Dblp);
+}
+
+#[test]
+fn default_adapters_includes_dblp_and_sql_endpoint() {
+    let adapters = adapters::default_adapters();
+    let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
+    assert!(names.contains(&"dblp"), "missing dblp adapter");
+    assert!(
+        names.contains(&"sql_endpoint"),
+        "missing sql_endpoint adapter"
+    );
+}
+
+#[test]
+fn adapters_with_config_passes_catalogs() {
+    use data_core::config::{DuckDbCatalog, PostgreSqlCatalog, SqlEndpointCatalog, SqlEngine};
+
+    let duckdb_cats = vec![DuckDbCatalog {
+        label: "test".into(),
+        url: "http://localhost:19999".into(),
+    }];
+    let pg_cats = vec![PostgreSqlCatalog {
+        label: "test_pg".into(),
+        url: "postgres://localhost/test".into(),
+        schemas: vec![],
+    }];
+    let sql_cats = vec![SqlEndpointCatalog {
+        label: "test_presto".into(),
+        url: "http://localhost:18080".into(),
+        engine: SqlEngine::Presto,
+        catalog: None,
+        schemas: vec![],
+    }];
+
+    let adapters = adapters::adapters_with_config(&[], &duckdb_cats, &pg_cats, &sql_cats);
+    let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
+    assert!(names.contains(&"duckdb"));
+    assert!(names.contains(&"postgresql"));
+    assert!(names.contains(&"sql_endpoint"));
+
+    // No duplicates
+    let mut unique = names.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(names.len(), unique.len());
+}
+
+#[test]
+fn datasource_serde_new_variants() {
+    let variants = vec![
+        (DataSource::Dblp, "\"dblp\""),
+        (DataSource::Spark, "\"spark\""),
+        (DataSource::Flink, "\"flink\""),
+        (DataSource::Presto, "\"presto\""),
+    ];
+    for (variant, expected) in variants {
+        let json = serde_json::to_string(&variant).unwrap();
+        assert_eq!(json, expected, "serde mismatch for {:?}", variant);
+        let back: DataSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, variant);
+    }
+}
+
+#[test]
+fn node_config_parses_external_catalogs() {
+    use data_core::config::{DuckDbCatalog, PostgreSqlCatalog, SqlEndpointCatalog, SqlEngine};
+
+    // Test individual catalog structs deserialize correctly
+    let duckdb: DuckDbCatalog =
+        serde_json::from_str(r#"{"label":"analytics","url":"http://localhost:9999"}"#).unwrap();
+    assert_eq!(duckdb.label, "analytics");
+    assert_eq!(duckdb.url, "http://localhost:9999");
+
+    let pg: PostgreSqlCatalog = serde_json::from_str(
+        r#"{"label":"warehouse","url":"postgres://user:pass@localhost/db","schemas":["public"]}"#,
+    )
+    .unwrap();
+    assert_eq!(pg.label, "warehouse");
+    assert_eq!(pg.schemas, vec!["public"]);
+
+    let sql: SqlEndpointCatalog = serde_json::from_str(
+        r#"{"label":"trino","url":"http://localhost:8080","engine":"presto","catalog":"hive","schemas":["default"]}"#,
+    )
+    .unwrap();
+    assert_eq!(sql.engine, SqlEngine::Presto);
+    assert_eq!(sql.catalog, Some("hive".into()));
+    assert_eq!(sql.schemas, vec!["default"]);
+
+    // Spark and Flink engines
+    let spark: SqlEndpointCatalog = serde_json::from_str(
+        r#"{"label":"spark","url":"http://localhost:10000","engine":"spark"}"#,
+    )
+    .unwrap();
+    assert_eq!(spark.engine, SqlEngine::Spark);
+
+    let flink: SqlEndpointCatalog =
+        serde_json::from_str(r#"{"label":"flink","url":"http://localhost:8083","engine":"flink"}"#)
+            .unwrap();
+    assert_eq!(flink.engine, SqlEngine::Flink);
+}
+
+#[tokio::test]
+#[ignore] // requires network — DuckDB HTTP server on localhost:9999
+async fn duckdb_http_live_search() {
+    let adapter = adapters::DuckDbAdapter::with_catalogs(vec![data_core::config::DuckDbCatalog {
+        label: "test".into(),
+        url: "http://localhost:9999".into(),
+    }]);
+    let results = adapter.search("test", 10).await.unwrap();
+    for r in &results {
+        assert_eq!(r.source, DataSource::DuckDb);
+        assert!(r.source_attributes.is_some());
+        let attrs = r.source_attributes.as_ref().unwrap();
+        assert_eq!(attrs["is_external_db"], true);
+    }
+}
+
+#[tokio::test]
+#[ignore] // requires network — PostgreSQL on localhost
+async fn postgresql_live_search() {
+    let url = std::env::var("GUIXU_TEST_POSTGRES_URL")
+        .unwrap_or_else(|_| "postgres://localhost/postgres".into());
+    let adapter =
+        adapters::PostgreSqlAdapter::with_catalogs(vec![data_core::config::PostgreSqlCatalog {
+            label: "test".into(),
+            url,
+            schemas: vec!["public".into()],
+        }]);
+    let results = adapter.search("test", 10).await.unwrap();
+    for r in &results {
+        assert_eq!(r.source, DataSource::PostgreSql);
+        assert!(r.source_attributes.is_some());
+    }
+}
+
+#[tokio::test]
+#[ignore] // requires network — Presto/Trino on localhost:8080
+async fn presto_live_search() {
+    let adapter =
+        adapters::SqlEndpointAdapter::with_catalogs(vec![data_core::config::SqlEndpointCatalog {
+            label: "test".into(),
+            url: "http://localhost:8080".into(),
+            engine: data_core::config::SqlEngine::Presto,
+            catalog: None,
+            schemas: vec![],
+        }]);
+    let results = adapter.search("test", 10).await.unwrap();
+    for r in &results {
+        assert_eq!(r.source, DataSource::Presto);
+    }
+}
+
+#[tokio::test]
+#[ignore] // requires network
+async fn dblp_live_search() {
+    let adapter = adapters::DblpAdapter::default();
+    let results = adapter.search("transformer attention", 5).await.unwrap();
+    assert!(!results.is_empty(), "expected DBLP results");
+    for r in &results {
+        assert_eq!(r.source, DataSource::Dblp);
+        assert_eq!(r.data_type, DataType::Text);
+        assert!(!r.title.is_empty());
+    }
+}

@@ -12,9 +12,11 @@ mod local_file;
 pub mod pan_search;
 mod postgresql;
 mod rwa_xyz;
+mod sql_endpoint;
 pub(crate) mod util;
 
 use anyhow::Result;
+use data_core::config::{DuckDbCatalog, PostgreSqlCatalog, SqlEndpointCatalog};
 use data_core::types::{DataSource, SearchResult};
 
 pub use bittorrent::BitTorrentAdapter;
@@ -31,6 +33,7 @@ pub use local_file::LocalFileAdapter;
 pub use pan_search::PanSearchAdapter;
 pub use postgresql::PostgreSqlAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
+pub use sql_endpoint::SqlEndpointAdapter;
 
 #[cfg(test)]
 pub(crate) use util::infer_data_type_from_title;
@@ -45,14 +48,25 @@ pub trait ExternalAdapter: Send + Sync {
 
 /// Create all default adapters, filtering out any whose name is in `disabled`.
 pub fn default_adapters_filtered(disabled: &[String]) -> Vec<Box<dyn ExternalAdapter>> {
+    adapters_with_config(disabled, &[], &[], &[])
+}
+
+/// Create adapters with external database catalogs configured.
+pub fn adapters_with_config(
+    disabled: &[String],
+    duckdb_catalogs: &[DuckDbCatalog],
+    pg_catalogs: &[PostgreSqlCatalog],
+    sql_catalogs: &[SqlEndpointCatalog],
+) -> Vec<Box<dyn ExternalAdapter>> {
     let all: Vec<Box<dyn ExternalAdapter>> = vec![
         Box::new(KaggleAdapter::default()),
         Box::new(HuggingFaceAdapter::default()),
         Box::new(IpfsAdapter::default()),
         Box::new(GuixuHubAdapter::default()),
         Box::new(BitTorrentAdapter::default()),
-        Box::new(PostgreSqlAdapter::default()),
-        Box::new(DuckDbAdapter::default()),
+        Box::new(PostgreSqlAdapter::with_catalogs(pg_catalogs.to_vec())),
+        Box::new(DuckDbAdapter::with_catalogs(duckdb_catalogs.to_vec())),
+        Box::new(SqlEndpointAdapter::with_catalogs(sql_catalogs.to_vec())),
         Box::new(LocalFileAdapter::default()),
         Box::new(GoogleDatasetSearchAdapter::default()),
         Box::new(DataCiteCommonsAdapter::default()),

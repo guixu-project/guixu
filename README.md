@@ -59,4 +59,6 @@ guixu mcp --mode http   # MCP over HTTP on :3927/rpc
 
 ## License
 
-Apache-2.0
+Licensed under the Apache License, Version 2.0 ([LICENSE](LICENSE) or <https://www.apache.org/licenses/LICENSE-2.0>).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you shall be licensed under the Apache-2.0 license, without any additional terms or conditions.
