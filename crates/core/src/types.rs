@@ -190,6 +190,8 @@ pub enum DataSource {
     TheGraph,
     PanSearch,
     Dblp,
+    SemanticScholar,
+    Arxiv,
     Spark,
     Flink,
     Presto,
