@@ -55,7 +55,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_search".into(),
-            description: "Search datasets across DefiLlama, RWA.xyz, Kaggle, HuggingFace, IPFS, BitTorrent, and P2P network. Supports free open data discovery.".into(),
+            description: "Search datasets across DefiLlama, RWA.xyz, Kaggle, HuggingFace, IPFS, BitTorrent, DBLP, Semantic Scholar, arXiv, and P2P network. Supports free open data discovery.".into(),
             annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
@@ -80,7 +80,8 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                                     "guixuhub", "kaggle", "huggingface",
                                     "ipfs", "bittorrent", "postgresql",
                                     "duckdb", "googledatasetsearch",
-                                    "datacitecommons", "pansearch", "p2p"
+                                    "datacitecommons", "pansearch", "p2p",
+                                    "dblp", "semanticscholar", "arxiv"
                                 ]
                             },
                             "chain": { "type": "string", "description": "Filter by blockchain (e.g. ethereum, polygon)" },
