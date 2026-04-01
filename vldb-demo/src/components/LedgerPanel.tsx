@@ -393,11 +393,11 @@ const LedgerPanel = ({
       return
     }
 
-    setActiveDatasetId(prev => (
-      prev && datasets.some(dataset => dataset.id === prev)
-        ? prev
-        : datasets[0].id
-    ))
+    setActiveDatasetId(prev => {
+      if (prev && datasets.some(dataset => dataset.id === prev)) return prev;
+      const cool = datasets.find(d => d.title?.toLowerCase().includes('cool avatar'));
+      return cool ? cool.id : datasets[0].id;
+    })
   }, [datasets])
 
   useEffect(() => {

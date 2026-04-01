@@ -321,7 +321,7 @@ const PlanningPanel = ({
   const stageRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const initialPresetIndex = paperMode ? 1 : 0
+  const initialPresetIndex = paperMode ? 1 : 1
   const initialQuery = presetQueries[initialPresetIndex]
   const initialSources = presetDefaultSources[initialPresetIndex]
 
@@ -731,6 +731,9 @@ const PlanningPanel = ({
       presetIndex,
       launchId: nextLaunchId,
     })
+
+    if (window.parent !== window)
+      window.parent.postMessage({ type: 'guixu-demo-started' }, '*')
   }
 
   return (
@@ -741,6 +744,14 @@ const PlanningPanel = ({
 
       <div className="planning-launcher">
         <div className="input-shell">
+          <button
+            type="button"
+            className="launch-button"
+            disabled={!canLaunch || paperMode}
+            onClick={launchWorkflow}
+          >
+            {paperMode ? 'Paper Mode' : 'Start'}
+          </button>
           <input
             id="demo-query"
             type="text"
@@ -784,15 +795,6 @@ const PlanningPanel = ({
               </button>
             ))}
           </div>
-
-          <button
-            type="button"
-            className="launch-button"
-            disabled={!canLaunch || paperMode}
-            onClick={launchWorkflow}
-          >
-            {paperMode ? 'Paper Mode' : 'Start'}
-          </button>
         </div>
       </div>
 
