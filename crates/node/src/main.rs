@@ -263,7 +263,7 @@ async fn cmd_start() -> Result<()> {
 
     // Start embedded Web UI + MCP HTTP server
     let state = Arc::new(McpServer::new(
-        AppState::with_payment_config(
+        AppState::with_full_config(
             NodeIdentity::from_seed(identity.seed()),
             DhtIndex::new(data_p2p::network::NetworkHandle {
                 cmd_tx: dht.handle().cmd_tx.clone(),
@@ -272,6 +272,9 @@ async fn cmd_start() -> Result<()> {
             store,
             feedback_store,
             &config.payment,
+            &config.external_duckdb,
+            &config.external_postgresql,
+            &config.external_sql,
         )
         .await,
     ));
@@ -355,12 +358,15 @@ async fn cmd_mcp(mode: String) -> Result<()> {
     });
 
     let state = Arc::new(McpServer::new(
-        AppState::with_payment_config(
+        AppState::with_full_config(
             NodeIdentity::from_seed(identity.seed()),
             dht,
             store,
             feedback_store,
             &config.payment,
+            &config.external_duckdb,
+            &config.external_postgresql,
+            &config.external_sql,
         )
         .await,
     ));

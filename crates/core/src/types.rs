@@ -190,6 +190,9 @@ pub enum DataSource {
     TheGraph,
     PanSearch,
     Dblp,
+    Spark,
+    Flink,
+    Presto,
 }
 
 /// Payment protocol used for a transaction.

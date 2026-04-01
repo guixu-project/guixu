@@ -21,6 +21,7 @@ rand = { workspace = true }
 glob = "0.3"
 base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+tokio-postgres = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

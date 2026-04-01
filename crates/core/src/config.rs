@@ -39,6 +39,55 @@ pub struct NodeConfig {
     /// Which sources to sync. Empty = all enabled.
     #[serde(default)]
     pub catalog_sync_sources: Vec<String>,
+    /// External DuckDB catalogs for dataset search.
+    #[serde(default)]
+    pub external_duckdb: Vec<DuckDbCatalog>,
+    /// External PostgreSQL catalogs for dataset search.
+    #[serde(default)]
+    pub external_postgresql: Vec<PostgreSqlCatalog>,
+    /// External SQL-over-HTTP catalogs (Spark Thrift, Flink SQL Gateway, Presto/Trino).
+    #[serde(default)]
+    pub external_sql: Vec<SqlEndpointCatalog>,
+}
+
+/// A DuckDB HTTP server to expose as a searchable catalog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuckDbCatalog {
+    pub label: String,
+    /// HTTP URL, e.g. `http://localhost:9999`
+    pub url: String,
+}
+
+/// A PostgreSQL database to expose as a searchable catalog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgreSqlCatalog {
+    pub label: String,
+    pub url: String,
+    #[serde(default)]
+    pub schemas: Vec<String>,
+}
+
+/// A SQL-over-HTTP endpoint (Presto/Trino, Spark Thrift via HTTP, Flink SQL Gateway).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SqlEndpointCatalog {
+    pub label: String,
+    /// HTTP base URL, e.g. `http://localhost:8080` for Presto/Trino.
+    pub url: String,
+    /// Engine type: "presto", "spark", "flink".
+    pub engine: SqlEngine,
+    /// Optional catalog name (Presto/Trino concept).
+    #[serde(default)]
+    pub catalog: Option<String>,
+    #[serde(default)]
+    pub schemas: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SqlEngine {
+    Presto,
+    Spark,
+    Flink,
 }
 
 /// Payment subsystem configuration.
@@ -156,6 +205,9 @@ impl Default for NodeConfig {
             catalog_sync_enabled: false,
             catalog_sync_interval_secs: default_catalog_sync_interval_secs(),
             catalog_sync_sources: vec![],
+            external_duckdb: vec![],
+            external_postgresql: vec![],
+            external_sql: vec![],
         }
     }
 }
