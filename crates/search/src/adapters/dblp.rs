@@ -104,7 +104,13 @@ impl ExternalAdapter for DblpAdapter {
                     data_type: DataType::Text,
                     created_at: parse_year(year),
                     seller_endpoint: None,
-                    source_attributes: None,
+                    source_attributes: Some(serde_json::json!({
+                        "academic": true,
+                        "venue": venue,
+                        "pub_type": pub_type,
+                        "authors": authors,
+                        "year": year,
+                    })),
                 })
             })
             .collect())

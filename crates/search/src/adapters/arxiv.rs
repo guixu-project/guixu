@@ -116,7 +116,7 @@ fn parse_atom_feed(xml: &str, limit: usize) -> Result<Vec<SearchResult>> {
             tags: if category.is_empty() {
                 vec![]
             } else {
-                vec![category]
+                vec![category.clone()]
             },
             schema: DatasetSchema {
                 columns: vec![],
@@ -136,7 +136,12 @@ fn parse_atom_feed(xml: &str, limit: usize) -> Result<Vec<SearchResult>> {
             data_type: DataType::Text,
             created_at,
             seller_endpoint: None,
-            source_attributes: None,
+            source_attributes: Some(serde_json::json!({
+                "academic": true,
+                "category": category,
+                "authors": authors,
+                "has_pdf": !pdf_link.is_empty(),
+            })),
         });
     }
     Ok(results)
