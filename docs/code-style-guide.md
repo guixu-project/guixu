@@ -1,3 +1,8 @@
+<!--
+Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Guixu Code Style Guide
 
 This project enforces a consistent code style across all contributors using Rust's standard tooling: `rustfmt` for formatting, `clippy` for linting, and CI for enforcement.

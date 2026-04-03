@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import { useEffect, useState } from 'react'
 import DemoHeader from './components/DemoHeader'
 import LedgerPanel from './components/LedgerPanel'

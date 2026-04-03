@@ -1,3 +1,6 @@
+// Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+// SPDX-License-Identifier: Apache-2.0
+
 use anyhow::Result;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};

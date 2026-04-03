@@ -1,3 +1,6 @@
+// Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+// SPDX-License-Identifier: Apache-2.0
+
 use alloy_primitives::{Address, FixedBytes, U256};
 use alloy_signer::Signer;
 use alloy_signer_local::PrivateKeySigner;

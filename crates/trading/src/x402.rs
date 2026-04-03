@@ -1,3 +1,6 @@
+// Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+// SPDX-License-Identifier: Apache-2.0
+
 use alloy_primitives::{Address, U256};
 use anyhow::{bail, Context, Result};
 use base64::Engine;

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+# SPDX-License-Identifier: Apache-2.0
+
 name: CI
 
 on:
@@ -7,6 +10,12 @@ on:
     branches: [main]
 
 jobs:
+  license-headers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/spdx_headers.py check
+
   fmt:
     runs-on: ubuntu-latest
     steps:
