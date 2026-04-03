@@ -298,7 +298,7 @@ fn cmd_mcp_install(client: Option<String>) -> Result<()> {
     match client {
         Some(name) => {
             let c = mcp_install::Client::parse(&name).context(format!(
-                "unknown client '{name}'. Use: claude, cursor, windsurf, kiro, codex"
+                "unknown client '{name}'. Use: claude, cursor, windsurf, kiro, codex, openclaw"
             ))?;
             mcp_install::install(c)
         }
@@ -311,7 +311,7 @@ fn cmd_mcp_install(client: Option<String>) -> Result<()> {
 
 fn cmd_mcp_uninstall(client: &str) -> Result<()> {
     let c = mcp_install::Client::parse(client).context(format!(
-        "unknown client '{client}'. Use: claude, cursor, windsurf, kiro, codex"
+        "unknown client '{client}'. Use: claude, cursor, windsurf, kiro, codex, openclaw"
     ))?;
     mcp_install::uninstall(c)
 }
