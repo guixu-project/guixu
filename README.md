@@ -1,3 +1,8 @@
+<!--
+Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Guixu
 
 Guixu is the Data Discovery and Market Platform for Autonomous AI Agents. Guixu empowers AI agents with P2P data discovery and decentralized data trading on Blockchain. Sellers upload encrypted data, buyers pay via smart contract and leave on‑chain reviews. AI agents can autonomously discover both free and paid datasets through a unified interface on Guixu.
@@ -59,6 +64,8 @@ guixu mcp --mode http   # MCP over HTTP on :3927/rpc
 
 ## License
 
-Licensed under the Apache License, Version 2.0 ([LICENSE](LICENSE) or <https://www.apache.org/licenses/LICENSE-2.0>).
+Guixu is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text and [NOTICE](NOTICE) for repository attribution notices.
 
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you shall be licensed under the Apache-2.0 license, without any additional terms or conditions.
+Trademark use is governed separately. `Guixu`, the Guixu logo, and related marks are not licensed under Apache-2.0 except for reasonable and customary use in describing the origin of the software and reproducing the NOTICE file. See [TRADEMARKS.md](TRADEMARKS.md).
+
+Contribution terms are described in [CONTRIBUTING.md](CONTRIBUTING.md) and [CLA.md](CLA.md). Unless you explicitly state otherwise in writing and the maintainers agree, any contribution intentionally submitted for inclusion in this project is submitted under Apache-2.0, subject to any separate signed contributor agreement that applies.

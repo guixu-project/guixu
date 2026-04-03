@@ -1,3 +1,6 @@
+// Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+// SPDX-License-Identifier: Apache-2.0
+
 //! End-to-end MCP integration test: academic literature discovery for AI agents.
 //!
 //! Simulates a Codex agent using Guixu MCP to discover academic papers about

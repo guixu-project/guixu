@@ -1,3 +1,6 @@
+// Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::buyer_review::{summarize_reviews, BuyerReview};
 use crate::client::{BasescanTx, PaymentAmount, PaymentToken};
 use crate::seller_reputation::{compute_tier, ReputationTier};

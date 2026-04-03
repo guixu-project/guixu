@@ -1,3 +1,6 @@
+# Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+# SPDX-License-Identifier: Apache-2.0
+
 ARG RUST_IMAGE=rust:1.85-bookworm
 ARG DEBIAN_IMAGE=debian:bookworm-slim
 

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+// SPDX-License-Identifier: Apache-2.0
+
 /// Embedded Web UI for dataset publishing.
 /// Served at GET / when running `guixu start` or `guixu mcp --mode http`.
 pub const INDEX_HTML: &str = r##"<!DOCTYPE html>

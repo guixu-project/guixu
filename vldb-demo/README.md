@@ -1,3 +1,8 @@
+<!--
+Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # VLDB Demo Design Pack
 
 This folder contains the standalone design package and the `Vite + React + TypeScript` frontend skeleton for the `VLDB 2026` Guixu demo UI.

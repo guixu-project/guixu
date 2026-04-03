@@ -1,3 +1,6 @@
+// Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+// SPDX-License-Identifier: Apache-2.0
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -295,7 +298,7 @@ fn cmd_mcp_install(client: Option<String>) -> Result<()> {
     match client {
         Some(name) => {
             let c = mcp_install::Client::parse(&name).context(format!(
-                "unknown client '{name}'. Use: claude, cursor, windsurf, kiro, codex"
+                "unknown client '{name}'. Use: claude, cursor, windsurf, kiro, codex, openclaw"
             ))?;
             mcp_install::install(c)
         }
@@ -308,7 +311,7 @@ fn cmd_mcp_install(client: Option<String>) -> Result<()> {
 
 fn cmd_mcp_uninstall(client: &str) -> Result<()> {
     let c = mcp_install::Client::parse(client).context(format!(
-        "unknown client '{client}'. Use: claude, cursor, windsurf, kiro, codex"
+        "unknown client '{client}'. Use: claude, cursor, windsurf, kiro, codex, openclaw"
     ))?;
     mcp_install::uninstall(c)
 }
