@@ -20,7 +20,7 @@ use data_search::intent::{IntentParser, QueryProfile};
 use data_search::sample_eval::{
     DeepSeekSeedRecordJudge, DownloadedSample, GeminiImageSeedRecordJudge,
     GuixuHubSampleDownloader, LlmSampleJudge, LocalHeuristicProxyScorer, ProxyScreeningReport,
-    RandomSeedSimilarityEvaluator, RandomSeedSimilarityEvaluatorConfig, SampleJudgeReport,
+    ProxyLabelPropagationEvaluator, ProxyLabelPropagationConfig, SampleJudgeReport,
     SampleRequirements, SampleRequirementsPlanner, SeedRecordJudge, SeedRecordJudgeReport,
     StagedSampleEvaluator, StagedSampleEvaluatorConfig,
 };
@@ -102,9 +102,9 @@ impl LlmSampleJudge for ScreeningSimilarityJudge {
 }
 
 enum RuntimeSampleEvaluator {
-    RandomSeed(RandomSeedSimilarityEvaluator),
+    RandomSeed(ProxyLabelPropagationEvaluator),
     Hybrid {
-        image_seed: RandomSeedSimilarityEvaluator,
+        image_seed: ProxyLabelPropagationEvaluator,
         staged: StagedSampleEvaluator,
     },
 }
@@ -476,14 +476,14 @@ fn build_runtime_staged_evaluator() -> StagedSampleEvaluator {
 }
 
 fn build_runtime_sample_evaluator() -> RuntimeSampleEvaluator {
-    let image_seed = RandomSeedSimilarityEvaluator::with_config(
+    let image_seed = ProxyLabelPropagationEvaluator::with_config(
         Box::new(build_runtime_sample_downloader()),
         Box::new(RuntimeSeedJudge {
             deepseek: runtime_deepseek_available()
                 .then(|| DeepSeekSeedRecordJudge::from_env().with_record_char_limit(600)),
             gemini: GeminiImageSeedRecordJudge::from_env().with_record_char_limit(600),
         }),
-        RandomSeedSimilarityEvaluatorConfig {
+        ProxyLabelPropagationConfig {
             seed_record_count: 4,
             low_score_threshold: 35.0,
             high_score_threshold: 75.0,
@@ -610,23 +610,23 @@ fn final_score_from_valuation(
 
     let metadata_components = [
         (
-            "task_similarity",
-            "Task Similarity",
-            valuation.task_similarity,
+            "relevance",
+            "Relevance",
+            valuation.relevance,
             0.55,
         ),
         ("schema_fit", "Schema Fit", valuation.schema_fit, 0.15),
         ("scale_score", "Scale Score", valuation.scale_score, 0.15),
         (
-            "balance_score",
-            "Balance Score",
-            valuation.balance_score,
+            "label_quality",
+            "Label Quality",
+            valuation.label_quality,
             0.10,
         ),
         (
-            "metadata_quality",
-            "Metadata Quality",
-            valuation.metadata_quality,
+            "metadata_completeness",
+            "Metadata Completeness",
+            valuation.metadata_completeness,
             0.05,
         ),
     ];
@@ -1444,11 +1444,11 @@ mod tests {
             result: fake_result("unsampled"),
             coarse_score: 100.0,
             final_score: 100.0,
-            task_similarity: 100.0,
+            relevance: 100.0,
             schema_fit: 100.0,
             scale_score: 100.0,
-            balance_score: 100.0,
-            metadata_quality: 100.0,
+            label_quality: 100.0,
+            metadata_completeness: 100.0,
             on_chain_score: 50.0,
             metadata_resolved: false,
             sample_plan: None,
@@ -1460,11 +1460,11 @@ mod tests {
             result: fake_result("sampled"),
             coarse_score: 10.0,
             final_score: 10.0,
-            task_similarity: 10.0,
+            relevance: 10.0,
             schema_fit: 10.0,
             scale_score: 10.0,
-            balance_score: 10.0,
-            metadata_quality: 10.0,
+            label_quality: 10.0,
+            metadata_completeness: 10.0,
             on_chain_score: 50.0,
             metadata_resolved: true,
             sample_plan: None,
@@ -1519,11 +1519,11 @@ mod tests {
             },
             coarse_score: 80.0,
             final_score: 80.0,
-            task_similarity: 80.0,
+            relevance: 80.0,
             schema_fit: 80.0,
             scale_score: 80.0,
-            balance_score: 80.0,
-            metadata_quality: 80.0,
+            label_quality: 80.0,
+            metadata_completeness: 80.0,
             on_chain_score: 90.0,
             metadata_resolved: true,
             sample_plan: None,
@@ -1611,6 +1611,18 @@ mod tests {
         assert_eq!(
             compact["data_standard"]["max_dataset_size_bytes"],
             562_500_000
+        );
+    }
+}
+  562_500_000
+        );
+    }
+}
+0_000
+        );
+    }
+}
+0_000
         );
     }
 }

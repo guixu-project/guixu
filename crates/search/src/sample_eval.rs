@@ -366,7 +366,7 @@ pub trait SeedRecordJudge: Send + Sync {
 
 /// Runtime knobs for the random-seed + low-score-similarity evaluator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RandomSeedSimilarityEvaluatorConfig {
+pub struct ProxyLabelPropagationConfig {
     pub seed_record_count: usize,
     pub low_score_threshold: f64,
     pub high_score_threshold: f64,
@@ -374,7 +374,7 @@ pub struct RandomSeedSimilarityEvaluatorConfig {
     pub selection_seed: u64,
 }
 
-impl Default for RandomSeedSimilarityEvaluatorConfig {
+impl Default for ProxyLabelPropagationConfig {
     fn default() -> Self {
         Self {
             seed_record_count: 4,
@@ -558,25 +558,21 @@ impl SampleEvaluator for StagedSampleEvaluator {
 /// 3. Split those records into high-score / low-score anchors.
 /// 4. Score the remaining records locally by their cosine similarity to low-score anchors.
 /// 5. Average the seed and propagated scores to estimate dataset utility.
-pub struct RandomSeedSimilarityEvaluator {
+pub struct ProxyLabelPropagationEvaluator {
     downloader: Box<dyn SampleDownloader>,
     judge: Box<dyn SeedRecordJudge>,
-    config: RandomSeedSimilarityEvaluatorConfig,
+    config: ProxyLabelPropagationConfig,
 }
 
-impl RandomSeedSimilarityEvaluator {
+impl ProxyLabelPropagationEvaluator {
     pub fn new(downloader: Box<dyn SampleDownloader>, judge: Box<dyn SeedRecordJudge>) -> Self {
-        Self::with_config(
-            downloader,
-            judge,
-            RandomSeedSimilarityEvaluatorConfig::default(),
-        )
+        Self::with_config(downloader, judge, ProxyLabelPropagationConfig::default())
     }
 
     pub fn with_config(
         downloader: Box<dyn SampleDownloader>,
         judge: Box<dyn SeedRecordJudge>,
-        config: RandomSeedSimilarityEvaluatorConfig,
+        config: ProxyLabelPropagationConfig,
     ) -> Self {
         Self {
             downloader,
@@ -594,7 +590,7 @@ struct ScoredSeedSampleRecord {
 }
 
 #[async_trait::async_trait]
-impl SampleEvaluator for RandomSeedSimilarityEvaluator {
+impl SampleEvaluator for ProxyLabelPropagationEvaluator {
     async fn evaluate_sample(
         &self,
         result: &SearchResult,
@@ -848,7 +844,7 @@ fn select_seed_indices(
     result: &SearchResult,
     task: &DatasetSelectionTask,
     records: &[SampleRecord],
-    config: &RandomSeedSimilarityEvaluatorConfig,
+    config: &ProxyLabelPropagationConfig,
 ) -> Vec<usize> {
     if records.is_empty() {
         return vec![];
@@ -938,12 +934,12 @@ fn should_propagate_from_anchor(
     secondary_similarity: f64,
     anchor_exists: bool,
 ) -> bool {
-    const MIN_ANCHOR_SIMILARITY: f64 = 55.0;
-    const MIN_SIMILARITY_GAP: f64 = 8.0;
+    const MIN_PROPAGATION_SIMILARITY: f64 = 55.0;
+    const PROPAGATION_GAP_THRESHOLD: f64 = 8.0;
 
     anchor_exists
-        && primary_similarity >= MIN_ANCHOR_SIMILARITY
-        && primary_similarity >= secondary_similarity + MIN_SIMILARITY_GAP
+        && primary_similarity >= MIN_PROPAGATION_SIMILARITY
+        && primary_similarity >= secondary_similarity + PROPAGATION_GAP_THRESHOLD
 }
 
 fn guixu_hub_listing_id(result: &SearchResult) -> Option<String> {

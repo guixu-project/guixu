@@ -331,7 +331,7 @@ impl SearchEngine {
                 }
             }
 
-            let task_similarity = compute_task_similarity(task, &ranked.result, metadata.as_ref());
+            let relevance = compute_relevance(task, &ranked.result, metadata.as_ref());
             let on_chain_score = match compute_on_chain_score(&ranked.result).await {
                 Ok(score) => score,
                 Err(error) => {
@@ -344,7 +344,7 @@ impl SearchEngine {
                 }
             };
 
-            let (coarse_score, schema_fit, scale_score, balance_score, metadata_quality) =
+            let (coarse_score, schema_fit, scale_score, label_quality, metadata_completeness) =
                 match scoring_profile {
                     ScoringProfile::Academic => {
                         let citation = compute_citation_score(&ranked.result);
@@ -352,7 +352,7 @@ impl SearchEngine {
                         let recency = compute_academic_recency(&ranked.result);
                         let abstract_q = compute_abstract_quality(&ranked.result);
                         let score = compose_academic_score(
-                            task_similarity,
+                            relevance,
                             citation,
                             venue,
                             recency,
@@ -360,16 +360,16 @@ impl SearchEngine {
                             on_chain_score,
                         );
                         // Map academic dimensions into the existing struct fields
-                        // schema_fit → citation, scale_score → venue, balance_score → recency
+                        // schema_fit → citation, scale_score → venue, label_quality → recency
                         (score, citation, venue, recency, abstract_q)
                     }
                     ScoringProfile::Dataset => {
                         let sf = compute_schema_fit(task, &ranked.result, metadata.as_ref());
                         let sc = compute_scale_score(config, &ranked.result, metadata.as_ref());
-                        let ba = compute_balance_score(task, &ranked.result, metadata.as_ref());
-                        let mq = compute_metadata_quality(&ranked.result, metadata.as_ref());
+                        let ba = compute_label_quality(task, &ranked.result, metadata.as_ref());
+                        let mq = compute_metadata_completeness(&ranked.result, metadata.as_ref());
                         let score = compose_coarse_score(
-                            task_similarity,
+                            relevance,
                             sf,
                             sc,
                             ba,
@@ -387,11 +387,11 @@ impl SearchEngine {
                     result: ranked.result.clone(),
                     coarse_score,
                     final_score: coarse_score,
-                    task_similarity,
+                    relevance,
                     schema_fit,
                     scale_score,
-                    balance_score,
-                    metadata_quality,
+                    label_quality,
+                    metadata_completeness,
                     on_chain_score,
                     metadata_resolved: metadata.is_some(),
                     sample_plan: None,
@@ -486,7 +486,7 @@ impl SearchEngine {
             }
 
             if let Some(plan) =
-                select_collection_from_batch(task, &candidates[..batch_end], 0, batch_index)
+                knapsack_select_from_batch(task, &candidates[..batch_end], 0, batch_index)
             {
                 stop_after_batch_end = Some(batch_end);
                 selected_collection_plan = Some(plan);
@@ -775,11 +775,11 @@ pub struct DatasetValuation {
     pub result: SearchResult,
     pub coarse_score: f64,
     pub final_score: f64,
-    pub task_similarity: f64,
+    pub relevance: f64,
     pub schema_fit: f64,
     pub scale_score: f64,
-    pub balance_score: f64,
-    pub metadata_quality: f64,
+    pub label_quality: f64,
+    pub metadata_completeness: f64,
     pub on_chain_score: f64,
     pub metadata_resolved: bool,
     pub sample_plan: Option<SamplePlan>,
@@ -1060,19 +1060,19 @@ fn strict_task_data_type(task_type: Option<&str>) -> Option<data_core::types::Da
 }
 
 pub(crate) fn compose_coarse_score(
-    task_similarity: f64,
+    relevance: f64,
     schema_fit: f64,
     scale_score: f64,
-    balance_score: f64,
-    metadata_quality: f64,
+    label_quality: f64,
+    metadata_completeness: f64,
     on_chain_score: f64,
     freshness_bonus: f64,
 ) -> f64 {
-    (0.50 * task_similarity
+    (0.50 * relevance
         + 0.15 * schema_fit
         + 0.15 * scale_score
-        + 0.10 * balance_score
-        + 0.05 * metadata_quality
+        + 0.10 * label_quality
+        + 0.05 * metadata_completeness
         + ON_CHAIN_COARSE_ADJUST_WEIGHT * (on_chain_score - ON_CHAIN_SCORE_NEUTRAL)
         + 0.05 * freshness_bonus)
         .clamp(0.0, 100.0)
@@ -1276,17 +1276,17 @@ fn compute_abstract_quality(result: &SearchResult) -> f64 {
     score.clamp(0.0, 100.0)
 }
 
-/// Academic scoring: replaces schema_fit/scale_score/balance_score with
+/// Academic scoring: replaces schema_fit/scale_score/label_quality with
 /// citation_impact/venue_quality/recency for literature discovery.
 pub(crate) fn compose_academic_score(
-    task_similarity: f64,
+    relevance: f64,
     citation_score: f64,
     venue_score: f64,
     recency_score: f64,
     abstract_quality: f64,
     on_chain_score: f64,
 ) -> f64 {
-    (0.40 * task_similarity
+    (0.40 * relevance
         + 0.25 * citation_score
         + 0.15 * venue_score
         + 0.10 * recency_score
@@ -1657,7 +1657,7 @@ fn blend_scores(
         .clamp(0.0, 100.0)
 }
 
-fn compute_task_similarity(
+fn compute_relevance(
     task: &DatasetSelectionTask,
     result: &SearchResult,
     metadata: Option<&DatasetMetadata>,
@@ -1752,7 +1752,7 @@ fn compute_scale_score(
     }
 }
 
-fn compute_balance_score(
+fn compute_label_quality(
     task: &DatasetSelectionTask,
     result: &SearchResult,
     metadata: Option<&DatasetMetadata>,
@@ -1792,7 +1792,7 @@ fn compute_balance_score(
     score.clamp(0.0, 100.0)
 }
 
-fn compute_metadata_quality(result: &SearchResult, metadata: Option<&DatasetMetadata>) -> f64 {
+fn compute_metadata_completeness(result: &SearchResult, metadata: Option<&DatasetMetadata>) -> f64 {
     let description_present =
         candidate_description(result, metadata).is_some() as u8 as f64 * 100.0;
     let column_count = candidate_column_names(result, metadata).len() as u64;
@@ -1880,7 +1880,7 @@ fn build_sample_plan(metadata: &DatasetMetadata, config: &DatasetValuationConfig
     }
 }
 
-fn select_collection_from_batch(
+fn knapsack_select_from_batch(
     task: &DatasetSelectionTask,
     batch: &[ValuationCandidateState],
     global_offset: usize,
@@ -2247,17 +2247,20 @@ fn build_valuation_explanation(valuation: &DatasetValuation) -> String {
     let academic = is_academic_result(&valuation.result);
     let mut parts = vec![format!("coarse={:.1}", valuation.coarse_score)];
 
-    parts.push(format!("task={:.1}", valuation.task_similarity));
+    parts.push(format!("relevance={:.1}", valuation.relevance));
     if academic {
         parts.push(format!("citation={:.1}", valuation.schema_fit));
         parts.push(format!("venue={:.1}", valuation.scale_score));
-        parts.push(format!("recency={:.1}", valuation.balance_score));
-        parts.push(format!("abstract={:.1}", valuation.metadata_quality));
+        parts.push(format!("recency={:.1}", valuation.label_quality));
+        parts.push(format!("abstract={:.1}", valuation.metadata_completeness));
     } else {
         parts.push(format!("schema={:.1}", valuation.schema_fit));
         parts.push(format!("scale={:.1}", valuation.scale_score));
-        parts.push(format!("balance={:.1}", valuation.balance_score));
-        parts.push(format!("meta={:.1}", valuation.metadata_quality));
+        parts.push(format!("label_quality={:.1}", valuation.label_quality));
+        parts.push(format!(
+            "metadata_completeness={:.1}",
+            valuation.metadata_completeness
+        ));
     }
     parts.push(format!("onchain={:.1}", valuation.on_chain_score));
 
@@ -2593,7 +2596,7 @@ mod engine_unit_tests {
 #[cfg(test)]
 mod selection_tests {
     use super::{
-        metadata_to_search_result, select_collection_from_batch, DatasetSelectionTask,
+        knapsack_select_from_batch, metadata_to_search_result, DatasetSelectionTask,
         DatasetValuation, DatasetValuationConfig, ProxyUtilityApplyMode, ProxyUtilityReport,
         RankedResult, SampleEvaluationOutcome, SampleEvaluator, SearchEngine, SearchOutput,
         ValuationCandidateState,
@@ -2704,11 +2707,11 @@ mod selection_tests {
                 result,
                 coarse_score: final_score,
                 final_score,
-                task_similarity: final_score,
+                relevance: final_score,
                 schema_fit: 100.0,
                 scale_score: 100.0,
-                balance_score: 100.0,
-                metadata_quality: 100.0,
+                label_quality: 100.0,
+                metadata_completeness: 100.0,
                 on_chain_score: 50.0,
                 metadata_resolved: true,
                 sample_plan: None,
@@ -2776,7 +2779,7 @@ mod selection_tests {
         ];
         let task = test_task(3.0, 20, 40);
 
-        let selected = select_collection_from_batch(&task, &batch, 0, 0).unwrap();
+        let selected = knapsack_select_from_batch(&task, &batch, 0, 0).unwrap();
 
         assert_eq!(selected.candidate_indices, vec![1, 2]);
         assert!((selected.total_price - 3.0).abs() < 1e-6);
