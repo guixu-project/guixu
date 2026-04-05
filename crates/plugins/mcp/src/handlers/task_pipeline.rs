@@ -16,9 +16,9 @@ use data_search::engine::{
     ProxyUtilityApplyMode, SampleEvaluationOutcome, SampleEvaluator, SearchFilters, SearchOutput,
     ON_CHAIN_COARSE_ADJUST_WEIGHT, ON_CHAIN_SCORE_NEUTRAL,
 };
-use data_search::intent::{IntentParser, QueryProfile};
+use data_search::intent::QueryProfile;
 use data_search::sample_eval::{
-    DeepSeekSeedRecordJudge, DownloadedSample, GeminiImageSeedRecordJudge,
+    DownloadedSample,
     GuixuHubSampleDownloader, LlmSampleJudge, LocalHeuristicProxyScorer, ProxyScreeningReport,
     ProxyLabelPropagationEvaluator, ProxyLabelPropagationConfig, SampleJudgeReport,
     SampleRequirements, SampleRequirementsPlanner, SeedRecordJudge, SeedRecordJudgeReport,
@@ -139,52 +139,19 @@ impl SampleEvaluator for RuntimeSampleEvaluator {
     }
 }
 
-struct RuntimeSeedJudge {
-    deepseek: Option<DeepSeekSeedRecordJudge>,
-    gemini: GeminiImageSeedRecordJudge,
-}
+struct RuntimeSeedJudge;
 
 #[async_trait]
 impl SeedRecordJudge for RuntimeSeedJudge {
     async fn judge_records(
         &self,
-        result: &SearchResult,
-        metadata: &DatasetMetadata,
-        task: &DatasetSelectionTask,
-        sample: &data_search::sample_eval::DownloadedSample,
-        records: &[data_search::sample_eval::SampleRecord],
+        _result: &SearchResult,
+        _metadata: &DatasetMetadata,
+        _task: &DatasetSelectionTask,
+        _sample: &data_search::sample_eval::DownloadedSample,
+        _records: &[data_search::sample_eval::SampleRecord],
     ) -> Result<SeedRecordJudgeReport> {
-        if sample_contains_image_records(sample) {
-            match self
-                .gemini
-                .judge_records(result, metadata, task, sample, records)
-                .await
-            {
-                Ok(report) => return Ok(report),
-                Err(gemini_error) => {
-                    if let Some(deepseek) = &self.deepseek {
-                        return deepseek
-                            .judge_records(result, metadata, task, sample, records)
-                            .await
-                            .map_err(|deepseek_error| {
-                                anyhow::anyhow!(
-                                    "Gemini image judge failed, then DeepSeek text fallback failed: gemini={gemini_error}; deepseek={deepseek_error}"
-                                )
-                            });
-                    }
-
-                    return Err(gemini_error);
-                }
-            }
-        }
-
-        if let Some(deepseek) = &self.deepseek {
-            return deepseek
-                .judge_records(result, metadata, task, sample, records)
-                .await;
-        }
-
-        anyhow::bail!("DeepSeek seed judge unavailable for non-image sample records")
+        anyhow::bail!("seed record judging unavailable — using heuristic evaluation only")
     }
 }
 
@@ -476,37 +443,20 @@ fn build_runtime_staged_evaluator() -> StagedSampleEvaluator {
 }
 
 fn build_runtime_sample_evaluator() -> RuntimeSampleEvaluator {
-    let image_seed = ProxyLabelPropagationEvaluator::with_config(
-        Box::new(build_runtime_sample_downloader()),
-        Box::new(RuntimeSeedJudge {
-            deepseek: runtime_deepseek_available()
-                .then(|| DeepSeekSeedRecordJudge::from_env().with_record_char_limit(600)),
-            gemini: GeminiImageSeedRecordJudge::from_env().with_record_char_limit(600),
-        }),
-        ProxyLabelPropagationConfig {
-            seed_record_count: 4,
-            low_score_threshold: 35.0,
-            high_score_threshold: 75.0,
-            override_final_below_score: 20.0,
-            selection_seed: 2026,
-        },
-    );
-
-    if runtime_deepseek_available() {
-        return RuntimeSampleEvaluator::RandomSeed(image_seed);
-    }
-
     RuntimeSampleEvaluator::Hybrid {
-        image_seed,
+        image_seed: ProxyLabelPropagationEvaluator::with_config(
+            Box::new(build_runtime_sample_downloader()),
+            Box::new(RuntimeSeedJudge),
+            ProxyLabelPropagationConfig {
+                seed_record_count: 4,
+                low_score_threshold: 35.0,
+                high_score_threshold: 75.0,
+                override_final_below_score: 20.0,
+                selection_seed: 2026,
+            },
+        ),
         staged: build_runtime_staged_evaluator(),
     }
-}
-
-fn runtime_deepseek_available() -> bool {
-    std::env::var("DEEPSEEK_API_KEY")
-        .ok()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
 }
 
 fn build_heuristic_sample_requirements(task: &DatasetSelectionTask) -> SampleRequirements {
@@ -962,8 +912,58 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .and_then(|v| v.as_u64())
         .map(|v| v as usize);
 
-    let parser = IntentParser::default();
-    let mut profile = match parser.profile(intent_query).await {
+    let sampling_removed = true;
+    let _ = sampling_removed;
+    // Build profile from structured args if provided, otherwise use heuristic.
+    let profile_result: Result<QueryProfile> = {
+        let keywords: Vec<String> = args
+            .get("keywords")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+        let sample_unit = args.get("sample_unit").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let target_entity = args.get("target_entity").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let budget = args.get("budget").and_then(|v| v.as_str()).unwrap_or("0 USD").trim().to_string();
+        let task_desc = args.get("task_description").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+        if keywords.is_empty() {
+            // Fallback: extract keywords from query heuristically.
+            let fallback_keywords: Vec<String> = intent_query
+                .split_whitespace()
+                .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+                .filter(|w| w.len() > 2)
+                .take(5)
+                .collect();
+            Ok(QueryProfile {
+                raw_query: intent_query.to_string(),
+                task_type: task_type_override.clone(),
+                task_description: task_desc.or_else(|| Some(intent_query.to_string())),
+                target_entity,
+                keywords: fallback_keywords,
+                data_standard: data_search::intent::DataStandard {
+                    sample_unit,
+                    budget,
+                    ..Default::default()
+                },
+                user_profile: Default::default(),
+            })
+        } else {
+            Ok(QueryProfile {
+                raw_query: intent_query.to_string(),
+                task_type: task_type_override.clone().or_else(|| args.get("task_type").and_then(|v| v.as_str()).map(String::from)),
+                task_description: task_desc.or_else(|| Some(intent_query.to_string())),
+                target_entity,
+                keywords,
+                data_standard: data_search::intent::DataStandard {
+                    sample_unit,
+                    budget,
+                    ..Default::default()
+                },
+                user_profile: Default::default(),
+            })
+        }
+    };
+    let mut profile = match profile_result {
         Ok(profile) => profile,
         Err(e) => {
             return Ok(serde_json::to_string_pretty(&json!({

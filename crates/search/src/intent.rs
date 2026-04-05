@@ -4,10 +4,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
-use reqwest::Client;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Structured query profile produced before discovery.
@@ -94,49 +92,14 @@ pub trait QueryProfiler: Send + Sync {
 }
 
 /// Parses natural language queries into structured intents.
-/// Uses DeepSeek with a local rule-based fallback when unavailable.
-#[derive(Debug, Clone)]
-pub struct IntentParser {
-    client: Client,
-    config: IntentParserConfig,
-}
+/// Requires an external LLM provider (e.g. MCP sampling from the host).
+#[derive(Debug, Clone, Default)]
+pub struct IntentParser;
 
 const MEMORY_SEARCH_LIMIT: usize = 6;
 const DEFAULT_MAX_LATENCY_SECS: f64 = 30.0;
 const CONTEXT_WINDOW_BYTES: usize = 48;
 const DEFAULT_BUDGET: &str = "0 USD";
-
-#[derive(Debug, Clone)]
-pub struct IntentParserConfig {
-    pub api_key: Option<String>,
-    pub api_base: String,
-    pub model: String,
-    pub timeout: Duration,
-    pub proxy_url: String,
-}
-
-impl Default for IntentParserConfig {
-    fn default() -> Self {
-        Self::from_env()
-    }
-}
-
-impl IntentParserConfig {
-    pub fn from_env() -> Self {
-        Self {
-            api_key: load_setting_env_value("DEEPSEEK_API_KEY"),
-            api_base: "https://api.deepseek.com".to_string(),
-            model: std::env::var("DEEPSEEK_MODEL")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "deepseek-chat".to_string()),
-            timeout: Duration::from_secs(15),
-            proxy_url: std::env::var("GUIXU_DEEPSEEK_PROXY_URL")
-                .unwrap_or_else(|_| "https://www.guixu.org/api/search/deepseek".into()),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Default)]
 struct IntentContext {
@@ -167,219 +130,18 @@ enum LlmScalarValue {
     Text(String),
 }
 
-impl Default for IntentParser {
-    fn default() -> Self {
-        Self::new(IntentParserConfig::default())
-    }
-}
-
 impl IntentParser {
-    pub fn new(config: IntentParserConfig) -> Self {
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(3))
-            .timeout(config.timeout)
-            .user_agent("guixu/0.1")
-            .build()
-            .unwrap_or_else(|_| Client::new());
-        Self { client, config }
+    /// `IntentParser` can no longer perform LLM inference on its own.
+    /// Use a [`QueryProfiler`] implementation backed by MCP sampling instead.
+    pub async fn profile(&self, _query: &str) -> Result<QueryProfile> {
+        anyhow::bail!(
+            "Guixu requires the host AI client to support MCP sampling for intent parsing. \
+             IntentParser cannot call third-party LLM APIs directly."
+        );
     }
 
-    /// Produce a structured query profile from raw user input.
-    pub async fn profile(&self, query: &str) -> Result<QueryProfile> {
-        let has_key = self
-            .config
-            .api_key
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .is_some();
-
-        let query_owned = query.to_string();
-        let intent_context =
-            tokio::task::spawn_blocking(move || collect_intent_context(&query_owned, true))
-                .await
-                .unwrap_or_else(|_| IntentContext::default());
-
-        if has_key {
-            eprintln!("calling DeepSeek API for intent parsing");
-            let profile = self
-                .profile_with_deepseek(
-                    query,
-                    &intent_context.user_profile,
-                    intent_context.bandwidth_bytes_per_sec,
-                    &intent_context.related_memories,
-                )
-                .await?;
-            eprintln!(
-                "intent profile:\n{}",
-                serde_json::to_string_pretty(&profile)?
-            );
-            Ok(profile)
-        } else {
-            eprintln!("no DEEPSEEK_API_KEY, using guixu.org proxy for intent parsing");
-            self.profile_via_proxy(
-                query,
-                &intent_context.user_profile,
-                intent_context.bandwidth_bytes_per_sec,
-                &intent_context.related_memories,
-            )
-            .await
-        }
-    }
-
-    /// Parse a natural language query into structured intent.
     pub async fn parse(&self, query: &str) -> Result<QueryProfile> {
         self.profile(query).await
-    }
-
-    async fn profile_with_deepseek(
-        &self,
-        query: &str,
-        user_profile: &UserProfile,
-        bandwidth_bytes_per_sec: u64,
-        related_memories: &[String],
-    ) -> Result<QueryProfile> {
-        let api_key = self
-            .config
-            .api_key
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow!("missing DEEPSEEK_API_KEY"))?;
-        let endpoint = format!(
-            "{}/chat/completions",
-            self.config.api_base.trim_end_matches('/')
-        );
-        let request = self.build_deepseek_request(query, user_profile, related_memories)?;
-
-        let response = self
-            .client
-            .post(endpoint)
-            .bearer_auth(api_key)
-            .json(&request)
-            .send()
-            .await
-            .context("send DeepSeek chat completion request")?
-            .error_for_status()
-            .context("DeepSeek chat completion returned error status")?
-            .json::<DeepSeekChatResponse>()
-            .await
-            .context("parse DeepSeek chat completion response")?;
-        let content = response
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|choice| choice.message.content)
-            .map(|content| content.trim().to_string())
-            .filter(|content| !content.is_empty())
-            .ok_or_else(|| anyhow!("DeepSeek returned an empty intent payload"))?;
-        self.profile_from_deepseek_content(query, user_profile, bandwidth_bytes_per_sec, &content)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn build_deepseek_request_json(
-        &self,
-        query: &str,
-        user_profile: &UserProfile,
-        related_memories: &[String],
-    ) -> Result<serde_json::Value> {
-        let request = self.build_deepseek_request(query, user_profile, related_memories)?;
-        Ok(serde_json::to_value(request)?)
-    }
-
-    pub(crate) fn profile_from_deepseek_content(
-        &self,
-        query: &str,
-        user_profile: &UserProfile,
-        bandwidth_bytes_per_sec: u64,
-        content: &str,
-    ) -> Result<QueryProfile> {
-        let llm_profile = serde_json::from_str::<LlmIntentProfile>(content)
-            .with_context(|| format!("parse DeepSeek intent JSON: {content}"))?;
-        let top_level_max_latency_secs =
-            normalize_latency_secs(llm_profile.max_latency_secs.clone());
-        let mut data_standard = normalize_data_standard(llm_profile.data_standard);
-        let max_latency_secs = top_level_max_latency_secs.or(Some(data_standard.max_latency_secs));
-        let transfer_constraints =
-            derive_query_transfer_constraints(query, max_latency_secs, bandwidth_bytes_per_sec);
-        if llm_profile.budget.is_some() {
-            data_standard.budget = normalize_budget(llm_profile.budget);
-        }
-        data_standard.max_latency_secs = transfer_constraints.max_latency_secs;
-        data_standard.min_dataset_size_bytes = transfer_constraints.min_dataset_size_bytes;
-        data_standard.max_dataset_size_bytes = transfer_constraints.max_dataset_size_bytes;
-
-        Ok(QueryProfile {
-            raw_query: query.to_string(),
-            task_type: normalize_optional(llm_profile.task_type),
-            task_description: normalize_optional(llm_profile.task_description)
-                .or_else(|| Some(fallback_task_description(query))),
-            target_entity: normalize_optional(llm_profile.target_entity),
-            keywords: normalize_keywords(llm_profile.keywords),
-            data_standard,
-            user_profile: user_profile.clone(),
-        })
-    }
-
-    fn build_deepseek_request(
-        &self,
-        query: &str,
-        user_profile: &UserProfile,
-        related_memories: &[String],
-    ) -> Result<DeepSeekChatRequest> {
-        let prompt = build_user_prompt(query, user_profile, related_memories)?;
-        Ok(DeepSeekChatRequest {
-            model: self.config.model.clone(),
-            messages: vec![
-                DeepSeekMessage {
-                    role: "system",
-                    content: INTENT_SYSTEM_PROMPT.to_string(),
-                },
-                DeepSeekMessage {
-                    role: "user",
-                    content: prompt,
-                },
-            ],
-            response_format: DeepSeekResponseFormat {
-                kind: "json_object".to_string(),
-            },
-            temperature: 0.0,
-            max_tokens: 256,
-            stream: false,
-        })
-    }
-
-    async fn profile_via_proxy(
-        &self,
-        query: &str,
-        user_profile: &UserProfile,
-        bandwidth_bytes_per_sec: u64,
-        related_memories: &[String],
-    ) -> Result<QueryProfile> {
-        let request = self.build_deepseek_request(query, user_profile, related_memories)?;
-        let response = tokio::time::timeout(
-            self.config.timeout,
-            self.client
-                .post(&self.config.proxy_url)
-                .json(&request)
-                .send(),
-        )
-        .await
-        .map_err(|_| anyhow!("deepseek proxy: timeout"))?
-        .context("send DeepSeek proxy request")?
-        .error_for_status()
-        .context("DeepSeek proxy returned error status")?
-        .json::<DeepSeekChatResponse>()
-        .await
-        .context("parse DeepSeek proxy response")?;
-
-        let content = response
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|choice| choice.message.content)
-            .map(|content| content.trim().to_string())
-            .filter(|content| !content.is_empty())
-            .ok_or_else(|| anyhow!("DeepSeek proxy returned an empty intent payload"))?;
-        self.profile_from_deepseek_content(query, user_profile, bandwidth_bytes_per_sec, &content)
     }
 }
 
@@ -390,7 +152,7 @@ impl QueryProfiler for IntentParser {
     }
 }
 
-const INTENT_SYSTEM_PROMPT: &str = r#"You are an intent parser for dataset search.
+pub const INTENT_SYSTEM_PROMPT: &str = r#"You are an intent parser for dataset search.
 Return valid json only, with no markdown and no extra commentary.
 
 Use this exact json schema:
@@ -459,43 +221,6 @@ Examples:
   data_standard.max_latency_secs: 45
 - If a scalar field other than data_standard.budget is unknown, use null. data_standard.budget must always be present as a string.
 - The provided hardware profile and user memories are context only; do not copy them verbatim into the json output."#;
-
-#[derive(Debug, Serialize)]
-struct DeepSeekChatRequest {
-    model: String,
-    messages: Vec<DeepSeekMessage>,
-    response_format: DeepSeekResponseFormat,
-    temperature: f32,
-    max_tokens: u32,
-    stream: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct DeepSeekMessage {
-    role: &'static str,
-    content: String,
-}
-
-#[derive(Debug, Serialize)]
-struct DeepSeekResponseFormat {
-    #[serde(rename = "type")]
-    kind: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeepSeekChatResponse {
-    choices: Vec<DeepSeekChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeepSeekChoice {
-    message: DeepSeekChoiceMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeepSeekChoiceMessage {
-    content: Option<String>,
-}
 
 #[derive(Debug, Deserialize)]
 struct LlmIntentProfile {
@@ -1165,6 +890,60 @@ fn extract_salient_terms(query: &str) -> Vec<String> {
 #[cfg(test)]
 pub fn extract_salient_terms_for_test(query: &str) -> Vec<String> {
     extract_salient_terms(query)
+}
+
+// ---------------------------------------------------------------------------
+// Public API for external LLM implementations (e.g. MCP sampling)
+// ---------------------------------------------------------------------------
+
+/// Build the user prompt for intent parsing, suitable for sending to any LLM.
+pub fn build_intent_user_prompt(query: &str) -> Result<String> {
+    let query_owned = query.to_string();
+    let ctx = collect_intent_context(&query_owned, true);
+    build_user_prompt(query, &ctx.user_profile, &ctx.related_memories)
+}
+
+/// Parse an LLM response (JSON text) into a [`QueryProfile`].
+pub fn parse_intent_response(query: &str, llm_content: &str) -> Result<QueryProfile> {
+    let ctx = collect_intent_context(query, true);
+    parse_llm_intent_content(
+        query,
+        &ctx.user_profile,
+        ctx.bandwidth_bytes_per_sec,
+        llm_content,
+    )
+}
+
+fn parse_llm_intent_content(
+    query: &str,
+    user_profile: &UserProfile,
+    bandwidth_bytes_per_sec: u64,
+    content: &str,
+) -> Result<QueryProfile> {
+    let llm_profile = serde_json::from_str::<LlmIntentProfile>(content)
+        .with_context(|| format!("parse LLM intent JSON: {content}"))?;
+    let top_level_max_latency_secs = normalize_latency_secs(llm_profile.max_latency_secs.clone());
+    let mut data_standard = normalize_data_standard(llm_profile.data_standard);
+    let max_latency_secs = top_level_max_latency_secs.or(Some(data_standard.max_latency_secs));
+    let transfer_constraints =
+        derive_query_transfer_constraints(query, max_latency_secs, bandwidth_bytes_per_sec);
+    if llm_profile.budget.is_some() {
+        data_standard.budget = normalize_budget(llm_profile.budget);
+    }
+    data_standard.max_latency_secs = transfer_constraints.max_latency_secs;
+    data_standard.min_dataset_size_bytes = transfer_constraints.min_dataset_size_bytes;
+    data_standard.max_dataset_size_bytes = transfer_constraints.max_dataset_size_bytes;
+
+    Ok(QueryProfile {
+        raw_query: query.to_string(),
+        task_type: normalize_optional(llm_profile.task_type),
+        task_description: normalize_optional(llm_profile.task_description)
+            .or_else(|| Some(fallback_task_description(query))),
+        target_entity: normalize_optional(llm_profile.target_entity),
+        keywords: normalize_keywords(llm_profile.keywords),
+        data_standard,
+        user_profile: user_profile.clone(),
+    })
 }
 
 fn format_memory_context(related_memories: &[String]) -> String {

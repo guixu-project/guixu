@@ -60,6 +60,15 @@ impl McpResponse {
 pub struct InitializeParams {
     #[serde(rename = "protocolVersion", default)]
     pub protocol_version: Option<String>,
+    #[serde(default)]
+    pub capabilities: ClientCapabilities,
+}
+
+/// Capabilities advertised by the MCP client (host AI application).
+#[derive(Debug, Default, Deserialize)]
+pub struct ClientCapabilities {
+    #[serde(default)]
+    pub sampling: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]

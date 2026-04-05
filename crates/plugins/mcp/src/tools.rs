@@ -36,24 +36,45 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "intent_parse".into(),
-            description: "Parse a natural-language task into a structured QueryProfile for inspection or debugging. Pass the user's original request verbatim in raw_query when available; do not paraphrase it first.".into(),
+            description: "Parse a data request into a structured QueryProfile. You MUST extract task_type, keywords, sample_unit, and target_entity from the user's request. keywords should contain ONLY dataset content terms (e.g. 'cat', 'lung nodule', 'chest ct'), NOT task/action words (e.g. 'classification', 'detection', 'build'). Maximum 5 keywords. Call this BEFORE dataset_search.".into(),
             annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Backward-compatible query field. If raw_query is present, this may contain an agent-side working rewrite."
+                        "description": "The user's original data request verbatim"
                     },
-                    "raw_query": {
+                    "task_type": {
                         "type": "string",
-                        "description": "The user's original request verbatim. Prefer this field for intent parsing."
+                        "enum": ["classification", "detection", "segmentation", "forecasting", "ranking", "retrieval", "generation", "summarization", "evaluation"],
+                        "description": "The type of ML/data task"
+                    },
+                    "task_description": {
+                        "type": "string",
+                        "description": "Detailed description of what the user wants to accomplish with the data"
+                    },
+                    "target_entity": {
+                        "type": "string",
+                        "description": "Main subject of the dataset (e.g. 'cat', 'lung nodule', 'stock price')"
+                    },
+                    "keywords": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "maxItems": 5,
+                        "description": "Dataset content search terms only. NO task words like 'classifier' or 'detection'."
+                    },
+                    "sample_unit": {
+                        "type": "string",
+                        "enum": ["image", "video", "text", "tabular", "audio", ""],
+                        "description": "Data modality. Empty string if unknown."
+                    },
+                    "budget": {
+                        "type": "string",
+                        "description": "Budget with currency, e.g. '20 USD', '$50', '0.05 ETH'. Use '0 USD' if none."
                     }
                 },
-                "anyOf": [
-                    { "required": ["query"] },
-                    { "required": ["raw_query"] }
-                ]
+                "required": ["query", "task_type", "keywords", "sample_unit"]
             }),
         },
         ToolDefinition {
@@ -123,6 +144,21 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["cid", "task_description"]
+            }),
+        },
+        ToolDefinition {
+            name: "dataset_download".into(),
+            description: "Download a dataset by CID. Automatically selects the right method based on source: Kaggle (kaggle CLI), HuggingFace (huggingface-cli or git clone), IPFS (gateway), Guixu Hub (API), or BitTorrent. Pass the CID from dataset_search results.".into(),
+            annotations: local_side_effect_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cid": {
+                        "type": "string",
+                        "description": "Dataset CID from search results (e.g. 'kaggle:owner/dataset', 'hf:owner/dataset', 'guixu-hub:123')"
+                    }
+                },
+                "required": ["cid"]
             }),
         },
         ToolDefinition {

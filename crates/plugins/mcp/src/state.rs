@@ -118,7 +118,7 @@ impl AppState {
         sql_catalogs: &[SqlEndpointCatalog],
     ) -> Self {
         let vector_index = VectorIndex;
-        let intent_parser = IntentParser::default();
+        let intent_parser = IntentParser;
         let adapters = adapters_with_config(&[], duckdb_catalogs, pg_catalogs, sql_catalogs);
         let search_engine = SearchEngine::new(vector_index, intent_parser, adapters);
 

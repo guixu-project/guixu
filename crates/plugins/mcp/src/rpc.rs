@@ -121,6 +121,9 @@ fn initialize_response(
         None => InitializeParams::default(),
     };
 
+    // Detect whether the host supports sampling.
+    let _supports_sampling = initialize_params.capabilities.sampling.is_some();
+
     let protocol_version = initialize_params
         .protocol_version
         .as_deref()
