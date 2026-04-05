@@ -16,7 +16,7 @@ use data_search::engine::{
     ProxyUtilityApplyMode, SampleEvaluationOutcome, SampleEvaluator, SearchFilters, SearchOutput,
     ON_CHAIN_COARSE_ADJUST_WEIGHT, ON_CHAIN_SCORE_NEUTRAL,
 };
-use data_search::intent::{IntentParser, QueryProfile};
+use data_search::intent::QueryProfile;
 use data_search::sample_eval::{
     DownloadedSample,
     GuixuHubSampleDownloader, LlmSampleJudge, LocalHeuristicProxyScorer, ProxyScreeningReport,
@@ -969,8 +969,15 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .and_then(|v| v.as_u64())
         .map(|v| v as usize);
 
-    let parser = IntentParser::default();
-    let mut profile = match parser.profile(intent_query).await {
+    let sampling = state.sampling_handle.read().unwrap().clone();
+    let profile_result = if let Some(handle) = sampling.as_ref() {
+        let parser = crate::sampling_impls::SamplingIntentParser::new(handle.clone());
+        use data_search::intent::QueryProfiler;
+        parser.profile(intent_query).await
+    } else {
+        Err(anyhow::anyhow!("{}", crate::sampling::SAMPLING_NOT_SUPPORTED_MSG))
+    };
+    let mut profile = match profile_result {
         Ok(profile) => profile,
         Err(e) => {
             return Ok(serde_json::to_string_pretty(&json!({

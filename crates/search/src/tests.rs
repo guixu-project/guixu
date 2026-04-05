@@ -10,8 +10,7 @@ use serde::Serialize;
 use crate::adapters::{self, ExternalAdapter};
 use crate::engine::{SearchEngine, SearchFilters, SignalFetcher};
 use crate::intent::{
-    retrieve_related_memories_for_test, IntentParser, IntentParserConfig, QueryProfile,
-    QueryProfiler, UserProfile,
+    retrieve_related_memories_for_test, IntentParser, QueryProfile, QueryProfiler,
 };
 use crate::vector_index::VectorIndex;
 
@@ -157,204 +156,109 @@ impl ExternalAdapter for StubAdapter {
 }
 
 fn make_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
-    SearchEngine::new(
-        VectorIndex,
-        IntentParser::new(IntentParserConfig {
-            api_key: None,
-            ..IntentParserConfig::default()
-        }),
-        adapters,
-    )
+    SearchEngine::new(VectorIndex, IntentParser, adapters)
 }
 
 #[tokio::test]
 async fn intent_parser_requires_llm_api_configuration() {
-    // Without a local API key the parser should fail immediately.
-    let parser = IntentParser::new(IntentParserConfig {
-        api_key: None,
-        ..IntentParserConfig::default()
-    });
+    let parser = IntentParser;
     let query = "Build a high-quality classifier to detect cats";
     let error = parser.profile(query).await.unwrap_err();
 
-    // Should require an LLM — no proxy fallback.
+    // Should require host MCP sampling.
     assert!(
-        error.to_string().contains("requires an LLM")
-            || error.to_string().contains("DEEPSEEK_API_KEY"),
-        "expected LLM requirement error, got: {error}"
+        error.to_string().contains("MCP sampling") || error.to_string().contains("cannot call"),
+        "expected MCP sampling requirement error, got: {error}"
     );
 }
 
 #[tokio::test]
 async fn intent_parser_trait_propagates_missing_api_key_error() {
-    let parser = IntentParser::new(IntentParserConfig {
-        api_key: None,
-        ..IntentParserConfig::default()
-    });
+    let parser = IntentParser;
     let profiler: &dyn QueryProfiler = &parser;
     let query = "Build a high-quality classifier to detect cats";
 
     let via_inherent = parser.profile(query).await.unwrap_err();
     let via_trait = profiler.profile(query).await.unwrap_err();
 
-    // Both paths should fail with the same kind of error.
+    // Both paths should fail requiring MCP sampling.
     assert!(
-        via_inherent.to_string().contains("requires an LLM")
-            || via_inherent.to_string().contains("DEEPSEEK_API_KEY")
+        via_inherent.to_string().contains("MCP sampling")
+            || via_inherent.to_string().contains("cannot call")
     );
     assert!(
-        via_trait.to_string().contains("requires an LLM")
-            || via_trait.to_string().contains("DEEPSEEK_API_KEY")
+        via_trait.to_string().contains("MCP sampling")
+            || via_trait.to_string().contains("cannot call")
     );
 }
 
 #[tokio::test]
 async fn intent_parser_uses_deepseek_when_configured() {
     let query = "check whether Caesar is in the image taken from monitor";
-    let parser = IntentParser::new(IntentParserConfig {
-        api_key: Some("test-key".into()),
-        api_base: "https://api.deepseek.com".into(),
-        model: "deepseek-chat".into(),
-        timeout: std::time::Duration::from_secs(5),
-        ..IntentParserConfig::default()
-    });
-    let user_profile = UserProfile {
-        cpu: crate::intent::CpuProfile {
-            architecture: "x86_64".into(),
-            logical_cores: 8,
-            model: Some("Test CPU".into()),
-        },
-        gpus: vec![crate::intent::GpuProfile {
-            vendor: Some("NVIDIA".into()),
-            model: "RTX 4090".into(),
-        }],
-    };
-    let request_body = parser
-        .build_deepseek_request_json(
-            query,
-            &user_profile,
-            &[
-                "The user has a cat named Caesar.".to_string(),
-                "The user prefers calm spaces more than loud ones.".to_string(),
-            ],
-        )
-        .unwrap();
-    let profile = parser
-        .profile_from_deepseek_content(
-            query,
-            &user_profile,
-            12_500_000,
-            r#"{"task_type":"classification","task_description":"Detect whether cats are present in input images with high-quality accuracy.","budget":"$25","target_entity":"cats","keywords":["cats","classifier","vision"]}"#,
-        )
-        .unwrap();
+    // Test that parse_intent_response correctly parses LLM JSON output.
+    let profile = crate::intent::parse_intent_response(
+        query,
+        r#"{"task_type":"classification","task_description":"Detect whether cats are present in input images with high-quality accuracy.","budget":"$25","target_entity":"cats","keywords":["cats","classifier","vision"]}"#,
+    )
+    .unwrap();
 
-    dump_json("deepseek.request", &request_body);
-    dump_json("deepseek.profile", &profile);
+    dump_json("intent.profile", &profile);
 
-    assert_eq!(request_body["model"], "deepseek-chat");
-    assert_eq!(request_body["response_format"]["type"], "json_object");
-    assert_eq!(request_body["messages"][0]["role"], "system");
-    assert_eq!(request_body["messages"][1]["role"], "user");
-    assert!(request_body["messages"][1]["content"]
-        .as_str()
-        .unwrap()
-        .contains(query));
-    assert!(request_body["messages"][1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("Relevant user memories"));
-    assert!(request_body["messages"][0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("\"task_description\""));
-    assert!(request_body["messages"][0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("\"budget\""));
-    assert!(request_body["messages"][1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("Caesar"));
-    assert!(request_body["messages"][1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("RTX 4090"));
     assert_eq!(profile.task_type.as_deref(), Some("classification"));
     assert_eq!(
         profile.task_description.as_deref(),
         Some("Detect whether cats are present in input images with high-quality accuracy.")
     );
     assert_eq!(profile.data_standard.budget, "$25");
-    assert_eq!(profile.data_standard.max_latency_secs, 30.0);
-    assert_eq!(profile.data_standard.min_dataset_size_bytes, 0);
-    assert_eq!(profile.data_standard.max_dataset_size_bytes, 375_000_000);
     assert_eq!(profile.target_entity.as_deref(), Some("cats"));
     assert_eq!(profile.keywords, vec!["cats", "classifier", "vision"]);
-    assert_eq!(profile.user_profile, user_profile);
 }
 
 #[test]
 fn profile_from_deepseek_content_defaults_budget_to_zero() {
-    let parser = IntentParser::default();
-    let user_profile = UserProfile::default();
-    let profile = parser
-        .profile_from_deepseek_content(
-            "find a cat dataset",
-            &user_profile,
-            10_000_000,
-            r#"{"task_type":"classification","task_description":"Find cat datasets.","target_entity":"cats","keywords":["cats"]}"#,
-        )
-        .unwrap();
+    let profile = crate::intent::parse_intent_response(
+        "find a cat dataset",
+        r#"{"task_type":"classification","task_description":"Find cat datasets.","target_entity":"cats","keywords":["cats"]}"#,
+    )
+    .unwrap();
 
     assert_eq!(profile.data_standard.budget, "0 USD");
     assert_eq!(profile.data_standard.max_latency_secs, 30.0);
-    assert_eq!(profile.data_standard.max_dataset_size_bytes, 300_000_000);
 }
 
 #[test]
 fn profile_from_deepseek_content_extracts_transfer_constraints_from_query() {
-    let parser = IntentParser::default();
-    let user_profile = UserProfile::default();
-    let profile = parser
-        .profile_from_deepseek_content(
-            "find a cat dataset within 45 seconds and at least 500MB",
-            &user_profile,
-            12_500_000,
-            r#"{"task_type":"classification","task_description":"Find cat datasets.","max_latency_secs":45,"target_entity":"cats","keywords":["cats"]}"#,
-        )
-        .unwrap();
+    let profile = crate::intent::parse_intent_response(
+        "find a cat dataset within 45 seconds and at least 500MB",
+        r#"{"task_type":"classification","task_description":"Find cat datasets.","max_latency_secs":45,"target_entity":"cats","keywords":["cats"]}"#,
+    )
+    .unwrap();
 
     assert_eq!(profile.data_standard.max_latency_secs, 45.0);
     assert_eq!(profile.data_standard.min_dataset_size_bytes, 500_000_000);
-    assert_eq!(profile.data_standard.max_dataset_size_bytes, 562_500_000);
 }
 
 #[test]
 fn profile_from_deepseek_content_accepts_null_nested_max_latency_secs() {
-    let parser = IntentParser::default();
-    let user_profile = UserProfile::default();
-    let profile = parser
-        .profile_from_deepseek_content(
-            "check whether Caesar is in the image taken from monitor",
-            &user_profile,
-            12_500_000,
-            r#"{
-                "task_type": "classification",
-                "task_description": "Build an image classifier to detect whether the user's cat named Caesar appears in photos taken by their house monitor",
-                "target_entity": "cat",
-                "keywords": ["cat"],
-                "data_standard": {
-                    "sample_unit": "image",
-                    "budget": "0 USD",
-                    "max_latency_secs": null,
-                    "min_dataset_size_bytes": 0,
-                    "max_dataset_size_bytes": 0,
-                    "canonical_columns": ["sample_id", "label"],
-                    "extra_columns": ["timestamp"]
-                }
-            }"#,
-        )
-        .unwrap();
+    let profile = crate::intent::parse_intent_response(
+        "check whether Caesar is in the image taken from monitor",
+        r#"{
+            "task_type": "classification",
+            "task_description": "Build an image classifier to detect whether the user's cat named Caesar appears in photos taken by their house monitor",
+            "target_entity": "cat",
+            "keywords": ["cat"],
+            "data_standard": {
+                "sample_unit": "image",
+                "budget": "0 USD",
+                "max_latency_secs": null,
+                "min_dataset_size_bytes": 0,
+                "max_dataset_size_bytes": 0,
+                "canonical_columns": ["sample_id", "label"],
+                "extra_columns": ["timestamp"]
+            }
+        }"#,
+    )
+    .unwrap();
 
     assert_eq!(profile.data_standard.budget, "0 USD");
     assert_eq!(profile.data_standard.max_latency_secs, 30.0);
@@ -505,11 +409,10 @@ async fn search_wrapper_propagates_intent_parser_error_without_api_key() {
         .await
         .unwrap_err();
 
-    // Without LLM the error requires an LLM configuration.
+    // Without host sampling, IntentParser always errors.
     assert!(
-        error.to_string().contains("requires an LLM")
-            || error.to_string().contains("DEEPSEEK_API_KEY"),
-        "expected LLM requirement error, got: {error}"
+        error.to_string().contains("MCP sampling") || error.to_string().contains("cannot call"),
+        "expected MCP sampling requirement error, got: {error}"
     );
 }
 

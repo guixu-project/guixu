@@ -3,8 +3,9 @@
 
 use anyhow::Result;
 
-use data_search::intent::{IntentParser, QueryProfiler};
+use data_search::intent::QueryProfiler;
 
+use crate::sampling::SAMPLING_NOT_SUPPORTED_MSG;
 use crate::sampling_impls::SamplingIntentParser;
 use crate::server::AppState;
 
@@ -23,15 +24,12 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .or(query)
         .ok_or_else(|| anyhow::anyhow!("missing query"))?;
 
-    // Prefer host sampling; fall back to direct DeepSeek API if configured.
     let sampling = state.sampling_handle.read().unwrap().clone();
-    let profile = if let Some(handle) = sampling.as_ref() {
-        let parser = SamplingIntentParser::new(handle.clone());
-        parser.profile(query).await?
-    } else {
-        let parser = IntentParser::default();
-        parser.profile(query).await?
-    };
+    let handle = sampling
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("{SAMPLING_NOT_SUPPORTED_MSG}"))?;
 
+    let parser = SamplingIntentParser::new(handle.clone());
+    let profile = parser.profile(query).await?;
     Ok(serde_json::to_string_pretty(&profile)?)
 }

@@ -127,9 +127,7 @@ fn initialize_response(
     if supports_sampling {
         info!("host supports MCP sampling — LLM inference will use host capabilities");
     } else {
-        warn!(
-            "host does NOT support MCP sampling — LLM-dependent tools will require DEEPSEEK_API_KEY"
-        );
+        warn!("host does NOT support MCP sampling — LLM-dependent tools will be unavailable");
     }
 
     let protocol_version = initialize_params
