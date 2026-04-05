@@ -13,6 +13,7 @@ mod huggingface;
 mod ipfs;
 mod kaggle;
 mod local_file;
+mod open_data_skill;
 pub mod pan_search;
 mod postgresql;
 mod rwa_xyz;
@@ -36,6 +37,7 @@ pub use huggingface::HuggingFaceAdapter;
 pub use ipfs::IpfsAdapter;
 pub use kaggle::KaggleAdapter;
 pub use local_file::LocalFileAdapter;
+pub use open_data_skill::OpenDataSkillAdapter;
 pub use pan_search::PanSearchAdapter;
 pub use postgresql::PostgreSqlAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
@@ -83,6 +85,7 @@ pub fn adapters_with_config(
         Box::new(DblpAdapter::default()),
         Box::new(SemanticScholarAdapter::default()),
         Box::new(ArxivAdapter::default()),
+        Box::new(OpenDataSkillAdapter::default()),
     ];
     if disabled.is_empty() {
         return all;

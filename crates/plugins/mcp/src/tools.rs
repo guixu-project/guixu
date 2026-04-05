@@ -148,14 +148,14 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_download".into(),
-            description: "Download a dataset by CID. Automatically selects the right method based on source: Kaggle (kaggle CLI), HuggingFace (huggingface-cli or git clone), IPFS (gateway), Guixu Hub (API), or BitTorrent. Pass the CID from dataset_search results.".into(),
+            description: "Download a dataset by CID. Automatically selects the right method based on source. Free no-login sources: UCI (uci:), OpenML (openml:), Zenodo (zenodo:), Figshare (figshare:), Common Crawl (commoncrawl:), OpenAlex (openalex:), AWS Open Data (aws-open:), OpenNeuro (openneuro:), PhysioNet (physionet:), HuggingFace public (hf:), IPFS (ipfs:), Guixu Hub free (guixu-hub:), BitTorrent (40-char hex hash). Requires login: Kaggle (kaggle:). Pass the CID from dataset_search results.".into(),
             annotations: local_side_effect_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "cid": {
                         "type": "string",
-                        "description": "Dataset CID from search results (e.g. 'kaggle:owner/dataset', 'hf:owner/dataset', 'guixu-hub:123')"
+                        "description": "Dataset CID from search results (e.g. 'kaggle:owner/dataset', 'hf:owner/dataset', 'uci:53', 'openml:61', 'zenodo:12345', 'figshare:12345', 'guixu-hub:uuid')"
                     }
                 },
                 "required": ["cid"]

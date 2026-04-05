@@ -198,6 +198,7 @@ pub enum DataSource {
     Spark,
     Flink,
     Presto,
+    OpenDataSkill,
 }
 
 /// Payment protocol used for a transaction.
