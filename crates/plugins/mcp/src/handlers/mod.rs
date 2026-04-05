@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod bt_download;
+pub mod download;
 pub mod evaluate;
 pub mod feedback;
 pub mod intent;

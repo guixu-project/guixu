@@ -58,6 +58,13 @@ fn feedback_executor<'a>(
     Box::pin(crate::handlers::feedback::handle(args, state))
 }
 
+fn download_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::download::handle(args, state))
+}
+
 fn purchase_executor<'a>(
     args: serde_json::Value,
     state: &'a crate::state::AppState,
@@ -133,6 +140,10 @@ pub fn build_registry() -> ToolRegistry {
     registry.register(legacy_json_tool(
         require_definition(&mut definitions, "dataset_purchase"),
         executor_from_fn(purchase_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_download"),
+        executor_from_fn(download_executor),
     ));
     registry.register(legacy_json_tool(
         require_definition(&mut definitions, "dataset_feedback"),

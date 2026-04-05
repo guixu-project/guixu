@@ -147,6 +147,21 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "dataset_download".into(),
+            description: "Download a dataset by CID. Automatically selects the right method based on source: Kaggle (kaggle CLI), HuggingFace (huggingface-cli or git clone), IPFS (gateway), Guixu Hub (API), or BitTorrent. Pass the CID from dataset_search results.".into(),
+            annotations: local_side_effect_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cid": {
+                        "type": "string",
+                        "description": "Dataset CID from search results (e.g. 'kaggle:owner/dataset', 'hf:owner/dataset', 'guixu-hub:123')"
+                    }
+                },
+                "required": ["cid"]
+            }),
+        },
+        ToolDefinition {
             name: "dataset_feedback".into(),
             description: "Submit on-chain feedback after using a dataset. Recorded as an EAS attestation to help future agents evaluate this dataset.".into(),
             annotations: mutating_annotations(false),

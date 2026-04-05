@@ -7,6 +7,7 @@ use serde_json::json;
 use data_core::feedback::CommunitySignal;
 use data_core::types::DatasetCid;
 use data_search::engine::SearchFilters;
+use data_search::intent::QueryProfile;
 
 use crate::server::AppState;
 
@@ -55,6 +56,29 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         free_only: filter_obj.get("free_only").and_then(|v| v.as_bool()),
     };
 
+    // Build a minimal QueryProfile from the query string directly.
+    // The host LLM should call intent_parse first for structured profiling;
+    // dataset_search uses the query as-is for keyword matching.
+    let keywords: Vec<String> = query
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| w.len() > 1)
+        .take(10)
+        .collect();
+
+    let profile = QueryProfile {
+        raw_query: query.to_string(),
+        task_type: task_type.map(String::from),
+        task_description: Some(query.to_string()),
+        target_entity: None,
+        keywords,
+        data_standard: Default::default(),
+        user_profile: Default::default(),
+    };
+
     let local_metadata = state.store.list_all()?;
 
     let fb_store = state.feedback_store.clone();
@@ -75,18 +99,10 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
 
     let search_output = state
         .search_engine
-        .search_with_task_type(
-            query,
-            task_type,
-            &filters,
-            &local_metadata,
-            &signal_fetcher,
-            limit,
-        )
+        .search_with_profile(&profile, &filters, &local_metadata, &signal_fetcher, limit)
         .await?;
 
-    // Persist external search results so downstream tools (evaluate, purchase)
-    // can look them up by CID without requiring catalog sync.
+    // Persist external search results so downstream tools can look them up by CID.
     for ranked in &search_output.results {
         let r = &ranked.result;
         if state.store.get(&r.cid).ok().flatten().is_none() {
