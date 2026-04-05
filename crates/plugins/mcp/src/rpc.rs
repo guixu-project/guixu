@@ -121,6 +121,17 @@ fn initialize_response(
         None => InitializeParams::default(),
     };
 
+    // Detect whether the host supports sampling.
+    let supports_sampling = initialize_params.capabilities.sampling.is_some();
+    server.set_host_supports_sampling(supports_sampling);
+    if supports_sampling {
+        info!("host supports MCP sampling — LLM inference will use host capabilities");
+    } else {
+        warn!(
+            "host does NOT support MCP sampling — LLM-dependent tools will require DEEPSEEK_API_KEY"
+        );
+    }
+
     let protocol_version = initialize_params
         .protocol_version
         .as_deref()

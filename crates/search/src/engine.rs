@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
 use crate::adapters::ExternalAdapter;
-use crate::intent::{load_setting_env_value, IntentParser, IntentParserConfig, QueryProfile};
+use crate::intent::{load_setting_env_value, IntentParser, QueryProfile};
 use crate::vector_index::VectorIndex;
 
 pub const ON_CHAIN_SCORE_NEUTRAL: f64 = 50.0;
@@ -55,6 +55,16 @@ pub struct SearchAndValueRequest<'a> {
     pub limit: usize,
 }
 
+/// Classifies buyer review comments into sentiment categories.
+/// Implement this trait to provide LLM-based sentiment classification.
+#[async_trait::async_trait]
+pub trait SentimentClassifier: Send + Sync {
+    async fn classify(
+        &self,
+        items: &[CommentClassificationItem],
+    ) -> Result<HashMap<usize, ReviewSentiment>>;
+}
+
 /// The unified search engine. Merges results from local store, DHT,
 /// and external adapters (Kaggle, HuggingFace, IPFS, PostgreSQL, DuckDB).
 pub struct SearchEngine {
@@ -62,6 +72,7 @@ pub struct SearchEngine {
     vector_index: VectorIndex,
     intent_parser: IntentParser,
     adapters: Vec<Box<dyn ExternalAdapter>>,
+    sentiment_classifier: Option<Box<dyn SentimentClassifier>>,
 }
 
 fn format_error_chain(error: &anyhow::Error) -> String {
@@ -93,7 +104,14 @@ impl SearchEngine {
             vector_index,
             intent_parser,
             adapters,
+            sentiment_classifier: None,
         }
+    }
+
+    /// Set the sentiment classifier used for on-chain review analysis.
+    pub fn with_sentiment_classifier(mut self, classifier: Box<dyn SentimentClassifier>) -> Self {
+        self.sentiment_classifier = Some(classifier);
+        self
     }
 
     /// Main search entry point — called by MCP tool `dataset_search`.
@@ -332,17 +350,20 @@ impl SearchEngine {
             }
 
             let relevance = compute_relevance(task, &ranked.result, metadata.as_ref());
-            let on_chain_score = match compute_on_chain_score(&ranked.result).await {
-                Ok(score) => score,
-                Err(error) => {
-                    warn!(
-                        cid = %ranked.result.cid.0,
-                        error = %error,
-                        "on-chain scoring failed; falling back to neutral"
-                    );
-                    ON_CHAIN_SCORE_NEUTRAL
-                }
-            };
+            let on_chain_score =
+                match compute_on_chain_score(&ranked.result, self.sentiment_classifier.as_deref())
+                    .await
+                {
+                    Ok(score) => score,
+                    Err(error) => {
+                        warn!(
+                            cid = %ranked.result.cid.0,
+                            error = %error,
+                            "on-chain scoring failed; falling back to neutral"
+                        );
+                        ON_CHAIN_SCORE_NEUTRAL
+                    }
+                };
 
             let (coarse_score, schema_fit, scale_score, label_quality, metadata_completeness) =
                 match scoring_profile {
@@ -804,7 +825,7 @@ impl OnChainScoreInputs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReviewSentiment {
+pub enum ReviewSentiment {
     Positive,
     Neutral,
     Negative,
@@ -1314,7 +1335,10 @@ fn compute_freshness_bonus(result: &SearchResult) -> f64 {
     }
 }
 
-async fn compute_on_chain_score(result: &SearchResult) -> Result<f64> {
+async fn compute_on_chain_score(
+    result: &SearchResult,
+    classifier: Option<&dyn SentimentClassifier>,
+) -> Result<f64> {
     if result.source != DataSource::GuixuHub {
         return Ok(ON_CHAIN_SCORE_NEUTRAL);
     }
@@ -1333,7 +1357,7 @@ async fn compute_on_chain_score(result: &SearchResult) -> Result<f64> {
         return Ok(score_on_chain_signal(&inputs));
     };
 
-    match fetch_guixu_review_inputs(listing_id).await {
+    match fetch_guixu_review_inputs(listing_id, classifier).await {
         Ok(review_inputs) => {
             inputs.avg_rating = review_inputs.avg_rating;
             inputs.positive_reviews = review_inputs.positive_reviews;
@@ -1361,7 +1385,10 @@ fn guixu_listing_id(result: &SearchResult) -> Option<&str> {
         .or_else(|| result.provider.0.strip_prefix("guixu:hub:"))
 }
 
-async fn fetch_guixu_review_inputs(listing_id: &str) -> Result<OnChainScoreInputs> {
+async fn fetch_guixu_review_inputs(
+    listing_id: &str,
+    classifier: Option<&dyn SentimentClassifier>,
+) -> Result<OnChainScoreInputs> {
     let Some(contract_address) = env_or_setting("GUIXU_BASE_CONTRACT_ADDRESS")
         .or_else(|| env_or_setting("GUIXU_CONTRACT_ADDRESS"))
     else {
@@ -1391,7 +1418,7 @@ async fn fetch_guixu_review_inputs(listing_id: &str) -> Result<OnChainScoreInput
     }
 
     let summary = summarize_reviews(listing_id, &reviews);
-    let classified = classify_review_sentiments(&reviews).await;
+    let classified = classify_review_sentiments(&reviews, classifier).await;
     Ok(OnChainScoreInputs {
         trade_count: 0,
         avg_rating: summary.avg_rating,
@@ -1419,40 +1446,26 @@ impl ClassifiedReviewCounts {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct CommentClassificationItem {
-    id: usize,
-    rating: u8,
-    comment: String,
+pub struct CommentClassificationItem {
+    pub id: usize,
+    pub rating: u8,
+    pub comment: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct DeepSeekSentimentPayload {
-    items: Vec<DeepSeekSentimentItem>,
+pub struct DeepSeekSentimentPayload {
+    pub items: Vec<DeepSeekSentimentItem>,
 }
 
 #[derive(Debug, Deserialize)]
-struct DeepSeekSentimentItem {
-    id: usize,
-    sentiment: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeepSeekChatResponse {
-    choices: Vec<DeepSeekChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeepSeekChoice {
-    message: DeepSeekChoiceMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeepSeekChoiceMessage {
-    content: Option<String>,
+pub struct DeepSeekSentimentItem {
+    pub id: usize,
+    pub sentiment: String,
 }
 
 async fn classify_review_sentiments(
     reviews: &[data_attestation::BuyerReview],
+    classifier: Option<&dyn SentimentClassifier>,
 ) -> ClassifiedReviewCounts {
     let mut fallback_counts = ClassifiedReviewCounts::default();
     let mut comment_items = Vec::new();
@@ -1478,7 +1491,14 @@ async fn classify_review_sentiments(
         return fallback_counts;
     }
 
-    match classify_comment_sentiments_with_deepseek(&comment_items).await {
+    let classified = if let Some(clf) = classifier {
+        clf.classify(&comment_items).await
+    } else {
+        // No classifier available — use rating-based fallback only.
+        Err(anyhow::anyhow!("no sentiment classifier configured"))
+    };
+
+    match classified {
         Ok(classified) => {
             for item in comment_items {
                 let sentiment = classified
@@ -1490,80 +1510,13 @@ async fn classify_review_sentiments(
             fallback_counts
         }
         Err(error) => {
-            warn!(error = %error, "DeepSeek review sentiment classification failed; falling back to ratings");
+            warn!(error = %error, "sentiment classification unavailable; falling back to ratings");
             for item in comment_items {
                 fallback_counts.push(fallback_by_id[&item.id]);
             }
             fallback_counts
         }
     }
-}
-
-async fn classify_comment_sentiments_with_deepseek(
-    items: &[CommentClassificationItem],
-) -> Result<HashMap<usize, ReviewSentiment>> {
-    let config = IntentParserConfig::from_env();
-    let api_key = config
-        .api_key
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("missing DEEPSEEK_API_KEY"))?;
-    let endpoint = format!("{}/chat/completions", config.api_base.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(3))
-        .timeout(config.timeout)
-        .user_agent("guixu/0.1")
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-    let items_json =
-        serde_json::to_string(items).context("serialize review comments for DeepSeek request")?;
-    let prompt = format!(
-        "Classify each buyer review comment about a dataset purchase. Return JSON only with this exact schema: {{\"items\":[{{\"id\":0,\"sentiment\":\"positive|neutral|negative\"}}]}}. Use the comment as the primary signal and the numeric rating only as a weak hint. Mark complaints about poor quality, missing data, scams, bad seller behavior, or mismatched content as negative. Mark praise, satisfaction, successful delivery, or recommendation as positive. Mark factual, mixed, or unclear comments as neutral.\n\nReviews:\n{items_json}"
-    );
-    let response = client
-        .post(endpoint)
-        .bearer_auth(api_key)
-        .json(&serde_json::json!({
-            "model": config.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You classify buyer review comments for dataset marketplace transactions and must return strict JSON."
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "response_format": { "type": "json_object" }
-        }))
-        .send()
-        .await
-        .context("send DeepSeek on-chain review classification request")?
-        .error_for_status()
-        .context("DeepSeek on-chain review classification returned error status")?
-        .json::<DeepSeekChatResponse>()
-        .await
-        .context("parse DeepSeek on-chain review classification response")?;
-
-    let content = response
-        .choices
-        .into_iter()
-        .next()
-        .and_then(|choice| choice.message.content)
-        .map(|content| content.trim().to_string())
-        .filter(|content| !content.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("DeepSeek returned an empty on-chain review payload"))?;
-    let payload: DeepSeekSentimentPayload = serde_json::from_str(&content)
-        .with_context(|| format!("parse DeepSeek on-chain review JSON: {content}"))?;
-
-    Ok(payload
-        .items
-        .into_iter()
-        .filter_map(|item| {
-            parse_review_sentiment(&item.sentiment).map(|sentiment| (item.id, sentiment))
-        })
-        .collect())
 }
 
 fn sentiment_from_rating(rating: u8) -> ReviewSentiment {
@@ -1574,7 +1527,7 @@ fn sentiment_from_rating(rating: u8) -> ReviewSentiment {
     }
 }
 
-fn parse_review_sentiment(raw: &str) -> Option<ReviewSentiment> {
+pub fn parse_review_sentiment(raw: &str) -> Option<ReviewSentiment> {
     let normalized = raw.trim().to_lowercase();
     if normalized.is_empty() {
         return None;

@@ -1326,7 +1326,7 @@ fn extract_xml_name_labels(contents: &str) -> Vec<String> {
     labels
 }
 
-fn guess_image_mime_type(path: &Path) -> &'static str {
+pub fn guess_image_mime_type(path: &Path) -> &'static str {
     match path
         .extension()
         .and_then(|value| value.to_str())
@@ -1971,7 +1971,7 @@ struct GeminiImageEvalResponse {
     raw: String,
 }
 
-const SEED_RECORD_JUDGE_SYSTEM_PROMPT: &str = r#"You score individual sample records from a candidate dataset.
+pub const SEED_RECORD_JUDGE_SYSTEM_PROMPT: &str = r#"You score individual sample records from a candidate dataset.
 Return valid json only with this schema:
 {
   "summary": "string",
@@ -1992,7 +1992,7 @@ Rules:
 - record_id must exactly match one of the provided record ids.
 "#;
 
-const REQUIREMENTS_SYSTEM_PROMPT: &str = r#"You help plan sample-based dataset evaluation.
+pub const REQUIREMENTS_SYSTEM_PROMPT: &str = r#"You help plan sample-based dataset evaluation.
 Return valid json only with this schema:
 {
   "summary": "string",
@@ -2009,7 +2009,7 @@ Rules:
 - Keep arrays short and practical for cheap local screening.
 "#;
 
-const SAMPLE_JUDGE_SYSTEM_PROMPT: &str = r#"You score whether a small sample suggests a dataset will help a task.
+pub const SAMPLE_JUDGE_SYSTEM_PROMPT: &str = r#"You score whether a small sample suggests a dataset will help a task.
 Return valid json only with this schema:
 {
   "utility_score": 0,
@@ -2023,7 +2023,7 @@ Rules:
 - Penalize samples that are off-task, weakly labelled, low-signal, or inconsistent with the task.
 "#;
 
-fn build_requirements_user_prompt(task: &DatasetSelectionTask) -> String {
+pub fn build_requirements_user_prompt(task: &DatasetSelectionTask) -> String {
     format!(
         "Task description:\n{}\n\nTask type: {}\nTarget entity: {}\nRequired columns: {}\nRequired data type: {:?}\n",
         task.task_description,
@@ -2038,7 +2038,7 @@ fn build_requirements_user_prompt(task: &DatasetSelectionTask) -> String {
     )
 }
 
-fn build_seed_record_judge_user_prompt(
+pub fn build_seed_record_judge_user_prompt(
     result: &SearchResult,
     metadata: &DatasetMetadata,
     task: &DatasetSelectionTask,
@@ -2071,7 +2071,7 @@ fn build_seed_record_judge_user_prompt(
     ))
 }
 
-fn build_gemini_image_eval_task(
+pub fn build_gemini_image_eval_task(
     result: &SearchResult,
     metadata: &DatasetMetadata,
     task: &DatasetSelectionTask,
@@ -2089,7 +2089,7 @@ fn build_gemini_image_eval_task(
     )
 }
 
-fn build_sample_judge_user_prompt(
+pub fn build_sample_judge_user_prompt(
     result: &SearchResult,
     metadata: &DatasetMetadata,
     task: &DatasetSelectionTask,
@@ -2122,7 +2122,7 @@ fn build_sample_judge_user_prompt(
     ))
 }
 
-fn truncate_for_prompt(text: &str, max_chars: usize) -> String {
+pub fn truncate_for_prompt(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
     }
@@ -2142,7 +2142,7 @@ fn normalize_gemini_eval_api_url(api_url: String) -> String {
     }
 }
 
-fn sample_record_image_path(record: &SampleRecord) -> Option<PathBuf> {
+pub fn sample_record_image_path(record: &SampleRecord) -> Option<PathBuf> {
     record
         .metadata
         .get("local_image_path")
@@ -2175,4 +2175,9 @@ fn parse_numeric_text(text: &str) -> Option<f64> {
             .find(|token| token.chars().any(|character| character.is_ascii_digit()))
             .and_then(|token| token.parse::<f64>().ok())
     })
+}
+
+/// Parse a numeric score from free-form LLM text output.
+pub fn parse_gemini_numeric_result_from_text(text: &str) -> Option<f64> {
+    parse_numeric_text(text)
 }

@@ -112,7 +112,6 @@ pub struct IntentParserConfig {
     pub api_base: String,
     pub model: String,
     pub timeout: Duration,
-    pub proxy_url: String,
 }
 
 impl Default for IntentParserConfig {
@@ -132,8 +131,6 @@ impl IntentParserConfig {
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "deepseek-chat".to_string()),
             timeout: Duration::from_secs(15),
-            proxy_url: std::env::var("GUIXU_DEEPSEEK_PROXY_URL")
-                .unwrap_or_else(|_| "https://www.guixu.org/api/search/deepseek".into()),
         }
     }
 }
@@ -193,37 +190,33 @@ impl IntentParser {
             .filter(|value| !value.is_empty())
             .is_some();
 
+        if !has_key {
+            anyhow::bail!(
+                "Guixu requires an LLM for intent parsing. \
+                 Set DEEPSEEK_API_KEY or use a host AI client that supports MCP sampling."
+            );
+        }
+
         let query_owned = query.to_string();
         let intent_context =
             tokio::task::spawn_blocking(move || collect_intent_context(&query_owned, true))
                 .await
                 .unwrap_or_else(|_| IntentContext::default());
 
-        if has_key {
-            eprintln!("calling DeepSeek API for intent parsing");
-            let profile = self
-                .profile_with_deepseek(
-                    query,
-                    &intent_context.user_profile,
-                    intent_context.bandwidth_bytes_per_sec,
-                    &intent_context.related_memories,
-                )
-                .await?;
-            eprintln!(
-                "intent profile:\n{}",
-                serde_json::to_string_pretty(&profile)?
-            );
-            Ok(profile)
-        } else {
-            eprintln!("no DEEPSEEK_API_KEY, using guixu.org proxy for intent parsing");
-            self.profile_via_proxy(
+        eprintln!("calling DeepSeek API for intent parsing");
+        let profile = self
+            .profile_with_deepseek(
                 query,
                 &intent_context.user_profile,
                 intent_context.bandwidth_bytes_per_sec,
                 &intent_context.related_memories,
             )
-            .await
-        }
+            .await?;
+        eprintln!(
+            "intent profile:\n{}",
+            serde_json::to_string_pretty(&profile)?
+        );
+        Ok(profile)
     }
 
     /// Parse a natural language query into structured intent.
@@ -346,41 +339,6 @@ impl IntentParser {
             stream: false,
         })
     }
-
-    async fn profile_via_proxy(
-        &self,
-        query: &str,
-        user_profile: &UserProfile,
-        bandwidth_bytes_per_sec: u64,
-        related_memories: &[String],
-    ) -> Result<QueryProfile> {
-        let request = self.build_deepseek_request(query, user_profile, related_memories)?;
-        let response = tokio::time::timeout(
-            self.config.timeout,
-            self.client
-                .post(&self.config.proxy_url)
-                .json(&request)
-                .send(),
-        )
-        .await
-        .map_err(|_| anyhow!("deepseek proxy: timeout"))?
-        .context("send DeepSeek proxy request")?
-        .error_for_status()
-        .context("DeepSeek proxy returned error status")?
-        .json::<DeepSeekChatResponse>()
-        .await
-        .context("parse DeepSeek proxy response")?;
-
-        let content = response
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|choice| choice.message.content)
-            .map(|content| content.trim().to_string())
-            .filter(|content| !content.is_empty())
-            .ok_or_else(|| anyhow!("DeepSeek proxy returned an empty intent payload"))?;
-        self.profile_from_deepseek_content(query, user_profile, bandwidth_bytes_per_sec, &content)
-    }
 }
 
 #[async_trait::async_trait]
@@ -390,7 +348,7 @@ impl QueryProfiler for IntentParser {
     }
 }
 
-const INTENT_SYSTEM_PROMPT: &str = r#"You are an intent parser for dataset search.
+pub const INTENT_SYSTEM_PROMPT: &str = r#"You are an intent parser for dataset search.
 Return valid json only, with no markdown and no extra commentary.
 
 Use this exact json schema:
@@ -1165,6 +1123,29 @@ fn extract_salient_terms(query: &str) -> Vec<String> {
 #[cfg(test)]
 pub fn extract_salient_terms_for_test(query: &str) -> Vec<String> {
     extract_salient_terms(query)
+}
+
+// ---------------------------------------------------------------------------
+// Public API for external LLM implementations (e.g. MCP sampling)
+// ---------------------------------------------------------------------------
+
+/// Build the user prompt for intent parsing, suitable for sending to any LLM.
+pub fn build_intent_user_prompt(query: &str) -> Result<String> {
+    let query_owned = query.to_string();
+    let ctx = collect_intent_context(&query_owned, true);
+    build_user_prompt(query, &ctx.user_profile, &ctx.related_memories)
+}
+
+/// Parse an LLM response (JSON text) into a [`QueryProfile`].
+pub fn parse_intent_response(query: &str, llm_content: &str) -> Result<QueryProfile> {
+    let ctx = collect_intent_context(query, true);
+    let parser = IntentParser::default();
+    parser.profile_from_deepseek_content(
+        query,
+        &ctx.user_profile,
+        ctx.bandwidth_bytes_per_sec,
+        llm_content,
+    )
 }
 
 fn format_memory_context(related_memories: &[String]) -> String {

@@ -18,7 +18,7 @@ use data_search::engine::{
 };
 use data_search::intent::{IntentParser, QueryProfile};
 use data_search::sample_eval::{
-    DeepSeekSeedRecordJudge, DownloadedSample, GeminiImageSeedRecordJudge,
+    DownloadedSample,
     GuixuHubSampleDownloader, LlmSampleJudge, LocalHeuristicProxyScorer, ProxyScreeningReport,
     ProxyLabelPropagationEvaluator, ProxyLabelPropagationConfig, SampleJudgeReport,
     SampleRequirements, SampleRequirementsPlanner, SeedRecordJudge, SeedRecordJudgeReport,
@@ -139,9 +139,13 @@ impl SampleEvaluator for RuntimeSampleEvaluator {
     }
 }
 
+struct SamplingRuntimeSeedInner {
+    text: crate::sampling_impls::SamplingSeedRecordJudge,
+    image: crate::sampling_impls::SamplingImageSeedRecordJudge,
+}
+
 struct RuntimeSeedJudge {
-    deepseek: Option<DeepSeekSeedRecordJudge>,
-    gemini: GeminiImageSeedRecordJudge,
+    inner: Option<SamplingRuntimeSeedInner>,
 }
 
 #[async_trait]
@@ -154,37 +158,31 @@ impl SeedRecordJudge for RuntimeSeedJudge {
         sample: &data_search::sample_eval::DownloadedSample,
         records: &[data_search::sample_eval::SampleRecord],
     ) -> Result<SeedRecordJudgeReport> {
-        if sample_contains_image_records(sample) {
-            match self
-                .gemini
-                .judge_records(result, metadata, task, sample, records)
-                .await
-            {
-                Ok(report) => return Ok(report),
-                Err(gemini_error) => {
-                    if let Some(deepseek) = &self.deepseek {
-                        return deepseek
-                            .judge_records(result, metadata, task, sample, records)
-                            .await
-                            .map_err(|deepseek_error| {
-                                anyhow::anyhow!(
-                                    "Gemini image judge failed, then DeepSeek text fallback failed: gemini={gemini_error}; deepseek={deepseek_error}"
-                                )
-                            });
-                    }
+        let Some(inner) = &self.inner else {
+            anyhow::bail!(
+                "Guixu requires the host AI client to support MCP sampling for seed record judging. \
+                 No sampling handle available."
+            );
+        };
 
-                    return Err(gemini_error);
+        if sample_contains_image_records(sample) {
+            match inner.image.judge_records(result, metadata, task, sample, records).await {
+                Ok(report) => return Ok(report),
+                Err(image_error) => {
+                    // Fall back to text-based judging.
+                    return inner.text
+                        .judge_records(result, metadata, task, sample, records)
+                        .await
+                        .map_err(|text_error| {
+                            anyhow::anyhow!(
+                                "image seed judge failed, then text fallback failed: image={image_error}; text={text_error}"
+                            )
+                        });
                 }
             }
         }
 
-        if let Some(deepseek) = &self.deepseek {
-            return deepseek
-                .judge_records(result, metadata, task, sample, records)
-                .await;
-        }
-
-        anyhow::bail!("DeepSeek seed judge unavailable for non-image sample records")
+        inner.text.judge_records(result, metadata, task, sample, records).await
     }
 }
 
@@ -476,12 +474,35 @@ fn build_runtime_staged_evaluator() -> StagedSampleEvaluator {
 }
 
 fn build_runtime_sample_evaluator() -> RuntimeSampleEvaluator {
+    // Without host sampling or DeepSeek, use heuristic-only evaluation.
+    RuntimeSampleEvaluator::Hybrid {
+        image_seed: ProxyLabelPropagationEvaluator::with_config(
+            Box::new(build_runtime_sample_downloader()),
+            Box::new(RuntimeSeedJudge {
+                inner: None,
+            }),
+            ProxyLabelPropagationConfig {
+                seed_record_count: 4,
+                low_score_threshold: 35.0,
+                high_score_threshold: 75.0,
+                override_final_below_score: 20.0,
+                selection_seed: 2026,
+            },
+        ),
+        staged: build_runtime_staged_evaluator(),
+    }
+}
+
+fn build_sampling_sample_evaluator(handle: &crate::sampling::SamplingHandle) -> RuntimeSampleEvaluator {
+    use crate::sampling_impls::{SamplingSeedRecordJudge, SamplingImageSeedRecordJudge};
+
     let image_seed = ProxyLabelPropagationEvaluator::with_config(
         Box::new(build_runtime_sample_downloader()),
         Box::new(RuntimeSeedJudge {
-            deepseek: runtime_deepseek_available()
-                .then(|| DeepSeekSeedRecordJudge::from_env().with_record_char_limit(600)),
-            gemini: GeminiImageSeedRecordJudge::from_env().with_record_char_limit(600),
+            inner: Some(SamplingRuntimeSeedInner {
+                text: SamplingSeedRecordJudge::new(handle.clone()),
+                image: SamplingImageSeedRecordJudge::new(handle.clone()),
+            }),
         }),
         ProxyLabelPropagationConfig {
             seed_record_count: 4,
@@ -492,21 +513,7 @@ fn build_runtime_sample_evaluator() -> RuntimeSampleEvaluator {
         },
     );
 
-    if runtime_deepseek_available() {
-        return RuntimeSampleEvaluator::RandomSeed(image_seed);
-    }
-
-    RuntimeSampleEvaluator::Hybrid {
-        image_seed,
-        staged: build_runtime_staged_evaluator(),
-    }
-}
-
-fn runtime_deepseek_available() -> bool {
-    std::env::var("DEEPSEEK_API_KEY")
-        .ok()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
+    RuntimeSampleEvaluator::RandomSeed(image_seed)
 }
 
 fn build_heuristic_sample_requirements(task: &DatasetSelectionTask) -> SampleRequirements {
@@ -1083,7 +1090,10 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         selection_task.required_columns = required_columns.clone();
     }
     let metadata_resolver = SearchResultMetadataResolver;
-    let sample_evaluator = build_runtime_sample_evaluator();
+    let sample_evaluator = match state.sampling_handle.read().unwrap().as_ref() {
+        Some(handle) => build_sampling_sample_evaluator(handle),
+        None => build_runtime_sample_evaluator(),
+    };
     let selection_config = DatasetValuationConfig::default();
     let selection_output = state
         .search_engine
