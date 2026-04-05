@@ -8,8 +8,6 @@ pub mod http;
 pub mod protocol;
 pub mod registry;
 pub mod rpc;
-pub mod sampling;
-pub mod sampling_impls;
 pub mod server;
 pub mod session;
 pub mod state;

@@ -139,50 +139,19 @@ impl SampleEvaluator for RuntimeSampleEvaluator {
     }
 }
 
-struct SamplingRuntimeSeedInner {
-    text: crate::sampling_impls::SamplingSeedRecordJudge,
-    image: crate::sampling_impls::SamplingImageSeedRecordJudge,
-}
-
-struct RuntimeSeedJudge {
-    inner: Option<SamplingRuntimeSeedInner>,
-}
+struct RuntimeSeedJudge;
 
 #[async_trait]
 impl SeedRecordJudge for RuntimeSeedJudge {
     async fn judge_records(
         &self,
-        result: &SearchResult,
-        metadata: &DatasetMetadata,
-        task: &DatasetSelectionTask,
-        sample: &data_search::sample_eval::DownloadedSample,
-        records: &[data_search::sample_eval::SampleRecord],
+        _result: &SearchResult,
+        _metadata: &DatasetMetadata,
+        _task: &DatasetSelectionTask,
+        _sample: &data_search::sample_eval::DownloadedSample,
+        _records: &[data_search::sample_eval::SampleRecord],
     ) -> Result<SeedRecordJudgeReport> {
-        let Some(inner) = &self.inner else {
-            anyhow::bail!(
-                "Guixu requires the host AI client to support MCP sampling for seed record judging. \
-                 No sampling handle available."
-            );
-        };
-
-        if sample_contains_image_records(sample) {
-            match inner.image.judge_records(result, metadata, task, sample, records).await {
-                Ok(report) => return Ok(report),
-                Err(image_error) => {
-                    // Fall back to text-based judging.
-                    return inner.text
-                        .judge_records(result, metadata, task, sample, records)
-                        .await
-                        .map_err(|text_error| {
-                            anyhow::anyhow!(
-                                "image seed judge failed, then text fallback failed: image={image_error}; text={text_error}"
-                            )
-                        });
-                }
-            }
-        }
-
-        inner.text.judge_records(result, metadata, task, sample, records).await
+        anyhow::bail!("seed record judging unavailable — using heuristic evaluation only")
     }
 }
 
@@ -474,13 +443,10 @@ fn build_runtime_staged_evaluator() -> StagedSampleEvaluator {
 }
 
 fn build_runtime_sample_evaluator() -> RuntimeSampleEvaluator {
-    // Without host sampling or DeepSeek, use heuristic-only evaluation.
     RuntimeSampleEvaluator::Hybrid {
         image_seed: ProxyLabelPropagationEvaluator::with_config(
             Box::new(build_runtime_sample_downloader()),
-            Box::new(RuntimeSeedJudge {
-                inner: None,
-            }),
+            Box::new(RuntimeSeedJudge),
             ProxyLabelPropagationConfig {
                 seed_record_count: 4,
                 low_score_threshold: 35.0,
@@ -491,29 +457,6 @@ fn build_runtime_sample_evaluator() -> RuntimeSampleEvaluator {
         ),
         staged: build_runtime_staged_evaluator(),
     }
-}
-
-fn build_sampling_sample_evaluator(handle: &crate::sampling::SamplingHandle) -> RuntimeSampleEvaluator {
-    use crate::sampling_impls::{SamplingSeedRecordJudge, SamplingImageSeedRecordJudge};
-
-    let image_seed = ProxyLabelPropagationEvaluator::with_config(
-        Box::new(build_runtime_sample_downloader()),
-        Box::new(RuntimeSeedJudge {
-            inner: Some(SamplingRuntimeSeedInner {
-                text: SamplingSeedRecordJudge::new(handle.clone()),
-                image: SamplingImageSeedRecordJudge::new(handle.clone()),
-            }),
-        }),
-        ProxyLabelPropagationConfig {
-            seed_record_count: 4,
-            low_score_threshold: 35.0,
-            high_score_threshold: 75.0,
-            override_final_below_score: 20.0,
-            selection_seed: 2026,
-        },
-    );
-
-    RuntimeSampleEvaluator::RandomSeed(image_seed)
 }
 
 fn build_heuristic_sample_requirements(task: &DatasetSelectionTask) -> SampleRequirements {
@@ -969,13 +912,56 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .and_then(|v| v.as_u64())
         .map(|v| v as usize);
 
-    let sampling = state.sampling_handle.read().unwrap().clone();
-    let profile_result = if let Some(handle) = sampling.as_ref() {
-        let parser = crate::sampling_impls::SamplingIntentParser::new(handle.clone());
-        use data_search::intent::QueryProfiler;
-        parser.profile(intent_query).await
-    } else {
-        Err(anyhow::anyhow!("{}", crate::sampling::SAMPLING_NOT_SUPPORTED_MSG))
+    let sampling_removed = true;
+    let _ = sampling_removed;
+    // Build profile from structured args if provided, otherwise use heuristic.
+    let profile_result: Result<QueryProfile> = {
+        let keywords: Vec<String> = args
+            .get("keywords")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+        let sample_unit = args.get("sample_unit").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let target_entity = args.get("target_entity").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let budget = args.get("budget").and_then(|v| v.as_str()).unwrap_or("0 USD").trim().to_string();
+        let task_desc = args.get("task_description").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+        if keywords.is_empty() {
+            // Fallback: extract keywords from query heuristically.
+            let fallback_keywords: Vec<String> = intent_query
+                .split_whitespace()
+                .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+                .filter(|w| w.len() > 2)
+                .take(5)
+                .collect();
+            Ok(QueryProfile {
+                raw_query: intent_query.to_string(),
+                task_type: task_type_override.clone(),
+                task_description: task_desc.or_else(|| Some(intent_query.to_string())),
+                target_entity,
+                keywords: fallback_keywords,
+                data_standard: data_search::intent::DataStandard {
+                    sample_unit,
+                    budget,
+                    ..Default::default()
+                },
+                user_profile: Default::default(),
+            })
+        } else {
+            Ok(QueryProfile {
+                raw_query: intent_query.to_string(),
+                task_type: task_type_override.clone().or_else(|| args.get("task_type").and_then(|v| v.as_str()).map(String::from)),
+                task_description: task_desc.or_else(|| Some(intent_query.to_string())),
+                target_entity,
+                keywords,
+                data_standard: data_search::intent::DataStandard {
+                    sample_unit,
+                    budget,
+                    ..Default::default()
+                },
+                user_profile: Default::default(),
+            })
+        }
     };
     let mut profile = match profile_result {
         Ok(profile) => profile,
@@ -1097,10 +1083,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         selection_task.required_columns = required_columns.clone();
     }
     let metadata_resolver = SearchResultMetadataResolver;
-    let sample_evaluator = match state.sampling_handle.read().unwrap().as_ref() {
-        Some(handle) => build_sampling_sample_evaluator(handle),
-        None => build_runtime_sample_evaluator(),
-    };
+    let sample_evaluator = build_runtime_sample_evaluator();
     let selection_config = DatasetValuationConfig::default();
     let selection_output = state
         .search_engine

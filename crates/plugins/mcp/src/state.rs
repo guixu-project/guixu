@@ -19,8 +19,6 @@ use data_trading::router::PaymentRouter;
 use data_trading::wallet::AgentWallet;
 use data_valuation::tcv::TcvEngine;
 
-use crate::sampling::SamplingHandle;
-
 /// Shared state accessible by MCP tool handlers.
 pub struct AppState {
     pub identity: NodeIdentity,
@@ -31,7 +29,6 @@ pub struct AppState {
     pub search_engine: SearchEngine,
     pub payment_router: PaymentRouter,
     pub torrent_engine: Option<TorrentEngine>,
-    pub sampling_handle: std::sync::RwLock<Option<SamplingHandle>>,
 }
 
 impl AppState {
@@ -157,7 +154,6 @@ impl AppState {
             search_engine,
             payment_router: PaymentRouter::new(wallet, payment.testnet),
             torrent_engine,
-            sampling_handle: std::sync::RwLock::new(None),
         }
     }
 }
