@@ -27,9 +27,6 @@ impl ExternalAdapter for PostgreSqlAdapter {
     fn name(&self) -> &str {
         "postgresql"
     }
-    fn source_type(&self) -> DataSource {
-        DataSource::PostgreSql
-    }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         if self.catalogs.is_empty() {
@@ -184,6 +181,8 @@ async fn search_catalog(
             created_at: chrono::Utc::now(),
             seller_endpoint: None,
             source_attributes: Some(attrs),
+            provider_meta: None,
+            governance: None,
         });
     }
 

@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "duckdb",
+  "name": "DuckDB Catalog",
+  "description": "Search configured DuckDB catalogs via built-in native adapter.",
+  "source": "duckdb",
+  "tags": [
+    "database",
+    "analytics"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "duckdb"
+  }
+}

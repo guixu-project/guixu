@@ -5,14 +5,16 @@ use anyhow::Result;
 use data_core::metadata::DatasetMetadata;
 use data_core::types::DatasetCid;
 use rocksdb::{Options, DB};
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Local persistent storage for metadata and node state (RocksDB).
 /// Thread-safe via internal Mutex (RocksDB itself is thread-safe, but we wrap for Arc sharing).
 #[derive(Clone)]
 pub struct MetadataStore {
     db: Arc<DB>,
+    metadata_cache: Arc<RwLock<HashMap<String, DatasetMetadata>>>,
 }
 
 impl MetadataStore {
@@ -20,37 +22,49 @@ impl MetadataStore {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         let db = DB::open(&opts, path)?;
-        Ok(Self { db: Arc::new(db) })
+        let db = Arc::new(db);
+        let metadata_cache = Arc::new(RwLock::new(load_metadata_cache(&db)?));
+        Ok(Self { db, metadata_cache })
     }
 
     pub fn put(&self, metadata: &DatasetMetadata) -> Result<()> {
         let key = format!("meta:{}", metadata.cid.0);
         let value = serde_json::to_vec(metadata)?;
         self.db.put(key.as_bytes(), &value)?;
+        self.metadata_cache
+            .write()
+            .unwrap()
+            .insert(metadata.cid.0.clone(), metadata.clone());
         Ok(())
     }
 
     pub fn get(&self, cid: &DatasetCid) -> Result<Option<DatasetMetadata>> {
+        if let Some(metadata) = self.metadata_cache.read().unwrap().get(&cid.0).cloned() {
+            return Ok(Some(metadata));
+        }
+
         let key = format!("meta:{}", cid.0);
         match self.db.get(key.as_bytes())? {
-            Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Some(bytes) => {
+                let metadata: DatasetMetadata = serde_json::from_slice(&bytes)?;
+                self.metadata_cache
+                    .write()
+                    .unwrap()
+                    .insert(cid.0.clone(), metadata.clone());
+                Ok(Some(metadata))
+            }
             None => Ok(None),
         }
     }
 
     pub fn list_all(&self) -> Result<Vec<DatasetMetadata>> {
-        let mut results = vec![];
-        let iter = self.db.prefix_iterator(b"meta:");
-        for item in iter {
-            let (k, v) = item?;
-            if !k.starts_with(b"meta:") {
-                break;
-            }
-            if let Ok(m) = serde_json::from_slice::<DatasetMetadata>(&v) {
-                results.push(m);
-            }
-        }
-        Ok(results)
+        Ok(self
+            .metadata_cache
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect())
     }
 
     /// Record the local file path for a dataset CID.
@@ -89,4 +103,19 @@ impl MetadataStore {
             _ => Ok(None),
         }
     }
+}
+
+fn load_metadata_cache(db: &DB) -> Result<HashMap<String, DatasetMetadata>> {
+    let mut metadata = HashMap::new();
+    let iter = db.prefix_iterator(b"meta:");
+    for item in iter {
+        let (key, value) = item?;
+        if !key.starts_with(b"meta:") {
+            break;
+        }
+        if let Ok(record) = serde_json::from_slice::<DatasetMetadata>(&value) {
+            metadata.insert(record.cid.0.clone(), record);
+        }
+    }
+    Ok(metadata)
 }

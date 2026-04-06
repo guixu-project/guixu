@@ -29,9 +29,6 @@ impl ExternalAdapter for DblpAdapter {
     fn name(&self) -> &str {
         "dblp"
     }
-    fn source_type(&self) -> DataSource {
-        DataSource::Dblp
-    }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let h = limit.min(100).to_string();
@@ -114,6 +111,8 @@ impl ExternalAdapter for DblpAdapter {
                         "authors": authors,
                         "year": year,
                     })),
+                    governance: None,
+                    provider_meta: None,
                 })
             })
             .collect())

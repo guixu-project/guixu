@@ -42,9 +42,6 @@ impl ExternalAdapter for DuckDbAdapter {
     fn name(&self) -> &str {
         "duckdb"
     }
-    fn source_type(&self) -> DataSource {
-        DataSource::DuckDb
-    }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         if self.catalogs.is_empty() {
@@ -185,6 +182,8 @@ async fn search_catalog(
             created_at: chrono::Utc::now(),
             seller_endpoint: None,
             source_attributes: Some(attrs),
+            provider_meta: None,
+            governance: None,
         });
     }
 

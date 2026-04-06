@@ -79,7 +79,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_search".into(),
-            description: "Search datasets across DefiLlama, RWA.xyz, Kaggle, HuggingFace, IPFS, BitTorrent, DBLP, Semantic Scholar, arXiv, and P2P network. Supports free open data discovery.".into(),
+            description: "Search datasets across registered data skills, including built-in skills such as DefiLlama, RWA.xyz, Kaggle, HuggingFace, IPFS, BitTorrent, DBLP, Semantic Scholar, and arXiv. Supports free open data discovery.".into(),
             annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
@@ -97,16 +97,66 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                             "max_price": { "type": "number" },
                             "license": { "type": "string" },
                             "min_quality": { "type": "number" },
-                            "source": {
+                            "skill_id": {
+                                "type": "string",
+                                "description": "Optional data skill identifier, e.g. kaggle, huggingface, datacite_commons"
+                            },
+                            "skill_ids": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Optional allow-list of data skill identifiers"
+                            },
+                            "source_family": {
                                 "type": "string",
                                 "enum": [
-                                    "defillama", "rwa_xyz", "thegraph",
-                                    "guixuhub", "kaggle", "huggingface",
-                                    "ipfs", "bittorrent", "postgresql",
-                                    "duckdb", "googledatasetsearch",
-                                    "datacitecommons", "pansearch", "p2p",
-                                    "dblp", "semanticscholar", "arxiv"
+                                    "marketplace",
+                                    "academic",
+                                    "web_registry",
+                                    "db_catalog",
+                                    "decentralized",
+                                    "local",
+                                    "custom"
                                 ]
+                            },
+                            "source_families": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "enum": [
+                                        "marketplace",
+                                        "academic",
+                                        "web_registry",
+                                        "db_catalog",
+                                        "decentralized",
+                                        "local",
+                                        "custom"
+                                    ]
+                                }
+                            },
+                            "required_capability": {
+                                "type": "string",
+                                "enum": [
+                                    "search",
+                                    "lookup",
+                                    "download",
+                                    "schema_probe",
+                                    "sample_preview",
+                                    "license_lookup"
+                                ]
+                            },
+                            "required_capabilities": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "enum": [
+                                        "search",
+                                        "lookup",
+                                        "download",
+                                        "schema_probe",
+                                        "sample_preview",
+                                        "license_lookup"
+                                    ]
+                                }
                             },
                             "chain": { "type": "string", "description": "Filter by blockchain (e.g. ethereum, polygon)" },
                             "protocol": { "type": "string", "description": "Filter by protocol (e.g. circle, aave)" },
@@ -148,15 +198,51 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_download".into(),
-            description: "Download a dataset by CID. Automatically selects the right method based on source: Kaggle (kaggle CLI), HuggingFace (huggingface-cli or git clone), IPFS (gateway), Guixu Hub (API), or BitTorrent. Pass the CID from dataset_search results.".into(),
+            description: "Download a dataset by CID. Automatically selects the right method based on source. Free no-login sources: UCI (uci:), OpenML (openml:), Zenodo (zenodo:), Figshare (figshare:), Common Crawl (commoncrawl:), OpenAlex (openalex:), AWS Open Data (aws-open:), OpenNeuro (openneuro:), PhysioNet (physionet:), HuggingFace public (hf:), IPFS (ipfs:), Guixu Hub free (guixu-hub:), BitTorrent (40-char hex hash). Requires login: Kaggle (kaggle:). Pass the CID from dataset_search results.".into(),
             annotations: local_side_effect_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "cid": {
                         "type": "string",
-                        "description": "Dataset CID from search results (e.g. 'kaggle:owner/dataset', 'hf:owner/dataset', 'guixu-hub:123')"
+                        "description": "Dataset CID from search results (e.g. 'kaggle:owner/dataset', 'hf:owner/dataset', 'uci:53', 'openml:61', 'zenodo:12345', 'figshare:12345', 'guixu-hub:uuid')"
                     }
+                },
+                "required": ["cid"]
+            }),
+        },
+        ToolDefinition {
+            name: "dataset_lookup".into(),
+            description: "Lookup detailed dataset metadata by CID, including schema, license, provider, and stored source attributes.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cid": { "type": "string", "description": "Dataset CID from search results" }
+                },
+                "required": ["cid"]
+            }),
+        },
+        ToolDefinition {
+            name: "dataset_schema_probe".into(),
+            description: "Return dataset schema and related type information by CID.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cid": { "type": "string", "description": "Dataset CID from search results" }
+                },
+                "required": ["cid"]
+            }),
+        },
+        ToolDefinition {
+            name: "dataset_download_by_skill".into(),
+            description: "Download a dataset through the Open Data Skill execution path. Useful for skill-backed providers and future declarative downloads.".into(),
+            annotations: local_side_effect_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cid": { "type": "string", "description": "Dataset CID from search results" }
                 },
                 "required": ["cid"]
             }),
@@ -242,7 +328,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_bt_download".into(),
-            description: "Download a dataset from the BitTorrent network by info hash. Use dataset_search with source=bittorrent to find info hashes first.".into(),
+            description: "Download a dataset from the BitTorrent network by info hash. Use dataset_search with filters.skill_ids=[\"bittorrent\"] to find info hashes first.".into(),
             annotations: local_side_effect_annotations(),
             input_schema: json!({
                 "type": "object",
@@ -295,6 +381,199 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["query"]
             }),
         },
+        ToolDefinition {
+            name: "data_task_delegate".into(),
+            description: "Delegate a dataset discovery, valuation, and acquisition task to the Guixu Agent. The agent will search, evaluate, and select the best dataset based on the task specification. Returns a job_id for tracking.".into(),
+            annotations: mutating_annotations(false),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "host_kind": {
+                        "type": "string",
+                        "enum": ["openclaw", "codex", "opencode"],
+                        "description": "The host agent type"
+                    },
+                    "session_key": {
+                        "type": "string",
+                        "description": "Host session key for context"
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "description": "Optional run identifier"
+                    },
+                    "workspace_id": {
+                        "type": "string",
+                        "description": "Workspace identifier"
+                    },
+                    "workspace_root": {
+                        "type": "string",
+                        "description": "Optional workspace root path"
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": "What the user wants to accomplish (e.g. 'train a cat detector')"
+                    },
+                    "task_type": {
+                        "type": "string",
+                        "description": "Optional ML task type (classification, detection, etc.)"
+                    },
+                    "required_modalities": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Data modalities needed (image, video, text, tabular, audio)"
+                    },
+                    "required_columns": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Required dataset columns"
+                    },
+                    "budget_amount": {
+                        "type": "number",
+                        "description": "Budget amount"
+                    },
+                    "budget_currency": {
+                        "type": "string",
+                        "default": "USD",
+                        "description": "Budget currency"
+                    },
+                    "allow_purchase": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Whether to allow purchasing paid datasets"
+                    },
+                    "allowed_skill_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Allowed data skill identifiers"
+                    },
+                    "blocked_skill_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Blocked data skill identifiers"
+                    },
+                    "allowed_source_families": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "marketplace",
+                                "academic",
+                                "web_registry",
+                                "db_catalog",
+                                "decentralized",
+                                "local",
+                                "custom"
+                            ]
+                        },
+                        "description": "Allowed data skill source families"
+                    },
+                    "required_capabilities": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "search",
+                                "lookup",
+                                "download",
+                                "schema_probe",
+                                "sample_preview",
+                                "license_lookup"
+                            ]
+                        },
+                        "description": "Capabilities required from selected data skills"
+                    },
+                    "require_license_review": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Whether to require license review before download"
+                    },
+                    "desired_outputs": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "default": ["selected_dataset"],
+                        "description": "What outputs to produce (selected_dataset, evaluation_report, downloaded_artifact, guixu_lock)"
+                    }
+                },
+                "required": ["host_kind", "session_key", "workspace_id", "goal"]
+            }),
+        },
+        ToolDefinition {
+            name: "data_task_status".into(),
+            description: "Get the status of a delegated data task. Returns current state, selected dataset if completed, and any errors.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID returned by data_task_delegate"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "data_task_approve".into(),
+            description: "Approve or reject a pending action (purchase, publish, credential use) for a delegated task.".into(),
+            annotations: mutating_annotations(true),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID"
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["purchase", "publish", "override_policy"],
+                        "description": "The action type being approved"
+                    },
+                    "approved": {
+                        "type": "boolean",
+                        "description": "Whether to approve (true) or reject (false)"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional notes explaining the decision"
+                    }
+                },
+                "required": ["job_id", "action", "approved"]
+            }),
+        },
+        ToolDefinition {
+            name: "data_task_cancel".into(),
+            description: "Cancel a running or queued delegated task.".into(),
+            annotations: mutating_annotations(true),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID to cancel"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional reason for cancellation"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "data_task_artifacts".into(),
+            description: "Get the artifacts produced by a completed delegated task.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
     ]
 }
 
@@ -332,5 +611,15 @@ mod tests {
         assert!(tool_names.iter().any(|name| name == "dataset_search"));
         assert!(tool_names.iter().any(|name| name == "dataset_evaluate"));
         assert!(!tool_names.iter().any(|name| name == "task_pipeline"));
+    }
+
+    #[test]
+    fn data_task_delegate_is_exposed() {
+        let tool_names: Vec<String> = all_tool_definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+
+        assert!(tool_names.iter().any(|name| name == "data_task_delegate"));
     }
 }

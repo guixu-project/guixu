@@ -1,0 +1,17 @@
+{
+  "spec_version": "1.0",
+  "id": "defillama",
+  "name": "DefiLlama",
+  "description": "Search DeFi market datasets via built-in native adapter.",
+  "source": "defillama",
+  "tags": [
+    "defi",
+    "market",
+    "finance"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "defillama"
+  }
+}

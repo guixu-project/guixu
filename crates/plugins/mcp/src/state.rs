@@ -14,10 +14,12 @@ use data_search::engine::SearchEngine;
 use data_search::intent::IntentParser;
 use data_search::vector_index::VectorIndex;
 use data_storage::feedback_store::FeedbackStore;
+use data_storage::job_store::JobStore;
 use data_storage::metadata_store::MetadataStore;
 use data_trading::router::PaymentRouter;
 use data_trading::wallet::AgentWallet;
 use data_valuation::tcv::TcvEngine;
+use std::sync::Arc;
 
 /// Shared state accessible by MCP tool handlers.
 pub struct AppState {
@@ -25,8 +27,9 @@ pub struct AppState {
     pub dht: DhtIndex,
     pub store: MetadataStore,
     pub feedback_store: FeedbackStore,
+    pub job_store: JobStore,
     pub tcv_engine: TcvEngine,
-    pub search_engine: SearchEngine,
+    pub search_engine: Arc<SearchEngine>,
     pub payment_router: PaymentRouter,
     pub torrent_engine: Option<TorrentEngine>,
 }
@@ -38,11 +41,14 @@ impl AppState {
         store: MetadataStore,
         feedback_store: FeedbackStore,
     ) -> Self {
+        let job_store = JobStore::open(&NodeConfig::config_dir().join("jobs"))
+            .expect("failed to open job store");
         Self::with_payment_config(
             identity,
             dht,
             store,
             feedback_store,
+            job_store,
             &PaymentConfig::default(),
         )
         .await
@@ -64,6 +70,7 @@ impl AppState {
 
         let store = MetadataStore::open(&base_dir.join("db"))?;
         let feedback_store = FeedbackStore::open(&base_dir.join("feedback_db"))?;
+        let job_store = JobStore::open(&base_dir.join("job_db"))?;
 
         let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel(8);
         let dht = DhtIndex::new(NetworkHandle {
@@ -76,6 +83,7 @@ impl AppState {
             dht,
             store,
             feedback_store,
+            job_store,
             &PaymentConfig::default(),
         )
         .await)
@@ -93,7 +101,10 @@ impl AppState {
             local_peer_id: libp2p::PeerId::random(),
         });
 
-        Self::with_payment_config(identity, dht, store, feedback_store, payment).await
+        let job_store = JobStore::open(&NodeConfig::config_dir().join("jobs"))
+            .expect("failed to open job store");
+
+        Self::with_payment_config(identity, dht, store, feedback_store, job_store, payment).await
     }
 
     pub async fn with_payment_config(
@@ -101,9 +112,21 @@ impl AppState {
         dht: DhtIndex,
         store: MetadataStore,
         feedback_store: FeedbackStore,
+        job_store: JobStore,
         payment: &PaymentConfig,
     ) -> Self {
-        Self::with_full_config(identity, dht, store, feedback_store, payment, &[], &[], &[]).await
+        Self::with_full_config(
+            identity,
+            dht,
+            store,
+            feedback_store,
+            job_store,
+            payment,
+            &[],
+            &[],
+            &[],
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -112,6 +135,7 @@ impl AppState {
         dht: DhtIndex,
         store: MetadataStore,
         feedback_store: FeedbackStore,
+        job_store: JobStore,
         payment: &PaymentConfig,
         duckdb_catalogs: &[DuckDbCatalog],
         pg_catalogs: &[PostgreSqlCatalog],
@@ -150,8 +174,9 @@ impl AppState {
             dht,
             store,
             feedback_store,
+            job_store,
             tcv_engine: TcvEngine,
-            search_engine,
+            search_engine: Arc::new(search_engine),
             payment_router: PaymentRouter::new(wallet, payment.testnet),
             torrent_engine,
         }

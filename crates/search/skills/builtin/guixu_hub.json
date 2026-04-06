@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "guixu_hub",
+  "name": "Guixu Hub",
+  "description": "Search Guixu Hub marketplace datasets via built-in native adapter.",
+  "source": "guixu_hub",
+  "tags": [
+    "marketplace",
+    "onchain"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "guixu_hub"
+  }
+}

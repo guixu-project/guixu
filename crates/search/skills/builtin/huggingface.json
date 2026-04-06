@@ -1,0 +1,18 @@
+{
+  "spec_version": "1.0",
+  "id": "huggingface",
+  "name": "HuggingFace",
+  "description": "Search Hugging Face datasets via built-in native adapter.",
+  "source": "huggingface",
+  "tags": [
+    "ml",
+    "nlp",
+    "vision",
+    "audio"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "huggingface"
+  }
+}

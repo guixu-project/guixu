@@ -104,10 +104,6 @@ impl ExternalAdapter for GuixuHubAdapter {
         "guixu_hub"
     }
 
-    fn source_type(&self) -> DataSource {
-        DataSource::GuixuHub
-    }
-
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let limit_str = limit.min(100).to_string();
         let items = tokio::time::timeout(
@@ -193,6 +189,8 @@ impl ExternalAdapter for GuixuHubAdapter {
                         }
                     }),
                     source_attributes: None,
+                    provider_meta: None,
+                    governance: None,
                 }
             })
             .collect())

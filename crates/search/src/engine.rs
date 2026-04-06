@@ -5,7 +5,9 @@ use anyhow::{Context, Result};
 use data_attestation::{fetch_buyer_reviews, summarize_reviews, BaseChainClient, ChainConfig};
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::DatasetMetadata;
-use data_core::types::{DataSource, DataType, SearchResult};
+use data_core::types::{
+    DataSource, DataType, DatasetCid, SearchResult, SkillCapability, SourceFamily,
+};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -30,7 +32,9 @@ pub struct SearchFilters {
     pub max_price: Option<f64>,
     pub license: Option<String>,
     pub min_quality: Option<f64>,
-    pub source: Option<String>,
+    pub skill_ids: Vec<String>,
+    pub source_families: Vec<SourceFamily>,
+    pub required_capabilities: Vec<SkillCapability>,
     pub chain: Option<String>,
     pub protocol: Option<String>,
     pub asset: Option<String>,
@@ -92,6 +96,91 @@ fn format_error_chain(error: &anyhow::Error) -> String {
     } else {
         parts.join(" | caused by: ")
     }
+}
+
+fn adapter_matches_filters(adapter: &dyn ExternalAdapter, filters: &SearchFilters) -> bool {
+    if !filters.skill_ids.is_empty()
+        && !filters
+            .skill_ids
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(adapter.skill_id()))
+    {
+        return false;
+    }
+
+    if !filters.source_families.is_empty()
+        && !filters
+            .source_families
+            .iter()
+            .any(|candidate| *candidate == adapter.source_family())
+    {
+        return false;
+    }
+
+    let capabilities = adapter.capabilities();
+    filters
+        .required_capabilities
+        .iter()
+        .all(|required| capabilities.contains(required))
+}
+
+fn enrich_search_result_with_skill_metadata(
+    mut result: SearchResult,
+    adapter: &dyn ExternalAdapter,
+) -> SearchResult {
+    let mut attrs = result
+        .source_attributes
+        .take()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    attrs.insert(
+        "skill_id".into(),
+        serde_json::Value::String(adapter.skill_id().to_string()),
+    );
+    attrs.insert(
+        "capabilities".into(),
+        serde_json::to_value(adapter.capabilities()).unwrap_or_else(|_| serde_json::json!([])),
+    );
+    result.source_attributes = Some(serde_json::Value::Object(attrs));
+
+    if result.provider_meta.is_none() {
+        result.provider_meta = Some(data_core::types::ProviderMeta {
+            provider_id: adapter.skill_id().to_string(),
+            source_family: adapter.source_family(),
+            labels: adapter.labels(),
+        });
+    }
+
+    result
+}
+
+fn result_skill_id(result: &SearchResult) -> Option<String> {
+    result
+        .source_attributes
+        .as_ref()
+        .and_then(|value| value.get("skill_id"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+        .or_else(|| {
+            result
+                .provider_meta
+                .as_ref()
+                .map(|meta| meta.provider_id.clone())
+        })
+}
+
+fn result_capabilities(result: &SearchResult) -> Vec<SkillCapability> {
+    result
+        .source_attributes
+        .as_ref()
+        .and_then(|value| value.get("capabilities"))
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+fn result_source_family(result: &SearchResult) -> Option<SourceFamily> {
+    result.provider_meta.as_ref().map(|meta| meta.source_family)
 }
 
 impl SearchEngine {
@@ -166,6 +255,12 @@ impl SearchEngine {
             self.search_external(profile, filters, limit),
         );
 
+        let normalized_keywords = normalized_intent_keywords(profile);
+        let task_text = profile
+            .task_description
+            .as_deref()
+            .filter(|description| !description.trim().is_empty())
+            .unwrap_or(profile.raw_query.as_str());
         let local_metadata_by_cid: HashMap<&str, &DatasetMetadata> = local_metadata
             .iter()
             .map(|metadata| (metadata.cid.0.as_str(), metadata))
@@ -176,7 +271,7 @@ impl SearchEngine {
         // Apply filters
         if let Some(ref topic) = filters.topic {
             let topic = topic.to_lowercase();
-            all.retain(|r| searchable_result_text(r).contains(&topic));
+            all.retain(|r| normalized_search_result_text(r).contains(&topic));
         }
         if let Some(min_rows) = filters.min_rows {
             all.retain(|r| r.schema.row_count >= min_rows);
@@ -196,11 +291,29 @@ impl SearchEngine {
                     .unwrap_or(false)
             });
         }
-        if let Some(ref src) = filters.source {
+        if !filters.skill_ids.is_empty() {
             all.retain(|r| {
-                format!("{:?}", r.source)
-                    .to_lowercase()
-                    .contains(&src.to_lowercase())
+                result_skill_id(r).is_some_and(|skill_id| {
+                    filters
+                        .skill_ids
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(&skill_id))
+                })
+            });
+        }
+        if !filters.source_families.is_empty() {
+            all.retain(|r| {
+                result_source_family(r)
+                    .is_some_and(|family| filters.source_families.contains(&family))
+            });
+        }
+        if !filters.required_capabilities.is_empty() {
+            all.retain(|r| {
+                let capabilities = result_capabilities(r);
+                filters
+                    .required_capabilities
+                    .iter()
+                    .all(|required| capabilities.contains(required))
             });
         }
 
@@ -233,12 +346,26 @@ impl SearchEngine {
         let all = deduped;
 
         // Rank with community signal (TCV-lite for search ranking)
+        let signal_by_cid: HashMap<String, CommunitySignal> = all
+            .iter()
+            .map(|result| (result.cid.0.clone(), signal_fetcher(&result.cid.0)))
+            .collect();
         let mut ranked: Vec<RankedResult> = all
             .into_iter()
             .map(|r| {
                 let metadata = local_metadata_by_cid.get(r.cid.0.as_str()).copied();
-                let signal = signal_fetcher(&r.cid.0);
-                let score = rank_with_signal(&r, metadata, &signal, profile);
+                let signal = signal_by_cid
+                    .get(&r.cid.0)
+                    .cloned()
+                    .unwrap_or_else(|| empty_signal_for_cid(&r.cid));
+                let score = rank_with_signal(
+                    &r,
+                    metadata,
+                    &signal,
+                    task_text,
+                    &normalized_keywords,
+                    profile,
+                );
                 RankedResult {
                     result: r,
                     rank_score: score,
@@ -584,19 +711,7 @@ impl SearchEngine {
         let results: Vec<SearchResult> = metadata
             .iter()
             .filter(|m| {
-                let title = m.title.to_lowercase();
-                let desc = m.description.as_deref().unwrap_or("").to_lowercase();
-                let tags_str = m.tags.join(" ").to_lowercase();
-                let column_names = m
-                    .schema
-                    .columns
-                    .iter()
-                    .map(|column| column.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .to_lowercase();
-                let data_type = format!("{:?}", m.data_type).to_lowercase();
-                let all_text = format!("{title} {desc} {tags_str} {column_names} {data_type}");
+                let all_text = normalized_metadata_text(m);
 
                 if keyword_terms.is_empty() {
                     all_text.contains(&fallback_query)
@@ -616,15 +731,20 @@ impl SearchEngine {
     async fn search_external(
         &self,
         intent: &ParsedIntent,
-        _filters: &SearchFilters,
+        filters: &SearchFilters,
         limit: usize,
     ) -> (Vec<SearchResult>, Vec<String>) {
         let mut results = vec![];
         let mut errors = vec![];
         let external_query = build_search_query(intent);
         for adapter in &self.adapters {
+            if !adapter_matches_filters(adapter.as_ref(), filters) {
+                continue;
+            }
             match adapter.search(&external_query, limit).await {
-                Ok(mut r) => results.append(&mut r),
+                Ok(r) => results.extend(r.into_iter().map(|result| {
+                    enrich_search_result_with_skill_metadata(result, adapter.as_ref())
+                })),
                 Err(e) => {
                     warn!(adapter = adapter.name(), error = %e, "adapter search failed");
                     errors.push(format!("{}: {e}", adapter.name()));
@@ -910,19 +1030,14 @@ fn rank_with_signal(
     result: &SearchResult,
     metadata: Option<&DatasetMetadata>,
     signal: &CommunitySignal,
+    task_text: &str,
+    keywords: &[String],
     intent: &ParsedIntent,
 ) -> f64 {
     let quality = result.quality.as_ref().map(|q| q.total).unwrap_or(50.0);
 
-    let metadata_text = build_dataset_text(result, metadata).to_lowercase();
-    let searchable_text = searchable_result_text(result);
-    let task_text = intent
-        .task_description
-        .as_deref()
-        .filter(|description| !description.trim().is_empty())
-        .unwrap_or(intent.raw_query.as_str());
-
-    let keywords = normalized_intent_keywords(intent);
+    let metadata_text = normalized_dataset_text(result, metadata);
+    let searchable_text = normalized_search_result_text(result);
     let keyword_hits = keywords
         .iter()
         .filter(|keyword| {
@@ -994,6 +1109,18 @@ fn normalized_intent_keywords(intent: &ParsedIntent) -> Vec<String> {
         .filter(|keyword| !keyword.is_empty())
         .filter(|keyword| seen.insert(keyword.clone()))
         .collect()
+}
+
+fn empty_signal_for_cid(cid: &DatasetCid) -> CommunitySignal {
+    CommunitySignal {
+        dataset_cid: cid.clone(),
+        total_reviews: 0,
+        avg_relevance: 0.0,
+        avg_quality: 0.0,
+        positive_rate: 0.0,
+        negative_rate: 0.0,
+        task_signals: vec![],
+    }
 }
 
 fn build_search_query(intent: &ParsedIntent) -> String {
@@ -2302,6 +2429,33 @@ fn build_dataset_text(result: &SearchResult, metadata: Option<&DatasetMetadata>)
     parts.join(" ")
 }
 
+fn normalized_metadata_text(metadata: &DatasetMetadata) -> String {
+    let mut parts = vec![metadata.title.to_lowercase()];
+    if let Some(description) = metadata.description.as_deref() {
+        parts.push(description.to_lowercase());
+    }
+    if !metadata.tags.is_empty() {
+        parts.push(metadata.tags.join(" ").to_lowercase());
+    }
+    if !metadata.schema.columns.is_empty() {
+        parts.push(
+            metadata
+                .schema
+                .columns
+                .iter()
+                .map(|column| column.name.to_lowercase())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    parts.push(format!("{:?}", metadata.data_type).to_lowercase());
+    parts.join(" ")
+}
+
+fn normalized_dataset_text(result: &SearchResult, metadata: Option<&DatasetMetadata>) -> String {
+    build_dataset_text(result, metadata).to_lowercase()
+}
+
 fn candidate_description<'a>(
     result: &'a SearchResult,
     metadata: Option<&'a DatasetMetadata>,
@@ -2450,6 +2604,8 @@ fn metadata_to_search_result(m: &DatasetMetadata) -> SearchResult {
         created_at: m.created_at,
         seller_endpoint: None,
         source_attributes: m.source_attributes.clone(),
+        governance: None,
+        provider_meta: None,
     }
 }
 
@@ -2469,6 +2625,10 @@ fn searchable_result_text(result: &SearchResult) -> String {
         columns.to_lowercase(),
         format!("{:?}", result.data_type).to_lowercase()
     )
+}
+
+fn normalized_search_result_text(result: &SearchResult) -> String {
+    searchable_result_text(result)
 }
 
 fn market_signal_score(result: &SearchResult) -> f64 {

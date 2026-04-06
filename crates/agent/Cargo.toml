@@ -1,0 +1,26 @@
+# Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "data-agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+data-core = { workspace = true }
+data-search = { workspace = true }
+data-storage = { workspace = true }
+data-trading = { workspace = true }
+data-valuation = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

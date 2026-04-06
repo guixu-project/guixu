@@ -41,13 +41,6 @@ impl ExternalAdapter for SqlEndpointAdapter {
     fn name(&self) -> &str {
         "sql_endpoint"
     }
-    fn source_type(&self) -> DataSource {
-        // Returns the first configured engine's source, or Presto as default.
-        self.catalogs
-            .first()
-            .map(|c| engine_to_source(c.engine))
-            .unwrap_or(DataSource::Presto)
-    }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         if self.catalogs.is_empty() {
@@ -165,6 +158,8 @@ async fn search_endpoint(
             created_at: chrono::Utc::now(),
             seller_endpoint: None,
             source_attributes: Some(attrs),
+            provider_meta: None,
+            governance: None,
         });
     }
 

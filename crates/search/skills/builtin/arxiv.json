@@ -1,0 +1,17 @@
+{
+  "spec_version": "1.0",
+  "id": "arxiv",
+  "name": "arXiv",
+  "description": "Search arXiv via built-in native adapter.",
+  "source": "arxiv",
+  "tags": [
+    "academic",
+    "papers",
+    "preprints"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "arxiv"
+  }
+}

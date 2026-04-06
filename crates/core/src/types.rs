@@ -171,6 +171,98 @@ pub struct SearchResult {
     /// Adapter-specific attributes (chain, protocol, category, etc.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_attributes: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_meta: Option<ProviderMeta>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance: Option<GovernanceMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderMeta {
+    pub provider_id: String,
+    pub source_family: SourceFamily,
+    #[serde(default)]
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFamily {
+    Marketplace,
+    Academic,
+    WebRegistry,
+    DbCatalog,
+    Decentralized,
+    Local,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillCapability {
+    Search,
+    Lookup,
+    Download,
+    SchemaProbe,
+    SamplePreview,
+    LicenseLookup,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GovernanceMeta {
+    pub trust_tier: TrustTier,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_hint: Option<RateLimitHint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compliance_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustTier {
+    Unknown,
+    Community,
+    Verified,
+    FirstParty,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitHint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests_per_minute: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetArtifact {
+    pub artifact_id: String,
+    pub dataset_cid: DatasetCid,
+    pub artifact_type: ArtifactType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactType {
+    Download,
+    Schema,
+    Preview,
+    Manifest,
+    Unknown,
 }
 
 /// Where a dataset was discovered.
@@ -198,6 +290,7 @@ pub enum DataSource {
     Spark,
     Flink,
     Presto,
+    OpenDataSkill,
 }
 
 /// Payment protocol used for a transaction.

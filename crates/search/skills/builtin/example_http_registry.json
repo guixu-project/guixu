@@ -1,0 +1,74 @@
+{
+  "spec_version": "2.0",
+  "id": "example_http_registry",
+  "name": "Example HTTP Registry",
+  "description": "Example Open Data Skill showing how a new HTTP-based dataset registry can be added without modifying Rust source code.",
+  "source": "open_data_skill",
+  "tags": [
+    "example",
+    "http",
+    "registry"
+  ],
+  "enabled": false,
+  "capabilities": {
+    "search": true,
+    "lookup": true,
+    "download": true,
+    "schema_probe": true,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "community",
+    "rate_limit_hint": {
+      "requests_per_minute": 60,
+      "burst": 10
+    },
+    "provenance_hint": "example external registry",
+    "compliance_hint": "review provider terms before production use"
+  },
+  "provider": {
+    "kind": "http_search",
+    "base_url": "https://example.com",
+    "operations": {
+      "search": {
+        "path": "/api/datasets/search",
+        "method": "GET",
+        "query_param": "q",
+        "limit_param": "limit",
+        "static_params": {
+          "type": "dataset"
+        },
+        "result_path": "results.items"
+      },
+      "lookup": {
+        "path": "/api/datasets/lookup",
+        "method": "GET",
+        "query_param": "id",
+        "result_path": "results.items"
+      },
+      "download": {
+        "path": "/api/datasets/download",
+        "method": "POST",
+        "query_param": "id",
+        "result_path": "artifacts"
+      },
+      "schema_probe": {
+        "path": "/api/datasets/schema",
+        "method": "GET",
+        "query_param": "id",
+        "result_path": "schema.columns"
+      }
+    },
+    "item_mapping": {
+      "title": "title",
+      "description": "description",
+      "id": "id",
+      "size_bytes": "size_bytes",
+      "tags": "tags",
+      "license": "license",
+      "created_at": "created_at",
+      "download_count": "downloads"
+    }
+  }
+}

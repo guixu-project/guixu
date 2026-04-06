@@ -122,6 +122,8 @@ impl GoogleDatasetSearchAdapter {
                     created_at: chrono::Utc::now(),
                     seller_endpoint: None,
                     source_attributes: None,
+                    provider_meta: None,
+                    governance: None,
                 })
             })
             .collect()
@@ -132,9 +134,6 @@ impl GoogleDatasetSearchAdapter {
 impl ExternalAdapter for GoogleDatasetSearchAdapter {
     fn name(&self) -> &str {
         "google_dataset_search"
-    }
-    fn source_type(&self) -> DataSource {
-        DataSource::GoogleDatasetSearch
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {

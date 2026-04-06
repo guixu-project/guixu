@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "ipfs",
+  "name": "IPFS",
+  "description": "Search IPFS-hosted datasets via built-in native adapter.",
+  "source": "ipfs",
+  "tags": [
+    "decentralized",
+    "files"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "ipfs"
+  }
+}

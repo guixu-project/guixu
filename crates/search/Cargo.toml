@@ -22,6 +22,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 glob = "0.3"
+futures = "0.3"
 base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio-postgres = { workspace = true }

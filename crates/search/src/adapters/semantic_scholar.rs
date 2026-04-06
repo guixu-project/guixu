@@ -29,9 +29,6 @@ impl ExternalAdapter for SemanticScholarAdapter {
     fn name(&self) -> &str {
         "semantic_scholar"
     }
-    fn source_type(&self) -> DataSource {
-        DataSource::SemanticScholar
-    }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let limit_str = limit.min(100).to_string();
@@ -142,6 +139,8 @@ impl ExternalAdapter for SemanticScholarAdapter {
                         "year": year,
                         "has_pdf": !pdf_url.is_empty(),
                     })),
+                    governance: None,
+                    provider_meta: None,
                 })
             })
             .collect())

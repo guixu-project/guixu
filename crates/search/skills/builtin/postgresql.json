@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "postgresql",
+  "name": "PostgreSQL Catalog",
+  "description": "Search configured PostgreSQL catalogs via built-in native adapter.",
+  "source": "postgresql",
+  "tags": [
+    "database",
+    "catalog"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "postgresql"
+  }
+}

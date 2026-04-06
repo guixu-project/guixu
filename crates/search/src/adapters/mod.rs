@@ -13,6 +13,7 @@ mod huggingface;
 mod ipfs;
 mod kaggle;
 mod local_file;
+mod open_data_skill;
 pub mod pan_search;
 mod postgresql;
 mod rwa_xyz;
@@ -22,7 +23,7 @@ pub(crate) mod util;
 
 use anyhow::Result;
 use data_core::config::{DuckDbCatalog, PostgreSqlCatalog, SqlEndpointCatalog};
-use data_core::types::{DataSource, SearchResult};
+use data_core::types::{SearchResult, SkillCapability, SourceFamily};
 
 pub use arxiv::ArxivAdapter;
 pub use bittorrent::BitTorrentAdapter;
@@ -36,6 +37,10 @@ pub use huggingface::HuggingFaceAdapter;
 pub use ipfs::IpfsAdapter;
 pub use kaggle::KaggleAdapter;
 pub use local_file::LocalFileAdapter;
+pub use open_data_skill::{
+    execute_skill_operation, load_data_skill_profiles, load_open_data_skills, DataSkillProfile,
+    OpenDataSkillSpec,
+};
 pub use pan_search::PanSearchAdapter;
 pub use postgresql::PostgreSqlAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
@@ -49,8 +54,40 @@ pub(crate) use util::infer_data_type_from_title;
 #[async_trait::async_trait]
 pub trait ExternalAdapter: Send + Sync {
     fn name(&self) -> &str;
-    fn source_type(&self) -> DataSource;
+    fn skill_id(&self) -> &str {
+        self.name()
+    }
+    fn source_family(&self) -> SourceFamily {
+        infer_source_family_for_skill_id(self.skill_id())
+    }
+    fn capabilities(&self) -> Vec<SkillCapability> {
+        vec![SkillCapability::Search]
+    }
+    fn labels(&self) -> Vec<String> {
+        vec![]
+    }
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>>;
+}
+
+pub fn infer_source_family_for_skill_id(skill_id: &str) -> SourceFamily {
+    match skill_id.trim().to_ascii_lowercase().as_str() {
+        "kaggle" | "huggingface" | "guixu_hub" | "guixu-hub" => SourceFamily::Marketplace,
+        "arxiv" | "dblp" | "semantic_scholar" | "datacite_commons" => SourceFamily::Academic,
+        "ipfs" | "bittorrent" => SourceFamily::Decentralized,
+        "postgresql" | "duckdb" | "spark" | "flink" | "presto" | "sql_endpoint" => {
+            SourceFamily::DbCatalog
+        }
+        "local_file" | "localfile" => SourceFamily::Local,
+        "google_dataset_search"
+        | "pan_search"
+        | "open_data_skill"
+        | "opendataskill"
+        | "defillama"
+        | "rwa_xyz"
+        | "rwaxyz"
+        | "thegraph" => SourceFamily::WebRegistry,
+        _ => SourceFamily::Custom,
+    }
 }
 
 /// Create all default adapters, filtering out any whose name is in `disabled`.
@@ -65,31 +102,12 @@ pub fn adapters_with_config(
     pg_catalogs: &[PostgreSqlCatalog],
     sql_catalogs: &[SqlEndpointCatalog],
 ) -> Vec<Box<dyn ExternalAdapter>> {
-    let all: Vec<Box<dyn ExternalAdapter>> = vec![
-        Box::new(KaggleAdapter::default()),
-        Box::new(HuggingFaceAdapter::default()),
-        Box::new(IpfsAdapter::default()),
-        Box::new(GuixuHubAdapter::default()),
-        Box::new(BitTorrentAdapter::default()),
-        Box::new(PostgreSqlAdapter::with_catalogs(pg_catalogs.to_vec())),
-        Box::new(DuckDbAdapter::with_catalogs(duckdb_catalogs.to_vec())),
-        Box::new(SqlEndpointAdapter::with_catalogs(sql_catalogs.to_vec())),
-        Box::new(LocalFileAdapter::default()),
-        Box::new(GoogleDatasetSearchAdapter::default()),
-        Box::new(DataCiteCommonsAdapter::default()),
-        Box::new(DefiLlamaAdapter::default()),
-        Box::new(RwaXyzAdapter::default()),
-        Box::new(PanSearchAdapter::default()),
-        Box::new(DblpAdapter::default()),
-        Box::new(SemanticScholarAdapter::default()),
-        Box::new(ArxivAdapter::default()),
-    ];
-    if disabled.is_empty() {
-        return all;
-    }
-    all.into_iter()
-        .filter(|a| !disabled.iter().any(|d| d.eq_ignore_ascii_case(a.name())))
-        .collect()
+    open_data_skill::adapters_from_open_data_skills(
+        disabled,
+        duckdb_catalogs,
+        pg_catalogs,
+        sql_catalogs,
+    )
 }
 
 /// Create all default adapters (no filtering).

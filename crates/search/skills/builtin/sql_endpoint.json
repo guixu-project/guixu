@@ -1,0 +1,17 @@
+{
+  "spec_version": "1.0",
+  "id": "sql_endpoint",
+  "name": "SQL Endpoint",
+  "description": "Search SQL-over-HTTP catalogs via built-in native adapter.",
+  "source": "presto",
+  "tags": [
+    "sql",
+    "endpoint",
+    "catalog"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "sql_endpoint"
+  }
+}

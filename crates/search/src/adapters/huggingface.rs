@@ -89,6 +89,8 @@ impl HuggingFaceAdapter {
                     created_at: created,
                     seller_endpoint: None,
                     source_attributes: None,
+                    provider_meta: None,
+                    governance: None,
                 })
             })
             .collect()
@@ -99,9 +101,6 @@ impl HuggingFaceAdapter {
 impl ExternalAdapter for HuggingFaceAdapter {
     fn name(&self) -> &str {
         "huggingface"
-    }
-    fn source_type(&self) -> DataSource {
-        DataSource::HuggingFace
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {

@@ -85,6 +85,8 @@ impl KaggleAdapter {
                     created_at: created,
                     seller_endpoint: None,
                     source_attributes: None,
+                    provider_meta: None,
+                    governance: None,
                 })
             })
             .collect()
@@ -95,9 +97,6 @@ impl KaggleAdapter {
 impl ExternalAdapter for KaggleAdapter {
     fn name(&self) -> &str {
         "kaggle"
-    }
-    fn source_type(&self) -> DataSource {
-        DataSource::Kaggle
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {

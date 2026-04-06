@@ -15,6 +15,7 @@ members = [
     "crates/attestation",
     "crates/plugins/mcp",
     "crates/node",
+    "crates/agent",
 ]
 
 [workspace.lints.clippy]
@@ -40,6 +41,7 @@ data-valuation = { path = "crates/valuation" }
 data-publish = { path = "crates/publish" }
 data-attestation = { path = "crates/attestation" }
 data-mcp-server = { path = "crates/plugins/mcp" }
+data-agent = { path = "crates/agent" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
