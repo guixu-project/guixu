@@ -166,6 +166,12 @@ impl SearchEngine {
             self.search_external(profile, filters, limit),
         );
 
+        let normalized_keywords = normalized_intent_keywords(profile);
+        let task_text = profile
+            .task_description
+            .as_deref()
+            .filter(|description| !description.trim().is_empty())
+            .unwrap_or(profile.raw_query.as_str());
         let local_metadata_by_cid: HashMap<&str, &DatasetMetadata> = local_metadata
             .iter()
             .map(|metadata| (metadata.cid.0.as_str(), metadata))
@@ -176,7 +182,7 @@ impl SearchEngine {
         // Apply filters
         if let Some(ref topic) = filters.topic {
             let topic = topic.to_lowercase();
-            all.retain(|r| searchable_result_text(r).contains(&topic));
+            all.retain(|r| normalized_search_result_text(r).contains(&topic));
         }
         if let Some(min_rows) = filters.min_rows {
             all.retain(|r| r.schema.row_count >= min_rows);
@@ -197,11 +203,8 @@ impl SearchEngine {
             });
         }
         if let Some(ref src) = filters.source {
-            all.retain(|r| {
-                format!("{:?}", r.source)
-                    .to_lowercase()
-                    .contains(&src.to_lowercase())
-            });
+            let source = src.to_lowercase();
+            all.retain(|r| format!("{:?}", r.source).to_lowercase().contains(&source));
         }
 
         apply_intent_hard_filters(&mut all, profile, &local_metadata_by_cid, filters);
@@ -233,12 +236,26 @@ impl SearchEngine {
         let all = deduped;
 
         // Rank with community signal (TCV-lite for search ranking)
+        let signal_by_cid: HashMap<String, CommunitySignal> = all
+            .iter()
+            .map(|result| (result.cid.0.clone(), signal_fetcher(&result.cid.0)))
+            .collect();
         let mut ranked: Vec<RankedResult> = all
             .into_iter()
             .map(|r| {
                 let metadata = local_metadata_by_cid.get(r.cid.0.as_str()).copied();
-                let signal = signal_fetcher(&r.cid.0);
-                let score = rank_with_signal(&r, metadata, &signal, profile);
+                let signal = signal_by_cid
+                    .get(&r.cid.0)
+                    .cloned()
+                    .unwrap_or_else(|| empty_signal_for_cid(&r.cid));
+                let score = rank_with_signal(
+                    &r,
+                    metadata,
+                    &signal,
+                    task_text,
+                    &normalized_keywords,
+                    profile,
+                );
                 RankedResult {
                     result: r,
                     rank_score: score,
@@ -584,19 +601,7 @@ impl SearchEngine {
         let results: Vec<SearchResult> = metadata
             .iter()
             .filter(|m| {
-                let title = m.title.to_lowercase();
-                let desc = m.description.as_deref().unwrap_or("").to_lowercase();
-                let tags_str = m.tags.join(" ").to_lowercase();
-                let column_names = m
-                    .schema
-                    .columns
-                    .iter()
-                    .map(|column| column.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .to_lowercase();
-                let data_type = format!("{:?}", m.data_type).to_lowercase();
-                let all_text = format!("{title} {desc} {tags_str} {column_names} {data_type}");
+                let all_text = normalized_metadata_text(m);
 
                 if keyword_terms.is_empty() {
                     all_text.contains(&fallback_query)
@@ -910,19 +915,14 @@ fn rank_with_signal(
     result: &SearchResult,
     metadata: Option<&DatasetMetadata>,
     signal: &CommunitySignal,
+    task_text: &str,
+    keywords: &[String],
     intent: &ParsedIntent,
 ) -> f64 {
     let quality = result.quality.as_ref().map(|q| q.total).unwrap_or(50.0);
 
-    let metadata_text = build_dataset_text(result, metadata).to_lowercase();
-    let searchable_text = searchable_result_text(result);
-    let task_text = intent
-        .task_description
-        .as_deref()
-        .filter(|description| !description.trim().is_empty())
-        .unwrap_or(intent.raw_query.as_str());
-
-    let keywords = normalized_intent_keywords(intent);
+    let metadata_text = normalized_dataset_text(result, metadata);
+    let searchable_text = normalized_search_result_text(result);
     let keyword_hits = keywords
         .iter()
         .filter(|keyword| {
@@ -994,6 +994,18 @@ fn normalized_intent_keywords(intent: &ParsedIntent) -> Vec<String> {
         .filter(|keyword| !keyword.is_empty())
         .filter(|keyword| seen.insert(keyword.clone()))
         .collect()
+}
+
+fn empty_signal_for_cid(cid: &DatasetCid) -> CommunitySignal {
+    CommunitySignal {
+        dataset_cid: cid.clone(),
+        total_reviews: 0,
+        avg_relevance: 0.0,
+        avg_quality: 0.0,
+        positive_rate: 0.0,
+        negative_rate: 0.0,
+        task_signals: vec![],
+    }
 }
 
 fn build_search_query(intent: &ParsedIntent) -> String {
@@ -2302,6 +2314,33 @@ fn build_dataset_text(result: &SearchResult, metadata: Option<&DatasetMetadata>)
     parts.join(" ")
 }
 
+fn normalized_metadata_text(metadata: &DatasetMetadata) -> String {
+    let mut parts = vec![metadata.title.to_lowercase()];
+    if let Some(description) = metadata.description.as_deref() {
+        parts.push(description.to_lowercase());
+    }
+    if !metadata.tags.is_empty() {
+        parts.push(metadata.tags.join(" ").to_lowercase());
+    }
+    if !metadata.schema.columns.is_empty() {
+        parts.push(
+            metadata
+                .schema
+                .columns
+                .iter()
+                .map(|column| column.name.to_lowercase())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    parts.push(format!("{:?}", metadata.data_type).to_lowercase());
+    parts.join(" ")
+}
+
+fn normalized_dataset_text(result: &SearchResult, metadata: Option<&DatasetMetadata>) -> String {
+    build_dataset_text(result, metadata).to_lowercase()
+}
+
 fn candidate_description<'a>(
     result: &'a SearchResult,
     metadata: Option<&'a DatasetMetadata>,
@@ -2469,6 +2508,10 @@ fn searchable_result_text(result: &SearchResult) -> String {
         columns.to_lowercase(),
         format!("{:?}", result.data_type).to_lowercase()
     )
+}
+
+fn normalized_search_result_text(result: &SearchResult) -> String {
+    searchable_result_text(result).to_lowercase()
 }
 
 fn market_signal_score(result: &SearchResult) -> f64 {

@@ -8,6 +8,7 @@ edition.workspace = true
 
 [dependencies]
 data-core = { workspace = true }
+data-agent = { workspace = true }
 data-storage = { workspace = true }
 data-p2p = { workspace = true }
 data-auth = { workspace = true }

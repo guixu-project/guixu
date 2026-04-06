@@ -5,14 +5,17 @@ use anyhow::Result;
 use data_core::feedback::{CommunitySignal, DatasetFeedback, TaskSignal, ValueAssessment};
 use data_core::types::DatasetCid;
 use rocksdb::DB;
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Persistent store for dataset feedback (simulates on-chain EAS attestations).
 /// In production, this would read from Base L2 EAS contract events.
 #[derive(Clone)]
 pub struct FeedbackStore {
     db: Arc<DB>,
+    feedback_cache: Arc<RwLock<HashMap<String, Vec<DatasetFeedback>>>>,
+    signal_cache: Arc<RwLock<HashMap<String, CommunitySignal>>>,
 }
 
 impl FeedbackStore {
@@ -20,7 +23,13 @@ impl FeedbackStore {
         let mut opts = rocksdb::Options::default();
         opts.create_if_missing(true);
         let db = DB::open(&opts, path)?;
-        Ok(Self { db: Arc::new(db) })
+        let db = Arc::new(db);
+        let feedback_cache = Arc::new(RwLock::new(load_feedback_cache(&db)?));
+        Ok(Self {
+            db,
+            feedback_cache,
+            signal_cache: Arc::new(RwLock::new(HashMap::new())),
+        })
     }
 
     /// Record a feedback attestation.
@@ -28,88 +37,129 @@ impl FeedbackStore {
         let key = format!("fb:{}:{}", feedback.dataset_cid.0, feedback.id);
         let value = serde_json::to_vec(feedback)?;
         self.db.put(key.as_bytes(), &value)?;
+        {
+            let mut cache = self.feedback_cache.write().unwrap();
+            let items = cache.entry(feedback.dataset_cid.0.clone()).or_default();
+            if let Some(existing) = items.iter_mut().find(|item| item.id == feedback.id) {
+                *existing = feedback.clone();
+            } else {
+                items.push(feedback.clone());
+            }
+        }
+        self.signal_cache
+            .write()
+            .unwrap()
+            .remove(&feedback.dataset_cid.0);
         Ok(())
     }
 
     /// Get all feedback for a dataset.
     pub fn get_for_dataset(&self, cid: &DatasetCid) -> Result<Vec<DatasetFeedback>> {
-        let prefix = format!("fb:{}:", cid.0);
-        let mut results = vec![];
-        let iter = self.db.prefix_iterator(prefix.as_bytes());
-        for item in iter {
-            let (k, v) = item?;
-            if !k.starts_with(prefix.as_bytes()) {
-                break;
-            }
-            if let Ok(fb) = serde_json::from_slice::<DatasetFeedback>(&v) {
-                results.push(fb);
-            }
-        }
-        Ok(results)
+        Ok(self
+            .feedback_cache
+            .read()
+            .unwrap()
+            .get(&cid.0)
+            .cloned()
+            .unwrap_or_default())
     }
 
     /// Aggregate feedback into a CommunitySignal.
     pub fn compute_signal(&self, cid: &DatasetCid) -> Result<CommunitySignal> {
-        let feedbacks = self.get_for_dataset(cid)?;
-        if feedbacks.is_empty() {
-            return Ok(CommunitySignal {
-                dataset_cid: cid.clone(),
-                total_reviews: 0,
-                avg_relevance: 0.0,
-                avg_quality: 0.0,
-                positive_rate: 0.0,
-                negative_rate: 0.0,
-                task_signals: vec![],
-            });
+        if let Some(signal) = self.signal_cache.read().unwrap().get(&cid.0).cloned() {
+            return Ok(signal);
         }
 
-        let n = feedbacks.len() as f64;
-        let avg_relevance = feedbacks.iter().map(|f| f.relevance_score).sum::<f64>() / n;
-        let avg_quality = feedbacks
-            .iter()
-            .map(|f| f.quality_rating as f64)
-            .sum::<f64>()
-            / n;
-        let positive_count = feedbacks
-            .iter()
-            .filter(|f| f.value_assessment == ValueAssessment::Positive)
-            .count();
-        let negative_count = feedbacks
-            .iter()
-            .filter(|f| f.value_assessment == ValueAssessment::Negative)
-            .count();
+        let signal = {
+            let cache = self.feedback_cache.read().unwrap();
+            aggregate_signal(cid, cache.get(&cid.0).map(Vec::as_slice).unwrap_or(&[]))
+        };
+        self.signal_cache
+            .write()
+            .unwrap()
+            .insert(cid.0.clone(), signal.clone());
+        Ok(signal)
+    }
+}
 
-        // Group by task_type
-        let mut task_map: std::collections::HashMap<String, Vec<&DatasetFeedback>> =
-            std::collections::HashMap::new();
-        for fb in &feedbacks {
-            task_map.entry(fb.task_type.clone()).or_default().push(fb);
+fn load_feedback_cache(db: &DB) -> Result<HashMap<String, Vec<DatasetFeedback>>> {
+    let mut feedback_by_cid = HashMap::new();
+    let iter = db.prefix_iterator(b"fb:");
+    for item in iter {
+        let (key, value) = item?;
+        if !key.starts_with(b"fb:") {
+            break;
         }
+        if let Ok(feedback) = serde_json::from_slice::<DatasetFeedback>(&value) {
+            feedback_by_cid
+                .entry(feedback.dataset_cid.0.clone())
+                .or_insert_with(Vec::new)
+                .push(feedback);
+        }
+    }
+    Ok(feedback_by_cid)
+}
 
-        let task_signals: Vec<TaskSignal> = task_map
-            .into_iter()
-            .map(|(task_type, fbs)| {
-                let count = fbs.len() as u64;
-                let avg_rel = fbs.iter().map(|f| f.relevance_score).sum::<f64>() / count as f64;
-                let success_rate =
-                    fbs.iter().filter(|f| f.task_success).count() as f64 / count as f64;
-                TaskSignal {
-                    task_type,
-                    count,
-                    avg_relevance: avg_rel,
-                    success_rate,
-                }
-            })
-            .collect();
-
-        Ok(CommunitySignal {
+fn aggregate_signal(cid: &DatasetCid, feedbacks: &[DatasetFeedback]) -> CommunitySignal {
+    if feedbacks.is_empty() {
+        return CommunitySignal {
             dataset_cid: cid.clone(),
-            total_reviews: feedbacks.len() as u64,
-            avg_relevance,
-            avg_quality,
-            positive_rate: positive_count as f64 / n,
-            negative_rate: negative_count as f64 / n,
-            task_signals,
+            total_reviews: 0,
+            avg_relevance: 0.0,
+            avg_quality: 0.0,
+            positive_rate: 0.0,
+            negative_rate: 0.0,
+            task_signals: vec![],
+        };
+    }
+
+    let n = feedbacks.len() as f64;
+    let avg_relevance = feedbacks.iter().map(|f| f.relevance_score).sum::<f64>() / n;
+    let avg_quality = feedbacks
+        .iter()
+        .map(|f| f.quality_rating as f64)
+        .sum::<f64>()
+        / n;
+    let positive_count = feedbacks
+        .iter()
+        .filter(|f| f.value_assessment == ValueAssessment::Positive)
+        .count();
+    let negative_count = feedbacks
+        .iter()
+        .filter(|f| f.value_assessment == ValueAssessment::Negative)
+        .count();
+
+    let mut task_map: HashMap<String, Vec<&DatasetFeedback>> = HashMap::new();
+    for feedback in feedbacks {
+        task_map
+            .entry(feedback.task_type.clone())
+            .or_default()
+            .push(feedback);
+    }
+
+    let task_signals: Vec<TaskSignal> = task_map
+        .into_iter()
+        .map(|(task_type, items)| {
+            let count = items.len() as u64;
+            let avg_rel = items.iter().map(|f| f.relevance_score).sum::<f64>() / count as f64;
+            let success_rate =
+                items.iter().filter(|f| f.task_success).count() as f64 / count as f64;
+            TaskSignal {
+                task_type,
+                count,
+                avg_relevance: avg_rel,
+                success_rate,
+            }
         })
+        .collect();
+
+    CommunitySignal {
+        dataset_cid: cid.clone(),
+        total_reviews: feedbacks.len() as u64,
+        avg_relevance,
+        avg_quality,
+        positive_rate: positive_count as f64 / n,
+        negative_rate: negative_count as f64 / n,
+        task_signals,
     }
 }

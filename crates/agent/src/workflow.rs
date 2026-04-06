@@ -1,0 +1,203 @@
+// Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+// SPDX-License-Identifier: Apache-2.0
+
+use data_core::agent::contracts::{DelegatedDataTask, JobId, JobResult};
+use data_core::feedback::CommunitySignal;
+use data_core::types::DatasetCid;
+use data_search::engine::{SearchEngine, SignalFetcher};
+use data_search::intent::QueryProfile;
+use data_storage::feedback_store::FeedbackStore;
+use data_storage::metadata_store::MetadataStore;
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct WorkflowState {
+    pub store: Arc<MetadataStore>,
+    pub feedback_store: Arc<FeedbackStore>,
+    pub search_engine: Arc<SearchEngine>,
+}
+
+impl WorkflowState {
+    pub fn new(
+        store: MetadataStore,
+        feedback_store: FeedbackStore,
+        search_engine: SearchEngine,
+    ) -> Self {
+        Self {
+            store: Arc::new(store),
+            feedback_store: Arc::new(feedback_store),
+            search_engine: Arc::new(search_engine),
+        }
+    }
+
+    pub fn signal_fetcher(&self) -> SignalFetcher {
+        let fb_store = self.feedback_store.clone();
+        Box::new(move |cid_str: &str| {
+            let cid = DatasetCid(cid_str.to_string());
+            fb_store
+                .compute_signal(&cid)
+                .unwrap_or_else(|_| CommunitySignal {
+                    dataset_cid: cid,
+                    total_reviews: 0,
+                    avg_relevance: 0.0,
+                    avg_quality: 0.0,
+                    positive_rate: 0.0,
+                    negative_rate: 0.0,
+                    task_signals: vec![],
+                })
+        })
+    }
+}
+
+pub struct WorkflowService {
+    state: WorkflowState,
+}
+
+impl WorkflowService {
+    pub fn new(state: WorkflowState) -> Self {
+        Self { state }
+    }
+
+    pub async fn run(&self, task: DelegatedDataTask) -> anyhow::Result<JobResult> {
+        let job_id = task.job_id.clone();
+
+        tracing::info!(job_id = %job_id, goal = %task.task.goal, "starting workflow");
+
+        let result = self.execute_workflow(task).await;
+
+        match result {
+            Ok(mut job_result) => {
+                job_result.job_id = job_id;
+                Ok(job_result)
+            }
+            Err(e) => {
+                tracing::error!(job_id = %job_id, error = %e, "workflow failed");
+                Ok(JobResult {
+                    job_id,
+                    selected_dataset: None,
+                    artifacts: vec![],
+                    memory_updates: vec![],
+                    errors: vec![e.to_string()],
+                })
+            }
+        }
+    }
+
+    async fn execute_workflow(&self, task: DelegatedDataTask) -> anyhow::Result<JobResult> {
+        let search_output = self.search(&task).await?;
+        let selected = self.evaluate_and_select(search_output, &task).await?;
+
+        Ok(JobResult {
+            job_id: JobId::new(),
+            selected_dataset: Some(selected),
+            artifacts: vec![],
+            memory_updates: vec![],
+            errors: vec![],
+        })
+    }
+
+    async fn search(&self, task: &DelegatedDataTask) -> anyhow::Result<Value> {
+        let query = &task.task.goal;
+        let filters = data_search::engine::SearchFilters {
+            topic: None,
+            min_rows: None,
+            max_price: task.task.budget.as_ref().map(|b| b.amount),
+            license: None,
+            min_quality: None,
+            source: None,
+            chain: None,
+            protocol: None,
+            asset: None,
+            category: None,
+            free_only: Some(!task.policy.allow_purchase),
+        };
+
+        let local_metadata = self.state.store.list_all()?;
+        let signal_fetcher = self.state.signal_fetcher();
+
+        let search_output = self
+            .state
+            .search_engine
+            .search_with_profile(
+                &QueryProfile {
+                    raw_query: query.clone(),
+                    task_type: task.task.task_type.clone(),
+                    task_description: Some(query.clone()),
+                    target_entity: None,
+                    keywords: query.split_whitespace().map(String::from).collect(),
+                    data_standard: Default::default(),
+                    user_profile: Default::default(),
+                },
+                &filters,
+                &local_metadata,
+                &signal_fetcher,
+                10,
+            )
+            .await?;
+
+        let results: Vec<Value> = search_output
+            .results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                json!({
+                    "rank": i + 1,
+                    "cid": r.result.cid.0,
+                    "title": r.result.title,
+                    "description": r.result.description,
+                    "source": r.result.source,
+                    "data_type": r.result.data_type,
+                    "price": r.result.price,
+                    "rank_score": r.rank_score,
+                })
+            })
+            .collect();
+
+        Ok(json!({ "candidates": results }))
+    }
+
+    async fn evaluate_and_select(
+        &self,
+        search_result: Value,
+        _task: &DelegatedDataTask,
+    ) -> anyhow::Result<DatasetCid> {
+        let candidates = search_result
+            .get("candidates")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.to_vec())
+            .unwrap_or_default();
+
+        if candidates.is_empty() {
+            anyhow::bail!("no candidates found");
+        }
+
+        let best = candidates.first().unwrap();
+        let cid_str = best
+            .get("cid")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        Ok(DatasetCid(cid_str.to_string()))
+    }
+}
+
+pub fn create_signal_fetcher(
+    feedback_store: &FeedbackStore,
+) -> impl Fn(&str) -> CommunitySignal + 'static {
+    let fb_store = feedback_store.clone();
+    move |cid_str: &str| {
+        let cid = DatasetCid(cid_str.to_string());
+        fb_store
+            .compute_signal(&cid)
+            .unwrap_or_else(|_| CommunitySignal {
+                dataset_cid: cid,
+                total_reviews: 0,
+                avg_relevance: 0.0,
+                avg_quality: 0.0,
+                positive_rate: 0.0,
+                negative_rate: 0.0,
+                task_signals: vec![],
+            })
+    }
+}
