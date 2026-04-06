@@ -19,6 +19,7 @@ use data_storage::metadata_store::MetadataStore;
 use data_trading::router::PaymentRouter;
 use data_trading::wallet::AgentWallet;
 use data_valuation::tcv::TcvEngine;
+use std::sync::Arc;
 
 /// Shared state accessible by MCP tool handlers.
 pub struct AppState {
@@ -28,7 +29,7 @@ pub struct AppState {
     pub feedback_store: FeedbackStore,
     pub job_store: JobStore,
     pub tcv_engine: TcvEngine,
-    pub search_engine: SearchEngine,
+    pub search_engine: Arc<SearchEngine>,
     pub payment_router: PaymentRouter,
     pub torrent_engine: Option<TorrentEngine>,
 }
@@ -175,7 +176,7 @@ impl AppState {
             feedback_store,
             job_store,
             tcv_engine: TcvEngine,
-            search_engine,
+            search_engine: Arc::new(search_engine),
             payment_router: PaymentRouter::new(wallet, payment.testnet),
             torrent_engine,
         }

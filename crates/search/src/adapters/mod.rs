@@ -38,7 +38,8 @@ pub use ipfs::IpfsAdapter;
 pub use kaggle::KaggleAdapter;
 pub use local_file::LocalFileAdapter;
 pub use open_data_skill::{
-    load_data_skill_profiles, load_open_data_skills, DataSkillProfile, OpenDataSkillSpec,
+    execute_skill_operation, load_data_skill_profiles, load_open_data_skills, DataSkillProfile,
+    OpenDataSkillSpec,
 };
 pub use pan_search::PanSearchAdapter;
 pub use postgresql::PostgreSqlAdapter;

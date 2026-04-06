@@ -30,13 +30,13 @@ impl WorkflowState {
     pub fn new(
         store: MetadataStore,
         feedback_store: FeedbackStore,
-        search_engine: SearchEngine,
+        search_engine: Arc<SearchEngine>,
         job_store: JobStore,
     ) -> Self {
         Self {
             store: Arc::new(store),
             feedback_store: Arc::new(feedback_store),
-            search_engine: Arc::new(search_engine),
+            search_engine,
             job_store: Arc::new(job_store),
         }
     }
@@ -119,7 +119,7 @@ impl WorkflowService {
                 tracing::error!(job_id = %job_id, error = %e, "workflow failed");
                 let _ = self.state.job_store.update_state(&job_id, JobState::Failed);
                 let job_result = JobResult {
-                    job_id,
+                    job_id: job_id.clone(),
                     selected_dataset: None,
                     artifacts: vec![],
                     memory_updates: vec![],

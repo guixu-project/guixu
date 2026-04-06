@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use data_core::agent::contracts::{JobEvent, JobId, JobResult, JobState, JobStatus};
 use rocksdb::{Options, DB};
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 

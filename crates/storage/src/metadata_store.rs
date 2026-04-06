@@ -46,7 +46,7 @@ impl MetadataStore {
         let key = format!("meta:{}", cid.0);
         match self.db.get(key.as_bytes())? {
             Some(bytes) => {
-                let metadata = serde_json::from_slice(&bytes)?;
+                let metadata: DatasetMetadata = serde_json::from_slice(&bytes)?;
                 self.metadata_cache
                     .write()
                     .unwrap()

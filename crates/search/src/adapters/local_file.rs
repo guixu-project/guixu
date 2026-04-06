@@ -120,8 +120,8 @@ impl LocalFileAdapter {
             created_at: chrono::Utc::now(),
             seller_endpoint: None,
             source_attributes: None,
-                    provider_meta: None,
-                    governance: None,
+            provider_meta: None,
+            governance: None,
         })
     }
 

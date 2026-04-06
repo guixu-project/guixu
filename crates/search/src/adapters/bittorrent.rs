@@ -112,8 +112,8 @@ impl BitTorrentAdapter {
             created_at: created,
             seller_endpoint: None,
             source_attributes: None,
-                    provider_meta: None,
-                    governance: None,
+            provider_meta: None,
+            governance: None,
         })
     }
 
@@ -175,8 +175,8 @@ impl BitTorrentAdapter {
             created_at: created,
             seller_endpoint: None,
             source_attributes: None,
-                    provider_meta: None,
-                    governance: None,
+            provider_meta: None,
+            governance: None,
         })
     }
 
