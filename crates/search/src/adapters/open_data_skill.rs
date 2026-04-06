@@ -1218,6 +1218,7 @@ mod tests {
             description: "bad".into(),
             source: "open_data_skill".into(),
             tags: vec![],
+            routing_hints: vec![],
             enabled: true,
             capabilities: SkillCapabilities::default(),
             governance: SkillGovernance::default(),

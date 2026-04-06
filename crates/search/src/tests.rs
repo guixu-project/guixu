@@ -109,6 +109,8 @@ fn make_external_result(cid_suffix: &str, title: &str, description: &str) -> Sea
         created_at: Utc::now(),
         seller_endpoint: None,
         source_attributes: None,
+        governance: None,
+        provider_meta: None,
     }
 }
 
@@ -497,7 +499,6 @@ fn default_adapters_covers_all_expected_sources() {
         unique.len(),
         "duplicate adapter names detected"
     );
-
 }
 
 /// Adapters that require credentials/config should return empty results
@@ -537,7 +538,10 @@ fn adapter_metadata_is_consistent() {
     let adapters = adapters::default_adapters();
     for adapter in &adapters {
         assert!(!adapter.name().is_empty(), "adapter name must not be empty");
-        assert!(!adapter.skill_id().is_empty(), "adapter skill_id must not be empty");
+        assert!(
+            !adapter.skill_id().is_empty(),
+            "adapter skill_id must not be empty"
+        );
         assert_eq!(adapter.skill_id(), adapter.name());
     }
 }
@@ -632,6 +636,8 @@ async fn search_engine_includes_new_adapter_results() {
                 created_at: Utc::now(),
                 seller_endpoint: None,
                 source_attributes: None,
+                governance: None,
+                provider_meta: None,
             }])
         }
     }
@@ -667,6 +673,8 @@ async fn search_engine_includes_new_adapter_results() {
                 created_at: Utc::now(),
                 seller_endpoint: None,
                 source_attributes: None,
+                governance: None,
+                provider_meta: None,
             }])
         }
     }
@@ -738,6 +746,8 @@ async fn skill_filter_works_for_new_skill_ids() {
                 created_at: Utc::now(),
                 seller_endpoint: None,
                 source_attributes: None,
+                governance: None,
+                provider_meta: None,
             }])
         }
     }
@@ -1196,6 +1206,8 @@ async fn chain_filter_retains_matching_source_attributes() {
                         "chain": "ethereum",
                         "category": "stablecoin",
                     })),
+                    governance: None,
+                    provider_meta: None,
                 },
                 SearchResult {
                     cid: DatasetCid("poly-result".into()),
@@ -1224,6 +1236,8 @@ async fn chain_filter_retains_matching_source_attributes() {
                         "chain": "polygon",
                         "category": "stablecoin",
                     })),
+                    governance: None,
+                    provider_meta: None,
                 },
             ])
         }
@@ -1312,6 +1326,8 @@ async fn search_engine_routes_to_defillama_and_rwa_adapters() {
                     "category": "stablecoin",
                     "is_open_data": true,
                 })),
+                governance: None,
+                provider_meta: None,
             }])
         }
     }
@@ -1352,6 +1368,8 @@ async fn search_engine_routes_to_defillama_and_rwa_adapters() {
                     "issuer": "ondo",
                     "is_open_data": true,
                 })),
+                governance: None,
+                provider_meta: None,
             }])
         }
     }

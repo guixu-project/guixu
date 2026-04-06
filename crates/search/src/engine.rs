@@ -161,7 +161,12 @@ fn result_skill_id(result: &SearchResult) -> Option<String> {
         .and_then(|value| value.get("skill_id"))
         .and_then(|value| value.as_str())
         .map(ToString::to_string)
-        .or_else(|| result.provider_meta.as_ref().map(|meta| meta.provider_id.clone()))
+        .or_else(|| {
+            result
+                .provider_meta
+                .as_ref()
+                .map(|meta| meta.provider_id.clone())
+        })
 }
 
 fn result_capabilities(result: &SearchResult) -> Vec<SkillCapability> {
@@ -298,7 +303,8 @@ impl SearchEngine {
         }
         if !filters.source_families.is_empty() {
             all.retain(|r| {
-                result_source_family(r).is_some_and(|family| filters.source_families.contains(&family))
+                result_source_family(r)
+                    .is_some_and(|family| filters.source_families.contains(&family))
             });
         }
         if !filters.required_capabilities.is_empty() {
@@ -736,10 +742,9 @@ impl SearchEngine {
                 continue;
             }
             match adapter.search(&external_query, limit).await {
-                Ok(r) => results.extend(
-                    r.into_iter()
-                        .map(|result| enrich_search_result_with_skill_metadata(result, adapter.as_ref())),
-                ),
+                Ok(r) => results.extend(r.into_iter().map(|result| {
+                    enrich_search_result_with_skill_metadata(result, adapter.as_ref())
+                })),
                 Err(e) => {
                     warn!(adapter = adapter.name(), error = %e, "adapter search failed");
                     errors.push(format!("{}: {e}", adapter.name()));
@@ -2599,6 +2604,8 @@ fn metadata_to_search_result(m: &DatasetMetadata) -> SearchResult {
         created_at: m.created_at,
         seller_endpoint: None,
         source_attributes: m.source_attributes.clone(),
+        governance: None,
+        provider_meta: None,
     }
 }
 
