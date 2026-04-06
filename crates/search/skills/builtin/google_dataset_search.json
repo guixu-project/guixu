@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "google_dataset_search",
+  "name": "Google Dataset Search",
+  "description": "Search Google Dataset Search via built-in native adapter.",
+  "source": "google_dataset_search",
+  "tags": [
+    "web",
+    "dataset-index"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "google_dataset_search"
+  }
+}

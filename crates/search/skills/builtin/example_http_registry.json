@@ -1,0 +1,31 @@
+{
+  "spec_version": "1.0",
+  "id": "example_http_registry",
+  "name": "Example HTTP Registry",
+  "description": "Example Open Data Skill showing how a new HTTP-based dataset registry can be added without modifying Rust source code.",
+  "source": "open_data_skill",
+  "tags": [
+    "example",
+    "http",
+    "registry"
+  ],
+  "enabled": false,
+  "provider": {
+    "kind": "http_search",
+    "base_url": "https://example.com",
+    "path": "/api/datasets/search",
+    "method": "GET",
+    "query_param": "q",
+    "limit_param": "limit",
+    "static_params": {
+      "type": "dataset"
+    },
+    "result_path": "results.items",
+    "item_mapping": {
+      "title": "title",
+      "description": "description",
+      "id": "id",
+      "size_bytes": "size_bytes"
+    }
+  }
+}

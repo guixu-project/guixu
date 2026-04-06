@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "pan_search",
+  "name": "Pan Search",
+  "description": "Search public cloud-drive shares via built-in native adapter.",
+  "source": "pan_search",
+  "tags": [
+    "cloud-drive",
+    "public-share"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "pan_search"
+  }
+}

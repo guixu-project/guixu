@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "bittorrent",
+  "name": "BitTorrent",
+  "description": "Search BitTorrent datasets via built-in native adapter.",
+  "source": "bittorrent",
+  "tags": [
+    "torrent",
+    "files"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "bittorrent"
+  }
+}

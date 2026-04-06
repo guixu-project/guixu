@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "datacite_commons",
+  "name": "DataCite Commons",
+  "description": "Search DataCite Commons via built-in native adapter.",
+  "source": "datacite_commons",
+  "tags": [
+    "academic",
+    "doi"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "datacite_commons"
+  }
+}

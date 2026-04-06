@@ -37,7 +37,6 @@ pub use huggingface::HuggingFaceAdapter;
 pub use ipfs::IpfsAdapter;
 pub use kaggle::KaggleAdapter;
 pub use local_file::LocalFileAdapter;
-pub use open_data_skill::OpenDataSkillAdapter;
 pub use pan_search::PanSearchAdapter;
 pub use postgresql::PostgreSqlAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
@@ -67,32 +66,12 @@ pub fn adapters_with_config(
     pg_catalogs: &[PostgreSqlCatalog],
     sql_catalogs: &[SqlEndpointCatalog],
 ) -> Vec<Box<dyn ExternalAdapter>> {
-    let all: Vec<Box<dyn ExternalAdapter>> = vec![
-        Box::new(KaggleAdapter::default()),
-        Box::new(HuggingFaceAdapter::default()),
-        Box::new(IpfsAdapter::default()),
-        Box::new(GuixuHubAdapter::default()),
-        Box::new(BitTorrentAdapter::default()),
-        Box::new(PostgreSqlAdapter::with_catalogs(pg_catalogs.to_vec())),
-        Box::new(DuckDbAdapter::with_catalogs(duckdb_catalogs.to_vec())),
-        Box::new(SqlEndpointAdapter::with_catalogs(sql_catalogs.to_vec())),
-        Box::new(LocalFileAdapter::default()),
-        Box::new(GoogleDatasetSearchAdapter::default()),
-        Box::new(DataCiteCommonsAdapter::default()),
-        Box::new(DefiLlamaAdapter::default()),
-        Box::new(RwaXyzAdapter::default()),
-        Box::new(PanSearchAdapter::default()),
-        Box::new(DblpAdapter::default()),
-        Box::new(SemanticScholarAdapter::default()),
-        Box::new(ArxivAdapter::default()),
-        Box::new(OpenDataSkillAdapter::default()),
-    ];
-    if disabled.is_empty() {
-        return all;
-    }
-    all.into_iter()
-        .filter(|a| !disabled.iter().any(|d| d.eq_ignore_ascii_case(a.name())))
-        .collect()
+    open_data_skill::adapters_from_open_data_skills(
+        disabled,
+        duckdb_catalogs,
+        pg_catalogs,
+        sql_catalogs,
+    )
 }
 
 /// Create all default adapters (no filtering).

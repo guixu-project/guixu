@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "semantic_scholar",
+  "name": "Semantic Scholar",
+  "description": "Search Semantic Scholar via built-in native adapter.",
+  "source": "semantic_scholar",
+  "tags": [
+    "academic",
+    "papers"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "semantic_scholar"
+  }
+}

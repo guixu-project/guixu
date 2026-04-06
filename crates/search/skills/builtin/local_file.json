@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "local_file",
+  "name": "Local Files",
+  "description": "Search local directories via built-in native adapter.",
+  "source": "local_file",
+  "tags": [
+    "local",
+    "filesystem"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "local_file"
+  }
+}

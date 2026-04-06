@@ -1,0 +1,17 @@
+{
+  "spec_version": "1.0",
+  "id": "rwa_xyz",
+  "name": "RWA.xyz",
+  "description": "Search RWA market datasets via built-in native adapter.",
+  "source": "rwa_xyz",
+  "tags": [
+    "rwa",
+    "market",
+    "finance"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "rwa_xyz"
+  }
+}

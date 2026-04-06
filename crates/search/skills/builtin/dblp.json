@@ -1,0 +1,16 @@
+{
+  "spec_version": "1.0",
+  "id": "dblp",
+  "name": "DBLP",
+  "description": "Search DBLP via built-in native adapter.",
+  "source": "dblp",
+  "tags": [
+    "academic",
+    "papers"
+  ],
+  "enabled": true,
+  "provider": {
+    "kind": "native_adapter",
+    "adapter": "dblp"
+  }
+}
