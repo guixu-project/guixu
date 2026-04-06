@@ -113,6 +113,140 @@ fn which(cmd: &str) -> Option<PathBuf> {
     })
 }
 
+fn upsert_json_mcp_server(
+    root: &mut serde_json::Value,
+    name: &str,
+    entry: serde_json::Value,
+) -> Result<()> {
+    root.as_object_mut()
+        .context("config is not a JSON object")?
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("mcpServers not object")?
+        .insert(name.into(), entry);
+    Ok(())
+}
+
+fn remove_json_mcp_server(root: &mut serde_json::Value, name: &str) {
+    if let Some(servers) = root.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+        servers.remove(name);
+    }
+}
+
+const OPENCLAW_SKILL_TRIGGERS: &str = r#"## When to Use Guixu
+
+Invoke Guixu when the task involves:
+- Finding training data, test data, or benchmark datasets
+- Building or evaluating a model, classifier, detector, segmenter, ranker, or retriever
+- Acquiring labeled examples, curated corpora, or domain-specific data
+- Comparing dataset quality, coverage, or licensing before use
+
+Do NOT invoke Guixu for local code changes, refactoring, formatting, bug fixes, or debugging unrelated to data procurement."#;
+
+const OPENCLAW_SKILL_WORKFLOW: &str = r#"## Standard Workflow
+
+Always use tools in this order:
+
+1. **intent_parse** — Parse the natural-language request into a structured profile.
+   Extract task type, content keywords, data modality, and budget.
+
+2. **dataset_search** — Search across DeFi, RWA, Kaggle, HuggingFace, IPFS,
+   BitTorrent, academic indices, and the P2P network. Filter by source, price,
+   license, and quality.
+
+3. **dataset_evaluate** — Score candidate datasets by Task-Conditioned Value (TCV).
+   Inputs: CID, task description, required columns, budget.
+
+4. **dataset_purchase** — Acquire a paid dataset via smart contract payment
+   (x402 / Machine Payment Protocol). For free datasets, skip to download.
+
+5. **dataset_feedback** — Record on-chain attestation after use to help
+   future agents evaluate this dataset.
+
+## Fallback Rules
+
+- If `dataset_search` returns no results, try relaxing filters (remove price cap,
+  set `free_only: true`, or broaden keywords).
+- If `dataset_evaluate` returns a negative score, treat the dataset as harmful
+  and skip it.
+- If `dataset_purchase` fails due to insufficient balance, fall back to
+  free alternatives from `dataset_search` with `free_only: true`."#;
+
+const OPENCLAW_SKILL_EXAMPLES: &str = r#"## Minimal Examples
+
+### Find cat image datasets for object detection
+```
+intent_parse(query="Find cat images for training an object detector",
+             task_type="detection",
+             keywords=["cat", "image"],
+             sample_unit="image")
+→ returns { task_type, keywords, sample_unit }
+
+dataset_search(query="cat object detection dataset",
+               task_type="detection",
+               filters={ "free_only": true })
+→ returns [ { cid, source, price, license, schema } ]
+
+dataset_evaluate(cid="ipfs:Qm...",
+                 task_description="train cat detector",
+                 task_type="detection",
+                 required_columns=["image_path", "bbox"])
+→ returns { score: 0-100 }
+
+dataset_purchase(cid="ipfs:Qm...", max_price=5)
+dataset_feedback(cid="ipfs:Qm...", relevance_score=0.9,
+                 quality_rating=5, task_success=true,
+                 value_assessment="positive")
+```
+
+### Acquire stock price data for time-series forecasting
+```
+intent_parse(query="historical US stock prices for forecasting",
+             task_type="forecasting",
+             keywords=["stock", "price"],
+             sample_unit="tabular")
+→ returns { ... }
+
+dataset_search(query="stock OHLCV dataset",
+               filters={ "chain": "ethereum", "category": "defi" })
+→ returns [ { cid, source, price, license } ]
+
+dataset_evaluate(cid="kaggle:org/project",
+                 task_description="train LSTM price forecaster",
+                 task_type="forecasting",
+                 required_columns=["open","high","low","close","volume"])
+→ returns { score: 0-100 }
+```"#;
+
+fn openclaw_skill_markdown() -> String {
+    format!(
+        "---\n\
+         name: guixu\n\
+         description: Unified data discovery and market for AI agents. Search, value, and acquire datasets on-chain.\n\
+         version: 0.1.0\n\
+         metadata:\n\
+         \x20 openclaw:\n\
+         \x20   requires:\n\
+         \x20     bins:\n\
+         \x20       - guixu\n\
+         \x20   triggers:\n\
+         \x20     - dataset\n\
+         \x20     - train\n\
+         \x20     - model\n\
+         \x20     - data acquisition\n\
+         \x20     - benchmark\n\
+         \x20     - dataset search\n\
+         \x20   emoji: \"🌊\"\n\
+         ---\n\n\
+         # Guixu — Data Discovery & Market for AI Agents\n\n\
+         {AGENTS_BLOCK}\n\n\
+         {OPENCLAW_SKILL_TRIGGERS}\n\n\
+         {OPENCLAW_SKILL_WORKFLOW}\n\n\
+         {OPENCLAW_SKILL_EXAMPLES}\n",
+    )
+}
+
 // ── Install ──────────────────────────────────────────────────────────────────
 
 pub fn install(client: Client) -> Result<()> {
@@ -139,16 +273,11 @@ fn install_json_mcp_servers(client: Client, bin: &str) -> Result<()> {
         serde_json::json!({})
     };
 
-    root.as_object_mut()
-        .context("config is not a JSON object")?
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .context("mcpServers not object")?
-        .insert(
-            "guixu".into(),
-            serde_json::json!({ "command": bin, "args": ["mcp"] }),
-        );
+    upsert_json_mcp_server(
+        &mut root,
+        "guixu",
+        serde_json::json!({ "command": bin, "args": ["mcp"] }),
+    )?;
 
     fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
     println!("✅ {client} configured");
@@ -278,33 +407,66 @@ fn install_opencode(client: Client, bin: &str) -> Result<()> {
 
 /// OpenClaw: MCP entry in `~/.openclaw/config.json` + skill in `~/.openclaw/workspace/skills/guixu/`
 fn install_openclaw(bin: &str) -> Result<()> {
+    let home = dirs::home_dir().context("cannot determine home dir")?;
+    let config_path = home.join(".openclaw/config.json");
+    let skill_dir = home.join(".openclaw/workspace/skills/guixu");
+
     // 1. Register MCP server in config.json
-    install_json_mcp_servers(Client::OpenClaw, bin)?;
+    {
+        let parent = config_path.parent().expect("config.json has no parent");
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+
+        let raw = if config_path.exists() {
+            fs::read_to_string(&config_path).context("failed to read openclaw config")?
+        } else {
+            String::new()
+        };
+
+        let mut root: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(e) => {
+                anyhow::bail!(
+                    "openclaw config is not valid JSON — {}: {}\n\
+                     File: {}\n\
+                     Fix: back up the file and remove it, then re-run install.",
+                    config_path.display(),
+                    e,
+                    raw
+                );
+            }
+        };
+
+        upsert_json_mcp_server(
+            &mut root,
+            "guixu",
+            serde_json::json!({ "command": bin, "args": ["mcp"] }),
+        )?;
+
+        fs::write(&config_path, serde_json::to_string_pretty(&root)? + "\n")
+            .context("failed to write openclaw config")?;
+    }
 
     // 2. Install skill
-    let skill_dir = dirs::home_dir()
-        .context("cannot determine home dir")?
-        .join(".openclaw/workspace/skills/guixu");
-    fs::create_dir_all(&skill_dir)?;
+    fs::create_dir_all(&skill_dir)
+        .with_context(|| format!("failed to create skill directory {}", skill_dir.display()))?;
+    let skill_md = openclaw_skill_markdown();
+    fs::write(skill_dir.join("SKILL.md"), &skill_md).with_context(|| {
+        format!(
+            "failed to write skill file at {}",
+            skill_dir.join("SKILL.md").display()
+        )
+    })?;
 
-    let skill_md = format!(
-        "---\n\
-         name: guixu\n\
-         description: Data discovery and market platform for autonomous AI agents.\n\
-         version: 0.1.0\n\
-         metadata:\n\
-         \x20 openclaw:\n\
-         \x20   requires:\n\
-         \x20     bins:\n\
-         \x20       - guixu\n\
-         \x20   emoji: \"🌊\"\n\
-         ---\n\n\
-         # Guixu\n\n\
-         {}\n",
-        AGENTS_BLOCK
-    );
-    fs::write(skill_dir.join("SKILL.md"), &skill_md)?;
-    println!("   Skill:  {}", skill_dir.display());
+    println!("✅ openclaw configured");
+    println!("   Config: {}", config_path.display());
+    println!("   Skill:  {}", skill_dir.join("SKILL.md").display());
+    println!();
+    println!("To verify:");
+    println!("  1. Open openclaw and run: intent_parse(query=\"find cat images\", task_type=\"detection\", keywords=[\"cat\"], sample_unit=\"image\")");
+    println!("  2. Check that MCP server 'guixu' is listed in openclaw's active servers");
+    println!("  3. If not detected, restart openclaw or check ~/.openclaw/config.json");
+
     Ok(())
 }
 
@@ -395,9 +557,7 @@ fn uninstall_json_mcp_servers(client: Client) -> Result<()> {
         return Ok(());
     }
     let mut root: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
-    if let Some(servers) = root.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-        servers.remove("guixu");
-    }
+    remove_json_mcp_server(&mut root, "guixu");
     fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
     println!("✅ {client} — guixu MCP removed");
     Ok(())
@@ -449,14 +609,39 @@ fn uninstall_opencode_entry(client: Client) -> Result<()> {
 }
 
 fn uninstall_openclaw() -> Result<()> {
-    uninstall_json_mcp_servers(Client::OpenClaw)?;
-    let skill_dir = dirs::home_dir()
-        .context("cannot determine home dir")?
-        .join(".openclaw/workspace/skills/guixu");
-    if skill_dir.exists() {
-        fs::remove_dir_all(&skill_dir)?;
-        println!("   Skill removed: {}", skill_dir.display());
+    let home = dirs::home_dir().context("cannot determine home dir")?;
+    let config_path = home.join(".openclaw/config.json");
+    let skill_dir = home.join(".openclaw/workspace/skills/guixu");
+
+    let mut changed_config = false;
+
+    if config_path.exists() {
+        let raw = fs::read_to_string(&config_path).context("failed to read openclaw config")?;
+        let mut root: serde_json::Value =
+            serde_json::from_str(&raw).context("openclaw config is not valid JSON")?;
+        let had_guixu = root
+            .get("mcpServers")
+            .and_then(|v| v.get("guixu"))
+            .is_some();
+        remove_json_mcp_server(&mut root, "guixu");
+        fs::write(&config_path, serde_json::to_string_pretty(&root)? + "\n")
+            .context("failed to write openclaw config")?;
+        if had_guixu {
+            changed_config = true;
+            println!("✅ openclaw — guixu MCP entry removed");
+        }
     }
+
+    if skill_dir.exists() {
+        fs::remove_dir_all(&skill_dir)
+            .with_context(|| format!("failed to remove skill directory {}", skill_dir.display()))?;
+        println!("✅ openclaw — skill removed at {}", skill_dir.display());
+    }
+
+    if !changed_config && !skill_dir.exists() {
+        println!("openclaw — nothing to remove (guixu was not installed)");
+    }
+
     Ok(())
 }
 
@@ -591,14 +776,7 @@ mod tests {
         let skill_dir = dir.join("skills/guixu");
         fs::create_dir_all(&skill_dir).unwrap();
 
-        let skill_md = format!(
-            "---\nname: guixu\n\
-             description: Data discovery and market platform for autonomous AI agents.\n\
-             version: 0.1.0\n\
-             metadata:\n  openclaw:\n    requires:\n      bins:\n        - guixu\n\
-             \x20   emoji: \"🌊\"\n---\n\n# Guixu\n\n{}\n",
-            AGENTS_BLOCK
-        );
+        let skill_md = openclaw_skill_markdown();
         fs::write(skill_dir.join("SKILL.md"), &skill_md).unwrap();
 
         let content = fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
@@ -655,5 +833,79 @@ mod tests {
         assert!(!skill_dir.exists());
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn upsert_json_mcp_server_is_idempotent() {
+        let mut root = serde_json::json!({
+            "mcpServers": {
+                "guixu": { "command": "old", "args": ["mcp"] },
+                "other": { "command": "other", "args": [] }
+            }
+        });
+
+        upsert_json_mcp_server(
+            &mut root,
+            "guixu",
+            serde_json::json!({ "command": "guixu", "args": ["mcp"] }),
+        )
+        .unwrap();
+
+        let servers = root["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 2);
+        assert_eq!(root["mcpServers"]["guixu"]["command"], "guixu");
+        assert_eq!(root["mcpServers"]["other"]["command"], "other");
+    }
+
+    #[test]
+    fn upsert_json_mcp_server_rejects_non_object_root() {
+        let mut root = serde_json::json!([]);
+        let err = upsert_json_mcp_server(
+            &mut root,
+            "guixu",
+            serde_json::json!({ "command": "guixu", "args": ["mcp"] }),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("config is not a JSON object"));
+    }
+
+    #[test]
+    fn upsert_json_mcp_server_rejects_non_object_mcp_servers() {
+        let mut root = serde_json::json!({ "mcpServers": [] });
+        let err = upsert_json_mcp_server(
+            &mut root,
+            "guixu",
+            serde_json::json!({ "command": "guixu", "args": ["mcp"] }),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("mcpServers not object"));
+    }
+
+    #[test]
+    fn remove_json_mcp_server_is_safe_when_entry_missing() {
+        let mut root = serde_json::json!({
+            "mcpServers": {
+                "other": { "command": "other", "args": [] }
+            }
+        });
+
+        remove_json_mcp_server(&mut root, "guixu");
+
+        assert!(root["mcpServers"]["guixu"].is_null());
+        assert_eq!(root["mcpServers"]["other"]["command"], "other");
+    }
+
+    #[test]
+    fn openclaw_skill_markdown_includes_openclaw_metadata_and_workflow() {
+        let skill_md = openclaw_skill_markdown();
+
+        assert!(skill_md.contains("metadata:"));
+        assert!(skill_md.contains("openclaw:"));
+        assert!(skill_md.contains("bins:"));
+        assert!(skill_md.contains("- guixu"));
+        assert!(skill_md.contains("intent_parse"));
+        assert!(skill_md.contains("dataset_search"));
     }
 }

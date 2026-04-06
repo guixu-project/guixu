@@ -52,12 +52,12 @@ enum Commands {
 enum McpAction {
     /// Register Guixu MCP with an AI client.
     Install {
-        /// Target client: codex, cursor, claude-code, opencode
+        /// Target client: codex, cursor, claude-code, opencode, openclaw
         client: Option<String>,
     },
     /// Remove Guixu MCP from an AI client.
     Uninstall {
-        /// Target client: codex, cursor, claude-code, opencode
+        /// Target client: codex, cursor, claude-code, opencode, openclaw
         client: String,
     },
 }

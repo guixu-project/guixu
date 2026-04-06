@@ -13,7 +13,7 @@ Guixu is the Data Discovery and Market Platform for Autonomous AI Agents. Guixu 
 curl -fsSL https://raw.githubusercontent.com/guixu-project/guixu/main/install.sh | bash
 ```
 
-That's it. The installer downloads the binary, initializes a local node, auto-detects your AI clients (Codex, Cursor, Claude Code, OpenCode), and registers the Guixu MCP server with each one.
+That's it. The installer downloads the binary, initializes a local node, auto-detects your AI clients (Codex, Cursor, Claude Code, OpenCode, OpenClaw), and registers the Guixu MCP server with each one.
 
 
 ## AI Agent Integration (MCP)
@@ -27,9 +27,14 @@ guixu mcp install codex       # Codex
 guixu mcp install cursor      # Cursor
 guixu mcp install claude-code # Claude Code
 guixu mcp install opencode    # OpenCode
+guixu mcp install openclaw    # OpenClaw
 ```
 
 To remove: `guixu mcp uninstall <client>`
+
+`openclaw` uses `~/.openclaw/config.json` for MCP registration and installs a Guixu skill at `~/.openclaw/workspace/skills/guixu/`.
+
+Current OpenClaw support is installation-layer integration: Guixu registers a standard MCP server entry and installs a skill that nudges dataset acquisition requests through the Guixu workflow. The MCP tools themselves are shared across all clients.
 
 ### Manual Configuration
 
