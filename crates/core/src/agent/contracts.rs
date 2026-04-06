@@ -5,7 +5,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub use crate::types::{DataSource, DataType, DatasetCid, Price};
+pub use crate::types::{
+    DataSource, DataType, DatasetCid, Price, SkillCapability, SourceFamily,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegatedDataTask {
@@ -83,7 +85,14 @@ impl Budget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskPolicy {
     pub allow_purchase: bool,
-    pub allowed_sources: Vec<DataSource>,
+    #[serde(default, alias = "allowed_sources")]
+    pub allowed_skill_ids: Vec<String>,
+    #[serde(default)]
+    pub blocked_skill_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_source_families: Vec<SourceFamily>,
+    #[serde(default)]
+    pub required_capabilities: Vec<SkillCapability>,
     pub require_license_review: bool,
 }
 
@@ -91,12 +100,15 @@ impl Default for TaskPolicy {
     fn default() -> Self {
         Self {
             allow_purchase: false,
-            allowed_sources: vec![
-                DataSource::Kaggle,
-                DataSource::HuggingFace,
-                DataSource::Ipfs,
-                DataSource::GuixuHub,
+            allowed_skill_ids: vec![
+                "kaggle".into(),
+                "huggingface".into(),
+                "ipfs".into(),
+                "guixu_hub".into(),
             ],
+            blocked_skill_ids: vec![],
+            allowed_source_families: vec![],
+            required_capabilities: vec![SkillCapability::Search],
             require_license_review: true,
         }
     }
@@ -124,7 +136,14 @@ pub struct DelegatedDataTaskInput {
     pub required_columns: Vec<String>,
     pub budget: Option<Budget>,
     pub allow_purchase: bool,
-    pub allowed_sources: Vec<DataSource>,
+    #[serde(default, alias = "allowed_sources")]
+    pub allowed_skill_ids: Vec<String>,
+    #[serde(default)]
+    pub blocked_skill_ids: Vec<String>,
+    #[serde(default)]
+    pub allowed_source_families: Vec<SourceFamily>,
+    #[serde(default)]
+    pub required_capabilities: Vec<SkillCapability>,
     pub require_license_review: bool,
     pub desired_outputs: Vec<OutputKind>,
 }
@@ -151,7 +170,10 @@ impl DelegatedDataTaskInput {
             },
             policy: TaskPolicy {
                 allow_purchase: self.allow_purchase,
-                allowed_sources: self.allowed_sources,
+                allowed_skill_ids: self.allowed_skill_ids,
+                blocked_skill_ids: self.blocked_skill_ids,
+                allowed_source_families: self.allowed_source_families,
+                required_capabilities: self.required_capabilities,
                 require_license_review: self.require_license_review,
             },
             desired_outputs: self.desired_outputs,
@@ -200,7 +222,7 @@ pub struct WorkerTask {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerTaskKind {
-    SearchSource,
+    SearchSkill,
     EvaluateCandidate,
     LicenseReview,
     FetchCommunitySignal,
@@ -329,7 +351,10 @@ mod tests {
             required_columns: vec!["image_path".into(), "bbox".into()],
             budget: Some(Budget::usd(20.0)),
             allow_purchase: false,
-            allowed_sources: vec![DataSource::Kaggle, DataSource::HuggingFace],
+            allowed_skill_ids: vec!["kaggle".into(), "huggingface".into()],
+            blocked_skill_ids: vec![],
+            allowed_source_families: vec![],
+            required_capabilities: vec![SkillCapability::Search],
             require_license_review: true,
             desired_outputs: vec![OutputKind::SelectedDataset],
         };
@@ -361,11 +386,11 @@ mod tests {
         let job_id = JobId::new();
         let worker = WorkerTask::new(
             job_id.clone(),
-            WorkerTaskKind::SearchSource,
+            WorkerTaskKind::SearchSkill,
             "search huggingface",
         );
         assert_eq!(worker.parent_job_id, job_id);
-        assert_eq!(worker.kind, WorkerTaskKind::SearchSource);
+        assert_eq!(worker.kind, WorkerTaskKind::SearchSkill);
         assert_eq!(worker.label, "search huggingface");
 
         let event = JobEvent::new(
@@ -373,7 +398,7 @@ mod tests {
             JobEventType::WorkerStarted,
             "worker started",
             Some(worker.task_id.clone()),
-            serde_json::json!({ "source": "huggingface" }),
+            serde_json::json!({ "skill_id": "huggingface" }),
         );
         assert_eq!(event.event_type, JobEventType::WorkerStarted);
         assert_eq!(

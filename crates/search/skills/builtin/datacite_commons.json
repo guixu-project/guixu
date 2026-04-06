@@ -1,5 +1,5 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "datacite_commons",
   "name": "DataCite Commons",
   "description": "Search DataCite Commons via built-in native adapter.",
@@ -9,8 +9,38 @@
     "doi"
   ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "verified",
+    "provenance_hint": "DataCite DOI registry",
+    "compliance_hint": "inspect dataset landing page for full license and usage terms"
+  },
   "provider": {
-    "kind": "native_adapter",
-    "adapter": "datacite_commons"
+    "kind": "http_search",
+    "base_url": "https://api.datacite.org",
+    "operations": {
+      "search": {
+        "path": "/dois",
+        "method": "GET",
+        "query_param": "query",
+        "limit_param": "page[size]",
+        "static_params": {
+          "resource-type-id": "dataset"
+        },
+        "result_path": "data"
+      }
+    },
+    "item_mapping": {
+      "title": "id",
+      "description": "type",
+      "id": "id"
+    }
   }
 }

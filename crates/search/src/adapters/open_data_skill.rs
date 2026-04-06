@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use data_core::config::{DuckDbCatalog, PostgreSqlCatalog, SqlEndpointCatalog};
 use data_core::types::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::util::infer_data_type_from_title;
 use super::{
@@ -30,6 +30,8 @@ pub struct OpenDataSkillSpec {
     pub source: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub routing_hints: Vec<String>,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -53,6 +55,35 @@ pub struct SkillCapabilities {
     pub sample_preview: bool,
     #[serde(default)]
     pub license_lookup: bool,
+}
+
+impl SkillCapabilities {
+    fn enabled_capabilities(&self) -> Vec<SkillCapability> {
+        let mut capabilities = Vec::new();
+        if self.search {
+            capabilities.push(SkillCapability::Search);
+        }
+        if self.lookup {
+            capabilities.push(SkillCapability::Lookup);
+        }
+        if self.download {
+            capabilities.push(SkillCapability::Download);
+        }
+        if self.schema_probe {
+            capabilities.push(SkillCapability::SchemaProbe);
+        }
+        if self.sample_preview {
+            capabilities.push(SkillCapability::SamplePreview);
+        }
+        if self.license_lookup {
+            capabilities.push(SkillCapability::LicenseLookup);
+        }
+        capabilities
+    }
+
+    fn supports(&self, capability: SkillCapability) -> bool {
+        self.enabled_capabilities().contains(&capability)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -86,7 +117,6 @@ pub enum SkillProvider {
     },
     HttpSearch {
         base_url: String,
-        #[serde(default)]
         operations: SkillOperations,
         #[serde(default)]
         item_mapping: SkillItemMapping,
@@ -227,6 +257,17 @@ pub struct SkillExecutionMetric {
     pub auth_kind: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataSkillProfile {
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+    pub source_family: SourceFamily,
+    pub capabilities: Vec<SkillCapability>,
+    pub labels: Vec<String>,
+    pub routing_hints: Vec<String>,
+}
+
 fn default_method() -> String {
     "GET".into()
 }
@@ -284,6 +325,25 @@ pub fn load_open_data_skills() -> Result<Vec<OpenDataSkillSpec>> {
     }
 
     Ok(skills)
+}
+
+pub fn load_data_skill_profiles() -> Result<Vec<DataSkillProfile>> {
+    Ok(load_open_data_skills()?
+        .into_iter()
+        .map(|skill| DataSkillProfile {
+            skill_id: skill.id.clone(),
+            name: skill.name.clone(),
+            description: skill.description.clone(),
+            source_family: infer_source_family(&skill.source),
+            capabilities: skill.capabilities.enabled_capabilities(),
+            labels: skill.tags.clone(),
+            routing_hints: if skill.routing_hints.is_empty() {
+                skill.tags.clone()
+            } else {
+                skill.routing_hints.clone()
+            },
+        })
+        .collect())
 }
 
 fn skill_dirs() -> Vec<PathBuf> {
@@ -349,7 +409,7 @@ fn build_adapter_from_skill(
     }
 }
 
-fn validate_skill_spec(skill: &OpenDataSkillSpec) -> Result<()> {
+pub fn validate_skill_spec(skill: &OpenDataSkillSpec) -> Result<()> {
     if !(skill.spec_version.starts_with("1.") || skill.spec_version.starts_with("2.")) {
         return Err(anyhow!(
             "unsupported open data skill spec_version: {}",
@@ -386,7 +446,6 @@ fn native_adapter_from_name(
         "sql_endpoint" => Box::new(SqlEndpointAdapter::with_catalogs(sql_catalogs.to_vec())),
         "local_file" => Box::new(LocalFileAdapter::default()),
         "google_dataset_search" => Box::new(GoogleDatasetSearchAdapter::default()),
-        "datacite_commons" => Box::new(DataCiteCommonsAdapter::default()),
         "defillama" => Box::new(DefiLlamaAdapter::default()),
         "rwa_xyz" => Box::new(RwaXyzAdapter::default()),
         "pan_search" => Box::new(PanSearchAdapter::default()),
@@ -397,7 +456,7 @@ fn native_adapter_from_name(
     })
 }
 
-fn parse_skill_source(source: &str) -> Result<DataSource> {
+pub fn parse_skill_source(source: &str) -> Result<DataSource> {
     Ok(match source.to_ascii_lowercase().as_str() {
         "kaggle" => DataSource::Kaggle,
         "huggingface" => DataSource::HuggingFace,
@@ -448,6 +507,48 @@ enum ExecutedOperation {
     Lookup,
     Download,
     SchemaProbe,
+}
+
+pub async fn execute_skill_operation(
+    skill: &OpenDataSkillSpec,
+    operation_name: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>> {
+    let SkillProvider::HttpSearch {
+        base_url,
+        operations,
+        item_mapping,
+    } = &skill.provider
+    else {
+        return Err(anyhow!("skill is not http_search: {}", skill.id));
+    };
+
+    let adapter = HttpSkillAdapter::new(HttpSkillAdapterConfig {
+        id: skill.id.clone(),
+        name: skill.name.clone(),
+        description: skill.description.clone(),
+        source: parse_skill_source(&skill.source)?,
+        source_family: infer_source_family(&skill.source),
+        tags: skill.tags.clone(),
+        base_url: base_url.clone(),
+        capabilities: skill.capabilities.clone(),
+        governance: skill.governance.clone(),
+        operations: operations.clone(),
+        item_mapping: item_mapping.clone(),
+    });
+
+    let operation = match operation_name {
+        "search" => ExecutedOperation::Search,
+        "lookup" => ExecutedOperation::Lookup,
+        "download" => ExecutedOperation::Download,
+        "schema_probe" => ExecutedOperation::SchemaProbe,
+        other => return Err(anyhow!("unsupported skill operation: {other}")),
+    };
+
+    adapter
+        .execute_named_operation(operation, query, limit)
+        .await
 }
 
 impl HttpSkillAdapter {
@@ -509,12 +610,26 @@ impl HttpSkillAdapter {
         }
         let mut current = value;
         for part in path.split('.') {
-            current = current.get(part)?;
+            if let Some((field, index_part)) = part.split_once('[') {
+                let index = index_part.strip_suffix(']')?.parse::<usize>().ok()?;
+                current = current.get(field)?;
+                current = current.get(index)?;
+            } else {
+                current = current.get(part)?;
+            }
         }
         Some(current)
     }
 
-    fn base_headers(&self, operation: &HttpOperation) -> Result<reqwest::header::HeaderMap> {
+    fn string_at_path(value: &serde_json::Value, path: &str) -> Option<String> {
+        Self::value_at_path(value, path).and_then(|v| v.as_str().map(ToString::to_string))
+    }
+
+    fn u64_at_path(value: &serde_json::Value, path: &str) -> Option<u64> {
+        Self::value_at_path(value, path).and_then(|v| v.as_u64())
+    }
+
+    async fn base_headers(&self, operation: &HttpOperation) -> Result<reqwest::header::HeaderMap> {
         let mut headers = reqwest::header::HeaderMap::new();
         for (key, value) in &operation.headers {
             let header_name = reqwest::header::HeaderName::from_bytes(key.as_bytes())?;
@@ -601,7 +716,7 @@ impl HttpSkillAdapter {
         operation: &HttpOperation,
         params: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let headers = self.base_headers(operation)?;
+        let headers = self.base_headers(operation).await?;
         let method = operation.method.to_ascii_uppercase();
         let response = if method == "POST" {
             self.client
@@ -632,6 +747,22 @@ impl HttpSkillAdapter {
         }
         .error_for_status()?;
 
+        Ok(response.json::<serde_json::Value>().await?)
+    }
+
+    async fn execute_absolute_get(
+        &self,
+        url: &str,
+        operation: &HttpOperation,
+    ) -> Result<serde_json::Value> {
+        let headers = self.base_headers(operation).await?;
+        let response = self
+            .client
+            .get(url)
+            .headers(headers)
+            .send()
+            .await?
+            .error_for_status()?;
         Ok(response.json::<serde_json::Value>().await?)
     }
 
@@ -693,11 +824,7 @@ impl HttpSkillAdapter {
                 }
                 params.insert(size_param.clone(), serde_json::json!(limit));
             }
-            PaginationConfig::NextUrl { next_url_path, .. } => {
-                if page_index > 0 {
-                    tracing::debug!(path = %next_url_path, page_index, "next_url pagination configured but continuation extraction is not fully implemented yet");
-                }
-            }
+            PaginationConfig::NextUrl { .. } => {}
         }
 
         let response = self.execute_request(operation, &params).await?;
@@ -749,11 +876,54 @@ impl HttpSkillAdapter {
         .max(1);
 
         let mut items = Vec::new();
+        let mut next_url: Option<String> = None;
         for page_index in 0..max_pages {
-            let mut page = match self
-                .fetch_page(operation, query, limit.max(1), page_index)
-                .await
-            {
+            let page_result: Result<(Vec<serde_json::Value>, Option<String>)> =
+                if matches!(&operation.pagination, PaginationConfig::NextUrl { .. }) {
+                    let response = if page_index == 0 {
+                        let mut params = operation.static_params.clone();
+                        params.insert(
+                            if operation.query_param.is_empty() {
+                                "q".to_string()
+                            } else {
+                                operation.query_param.clone()
+                            },
+                            serde_json::Value::String(query.to_string()),
+                        );
+                        if let Some(limit_param) = &operation.limit_param {
+                            params.insert(limit_param.clone(), serde_json::json!(limit));
+                        }
+                        self.execute_request(operation, &params).await
+                    } else {
+                        let url = next_url.clone().ok_or_else(|| {
+                            anyhow!("next_url pagination missing continuation url")
+                        })?;
+                        self.execute_absolute_get(&url, operation).await
+                    };
+
+                    response.map(|response| {
+                        let next = match &operation.pagination {
+                            PaginationConfig::NextUrl { next_url_path, .. } => {
+                                Self::string_at_path(&response, next_url_path)
+                            }
+                            _ => None,
+                        };
+                        let root = if let Some(path) = &operation.result_path {
+                            Self::value_at_path(&response, path)
+                                .cloned()
+                                .unwrap_or_default()
+                        } else {
+                            response
+                        };
+                        (root.as_array().cloned().unwrap_or_default(), next)
+                    })
+                } else {
+                    self.fetch_page(operation, query, limit.max(1), page_index)
+                        .await
+                        .map(|page| (page, None))
+                };
+
+            let (mut page, extracted_next_url) = match page_result {
                 Ok(page) => page,
                 Err(error) => {
                     let failure_kind = Self::classify_failure(&error);
@@ -767,6 +937,7 @@ impl HttpSkillAdapter {
                     return Err(error);
                 }
             };
+            next_url = extracted_next_url;
             let page_len = page.len();
             items.append(&mut page);
             if items.len() >= limit || page_len == 0 {
@@ -791,25 +962,31 @@ impl HttpSkillAdapter {
         let title = item
             .get(&self.config.item_mapping.title)
             .and_then(|v| v.as_str())
-            .unwrap_or(&self.config.name)
-            .to_string();
+            .map(ToString::to_string)
+            .or_else(|| Self::string_at_path(&item, &self.config.item_mapping.title))
+            .unwrap_or_else(|| self.config.name.clone());
         let description = item
             .get(&self.config.item_mapping.description)
             .and_then(|v| v.as_str())
             .map(String::from)
+            .or_else(|| Self::string_at_path(&item, &self.config.item_mapping.description))
             .or_else(|| Some(self.config.description.clone()));
         let id_value = item
             .get(&self.config.item_mapping.id)
             .and_then(|v| v.as_str())
             .map(String::from)
+            .or_else(|| Self::string_at_path(&item, &self.config.item_mapping.id))
             .unwrap_or_else(|| format!("{}-{i}", self.config.id));
         let size_bytes = self
             .config
             .item_mapping
             .size_bytes
             .as_ref()
-            .and_then(|field| item.get(field))
-            .and_then(|v| v.as_u64())
+            .and_then(|field| {
+                item.get(field)
+                    .and_then(|v| v.as_u64())
+                    .or_else(|| Self::u64_at_path(&item, field))
+            })
             .unwrap_or(0);
         let tags = self
             .config
@@ -829,16 +1006,25 @@ impl HttpSkillAdapter {
             .item_mapping
             .license
             .as_ref()
-            .and_then(|field| item.get(field))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
+            .and_then(|field| {
+                item.get(field)
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string)
+                    .or_else(|| Self::string_at_path(&item, field))
+            })
+            .unwrap_or_else(|| "unknown".to_string());
         let created_at = self
             .config
             .item_mapping
             .created_at
             .as_ref()
-            .and_then(|field| item.get(field))
-            .and_then(|v| v.as_str())
+            .and_then(|field| {
+                item.get(field)
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string)
+                    .or_else(|| Self::string_at_path(&item, field))
+            })
+            .as_deref()
             .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(chrono::Utc::now);
@@ -847,8 +1033,11 @@ impl HttpSkillAdapter {
             .item_mapping
             .download_count
             .as_ref()
-            .and_then(|field| item.get(field))
-            .and_then(|v| v.as_u64())
+            .and_then(|field| {
+                item.get(field)
+                    .and_then(|v| v.as_u64())
+                    .or_else(|| Self::u64_at_path(&item, field))
+            })
             .unwrap_or(0);
 
         SearchResult {
@@ -864,7 +1053,7 @@ impl HttpSkillAdapter {
             quality: None,
             price: Price::free(),
             license: License {
-                spdx_id: license_id.into(),
+                spdx_id: license_id,
                 commercial_use: false,
                 derivative_allowed: false,
             },
@@ -903,12 +1092,24 @@ impl ExternalAdapter for HttpSkillAdapter {
         &self.config.id
     }
 
-    fn source_type(&self) -> DataSource {
-        self.config.source.clone()
+    fn skill_id(&self) -> &str {
+        &self.config.id
+    }
+
+    fn source_family(&self) -> SourceFamily {
+        self.config.source_family
+    }
+
+    fn capabilities(&self) -> Vec<SkillCapability> {
+        self.config.capabilities.enabled_capabilities()
+    }
+
+    fn labels(&self) -> Vec<String> {
+        self.config.tags.clone()
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        if !self.config.capabilities.search {
+        if !self.config.capabilities.supports(SkillCapability::Search) {
             return Ok(vec![]);
         }
 
@@ -930,7 +1131,13 @@ fn infer_source_family(source: &str) -> SourceFamily {
         "ipfs" | "bittorrent" => SourceFamily::Decentralized,
         "postgresql" | "duckdb" | "spark" | "flink" | "presto" => SourceFamily::DbCatalog,
         "local_file" | "localfile" => SourceFamily::Local,
-        "google_dataset_search" | "pan_search" | "open_data_skill" => SourceFamily::WebRegistry,
+        "google_dataset_search"
+        | "pan_search"
+        | "open_data_skill"
+        | "defillama"
+        | "rwa_xyz"
+        | "rwaxyz"
+        | "thegraph" => SourceFamily::WebRegistry,
         _ => SourceFamily::Custom,
     }
 }

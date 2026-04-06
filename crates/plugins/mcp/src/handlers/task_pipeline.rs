@@ -6,11 +6,12 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::{DatasetMetadata, Provenance};
-use data_core::types::{AccessMode, DatasetCid, SearchResult};
+use data_core::types::{AccessMode, DatasetCid, SearchResult, SkillCapability, SourceFamily};
 use data_search::engine::{
     DatasetSelectionTask, DatasetValuation, DatasetValuationConfig, MetadataResolver,
     ProxyUtilityApplyMode, SampleEvaluationOutcome, SampleEvaluator, SearchFilters, SearchOutput,
@@ -323,6 +324,42 @@ fn parse_budget_amount(value: Option<&Value>) -> Option<f64> {
         .or_else(|| raw.as_str().and_then(parse_budget_amount_str))
 }
 
+fn parse_string_array(obj: &Value, plural_key: &str, singular_key: &str) -> Vec<String> {
+    obj.get(plural_key)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items.iter()
+                .filter_map(|value| value.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .or_else(|| {
+            obj.get(singular_key)
+                .and_then(|value| value.as_str())
+                .map(|value| vec![value.to_string()])
+        })
+        .unwrap_or_default()
+}
+
+fn parse_enum_array<T>(obj: &Value, plural_key: &str, singular_key: &str) -> Vec<T>
+where
+    T: DeserializeOwned,
+{
+    obj.get(plural_key)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items.iter()
+                .filter_map(|value| serde_json::from_value(value.clone()).ok())
+                .collect()
+        })
+        .or_else(|| {
+            obj.get(singular_key)
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .map(|value| vec![value])
+        })
+        .unwrap_or_default()
+}
+
 fn collect_search_filters(search_args: &Value) -> (SearchFilters, usize) {
     let filter_obj = search_args.get("filters").cloned().unwrap_or_default();
     let filters = SearchFilters {
@@ -337,10 +374,17 @@ fn collect_search_filters(search_args: &Value) -> (SearchFilters, usize) {
             .and_then(|v| v.as_str())
             .map(String::from),
         min_quality: filter_obj.get("min_quality").and_then(|v| v.as_f64()),
-        source: filter_obj
-            .get("source")
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        skill_ids: parse_string_array(&filter_obj, "skill_ids", "skill_id"),
+        source_families: parse_enum_array::<SourceFamily>(
+            &filter_obj,
+            "source_families",
+            "source_family",
+        ),
+        required_capabilities: parse_enum_array::<SkillCapability>(
+            &filter_obj,
+            "required_capabilities",
+            "required_capability",
+        ),
         chain: filter_obj
             .get("chain")
             .and_then(|v| v.as_str())
@@ -905,7 +949,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
     let evaluate_args = args.get("evaluate").cloned().unwrap_or_default();
     let (mut filters, limit) = collect_search_filters(&search_args);
     if matches!(state.tool_profile, ToolProfile::CodexWorkflow) {
-        filters.source = None;
+        filters.skill_ids.clear();
     }
     let requested_top_k = evaluate_args
         .get("top_k")

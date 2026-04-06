@@ -32,9 +32,6 @@ impl ExternalAdapter for RwaXyzAdapter {
     fn name(&self) -> &str {
         "rwa_xyz"
     }
-    fn source_type(&self) -> DataSource {
-        DataSource::RwaXyz
-    }
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let q = query.to_lowercase();
         let mut results = self.search_treasuries(&q, limit).await.unwrap_or_default();
@@ -136,6 +133,8 @@ impl RwaXyzAdapter {
                 "origin_url": format!("https://app.rwa.xyz/treasuries/{slug}"),
                 "is_open_data": true,
             })),
+            governance: None,
+            provider_meta: None,
         })
     }
 

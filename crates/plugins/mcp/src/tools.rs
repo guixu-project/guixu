@@ -79,7 +79,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_search".into(),
-            description: "Search datasets across DefiLlama, RWA.xyz, Kaggle, HuggingFace, IPFS, BitTorrent, DBLP, Semantic Scholar, arXiv, and P2P network. Supports free open data discovery.".into(),
+            description: "Search datasets across registered data skills, including built-in skills such as DefiLlama, RWA.xyz, Kaggle, HuggingFace, IPFS, BitTorrent, DBLP, Semantic Scholar, and arXiv. Supports free open data discovery.".into(),
             annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
@@ -97,16 +97,66 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                             "max_price": { "type": "number" },
                             "license": { "type": "string" },
                             "min_quality": { "type": "number" },
-                            "source": {
+                            "skill_id": {
+                                "type": "string",
+                                "description": "Optional data skill identifier, e.g. kaggle, huggingface, datacite_commons"
+                            },
+                            "skill_ids": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Optional allow-list of data skill identifiers"
+                            },
+                            "source_family": {
                                 "type": "string",
                                 "enum": [
-                                    "defillama", "rwa_xyz", "thegraph",
-                                    "guixuhub", "kaggle", "huggingface",
-                                    "ipfs", "bittorrent", "postgresql",
-                                    "duckdb", "googledatasetsearch",
-                                    "datacitecommons", "pansearch", "p2p",
-                                    "dblp", "semanticscholar", "arxiv"
+                                    "marketplace",
+                                    "academic",
+                                    "web_registry",
+                                    "db_catalog",
+                                    "decentralized",
+                                    "local",
+                                    "custom"
                                 ]
+                            },
+                            "source_families": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "enum": [
+                                        "marketplace",
+                                        "academic",
+                                        "web_registry",
+                                        "db_catalog",
+                                        "decentralized",
+                                        "local",
+                                        "custom"
+                                    ]
+                                }
+                            },
+                            "required_capability": {
+                                "type": "string",
+                                "enum": [
+                                    "search",
+                                    "lookup",
+                                    "download",
+                                    "schema_probe",
+                                    "sample_preview",
+                                    "license_lookup"
+                                ]
+                            },
+                            "required_capabilities": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "enum": [
+                                        "search",
+                                        "lookup",
+                                        "download",
+                                        "schema_probe",
+                                        "sample_preview",
+                                        "license_lookup"
+                                    ]
+                                }
                             },
                             "chain": { "type": "string", "description": "Filter by blockchain (e.g. ethereum, polygon)" },
                             "protocol": { "type": "string", "description": "Filter by protocol (e.g. circle, aave)" },
@@ -278,7 +328,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_bt_download".into(),
-            description: "Download a dataset from the BitTorrent network by info hash. Use dataset_search with source=bittorrent to find info hashes first.".into(),
+            description: "Download a dataset from the BitTorrent network by info hash. Use dataset_search with filters.skill_ids=[\"bittorrent\"] to find info hashes first.".into(),
             annotations: local_side_effect_annotations(),
             input_schema: json!({
                 "type": "object",
@@ -391,10 +441,46 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "default": false,
                         "description": "Whether to allow purchasing paid datasets"
                     },
-                    "allowed_sources": {
+                    "allowed_skill_ids": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Allowed data sources (kaggle, huggingface, ipfs, etc.)"
+                        "description": "Allowed data skill identifiers"
+                    },
+                    "blocked_skill_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Blocked data skill identifiers"
+                    },
+                    "allowed_source_families": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "marketplace",
+                                "academic",
+                                "web_registry",
+                                "db_catalog",
+                                "decentralized",
+                                "local",
+                                "custom"
+                            ]
+                        },
+                        "description": "Allowed data skill source families"
+                    },
+                    "required_capabilities": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "search",
+                                "lookup",
+                                "download",
+                                "schema_probe",
+                                "sample_preview",
+                                "license_lookup"
+                            ]
+                        },
+                        "description": "Capabilities required from selected data skills"
                     },
                     "require_license_review": {
                         "type": "boolean",

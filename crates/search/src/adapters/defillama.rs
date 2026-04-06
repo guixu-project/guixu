@@ -37,9 +37,7 @@ impl ExternalAdapter for DefiLlamaAdapter {
     fn name(&self) -> &str {
         "defillama"
     }
-    fn source_type(&self) -> DataSource {
-        DataSource::DefiLlama
-    }
+
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let q = query.to_lowercase();
         let mut results = Vec::new();
@@ -164,6 +162,8 @@ impl DefiLlamaAdapter {
                 "is_open_data": true,
                 "defillama_id": id,
             })),
+            provider_meta: None,
+            governance: None,
         })
     }
 
@@ -253,6 +253,8 @@ impl DefiLlamaAdapter {
                         "api_url": format!("https://api.llama.fi/v2/bridge/{id}"),
                         "is_open_data": true,
                     })),
+                    provider_meta: None,
+                    governance: None,
                 })
             })
             .collect())
@@ -333,6 +335,8 @@ impl DefiLlamaAdapter {
                         "api_url": format!("https://api.llama.fi/protocol/{slug}"),
                         "is_open_data": true,
                     })),
+                    provider_meta: None,
+                    governance: None,
                 })
             })
             .collect())

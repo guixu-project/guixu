@@ -146,10 +146,6 @@ impl ExternalAdapter for StubAdapter {
         "stub"
     }
 
-    fn source_type(&self) -> DataSource {
-        DataSource::Kaggle
-    }
-
     async fn search(&self, _query: &str, _limit: usize) -> anyhow::Result<Vec<SearchResult>> {
         Ok(self.results.clone())
     }
@@ -470,7 +466,6 @@ async fn search_with_task_type_prefers_results_matching_requested_modality() {
 fn default_adapters_covers_all_expected_sources() {
     let adapters = adapters::default_adapters();
     let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
-    let sources: Vec<DataSource> = adapters.iter().map(|a| a.source_type()).collect();
 
     // Expected adapters present
     assert!(names.contains(&"kaggle"), "missing kaggle adapter");
@@ -503,17 +498,6 @@ fn default_adapters_covers_all_expected_sources() {
         "duplicate adapter names detected"
     );
 
-    // Source types match expected variants
-    assert!(sources.contains(&DataSource::Kaggle));
-    assert!(sources.contains(&DataSource::HuggingFace));
-    assert!(sources.contains(&DataSource::Ipfs));
-    assert!(sources.contains(&DataSource::BitTorrent));
-    assert!(sources.contains(&DataSource::PostgreSql));
-    assert!(sources.contains(&DataSource::DuckDb));
-    assert!(sources.contains(&DataSource::GuixuHub));
-    assert!(sources.contains(&DataSource::LocalFile));
-    assert!(sources.contains(&DataSource::GoogleDatasetSearch));
-    assert!(sources.contains(&DataSource::DataCiteCommons));
 }
 
 /// Adapters that require credentials/config should return empty results
@@ -547,19 +531,14 @@ async fn unconfigured_adapters_return_empty_without_error() {
     }
 }
 
-/// Each adapter's name() and source_type() must be consistent and non-empty.
+/// Each adapter's name() and skill_id() must be consistent and non-empty.
 #[test]
 fn adapter_metadata_is_consistent() {
     let adapters = adapters::default_adapters();
     for adapter in &adapters {
         assert!(!adapter.name().is_empty(), "adapter name must not be empty");
-        // source_type serialization should produce a non-empty lowercase string
-        let source_json = serde_json::to_string(&adapter.source_type()).unwrap();
-        assert!(
-            source_json.len() > 2,
-            "source_type serialization too short for {}",
-            adapter.name()
-        );
+        assert!(!adapter.skill_id().is_empty(), "adapter skill_id must not be empty");
+        assert_eq!(adapter.skill_id(), adapter.name());
     }
 }
 
@@ -595,31 +574,27 @@ fn datasource_serde_roundtrip() {
     }
 }
 
-/// Google Dataset Search adapter should produce correct source type and
-/// generate deterministic CIDs from title+url.
+/// Google Dataset Search adapter should expose the expected skill id.
 #[test]
-fn google_adapter_source_type_and_name() {
+fn google_adapter_skill_id_and_name() {
     let adapter = adapters::GoogleDatasetSearchAdapter::default();
     assert_eq!(adapter.name(), "google_dataset_search");
-    assert!(matches!(
-        adapter.source_type(),
-        DataSource::GoogleDatasetSearch
-    ));
+    assert_eq!(adapter.skill_id(), "google_dataset_search");
 }
 
-/// DataCite Commons adapter should produce correct source type.
+/// DataCite Commons adapter should expose the expected skill id.
 #[test]
-fn datacite_adapter_source_type_and_name() {
+fn datacite_adapter_skill_id_and_name() {
     let adapter = adapters::DataCiteCommonsAdapter::default();
     assert_eq!(adapter.name(), "datacite_commons");
-    assert!(matches!(adapter.source_type(), DataSource::DataCiteCommons));
+    assert_eq!(adapter.skill_id(), "datacite_commons");
 }
 
 #[test]
-fn guixu_hub_adapter_source_type_and_name() {
+fn guixu_hub_adapter_skill_id_and_name() {
     let adapter = adapters::GuixuHubAdapter::default();
     assert_eq!(adapter.name(), "guixu_hub");
-    assert!(matches!(adapter.source_type(), DataSource::GuixuHub));
+    assert_eq!(adapter.skill_id(), "guixu_hub");
 }
 
 /// Search engine should propagate results from new adapters through ranking.
@@ -631,9 +606,6 @@ async fn search_engine_includes_new_adapter_results() {
     impl ExternalAdapter for GdsStub {
         fn name(&self) -> &str {
             "google_dataset_search"
-        }
-        fn source_type(&self) -> DataSource {
-            DataSource::GoogleDatasetSearch
         }
         async fn search(&self, _q: &str, _l: usize) -> anyhow::Result<Vec<SearchResult>> {
             Ok(vec![SearchResult {
@@ -669,9 +641,6 @@ async fn search_engine_includes_new_adapter_results() {
     impl ExternalAdapter for DcStub {
         fn name(&self) -> &str {
             "datacite_commons"
-        }
-        fn source_type(&self) -> DataSource {
-            DataSource::DataCiteCommons
         }
         async fn search(&self, _q: &str, _l: usize) -> anyhow::Result<Vec<SearchResult>> {
             Ok(vec![SearchResult {
@@ -735,17 +704,14 @@ async fn search_engine_includes_new_adapter_results() {
     );
 }
 
-/// Source filter should work correctly with new data source names.
+/// Skill filters should work correctly with registered data skill ids.
 #[tokio::test]
-async fn source_filter_works_for_new_sources() {
+async fn skill_filter_works_for_new_skill_ids() {
     struct GdsStub;
     #[async_trait::async_trait]
     impl ExternalAdapter for GdsStub {
         fn name(&self) -> &str {
             "google_dataset_search"
-        }
-        fn source_type(&self) -> DataSource {
-            DataSource::GoogleDatasetSearch
         }
         async fn search(&self, _q: &str, _l: usize) -> anyhow::Result<Vec<SearchResult>> {
             Ok(vec![SearchResult {
@@ -783,9 +749,9 @@ async fn source_filter_works_for_new_sources() {
         ..Default::default()
     };
 
-    // Filter for GoogleDatasetSearch — should keep the result
+    // Filter for the Google Dataset Search skill id — should keep the result
     let filters_match = SearchFilters {
-        source: Some("googledatasetsearch".into()),
+        skill_ids: vec!["google_dataset_search".into()],
         ..Default::default()
     };
     let output = engine
@@ -794,9 +760,9 @@ async fn source_filter_works_for_new_sources() {
         .unwrap();
     assert_eq!(output.results.len(), 1);
 
-    // Filter for a different source — should exclude
+    // Filter for a different skill id — should exclude
     let filters_miss = SearchFilters {
-        source: Some("kaggle".into()),
+        skill_ids: vec!["kaggle".into()],
         ..Default::default()
     };
     let output = engine
@@ -1063,17 +1029,17 @@ async fn datacite_commons_live_result_has_description_or_year() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn defillama_adapter_source_type_and_name() {
+fn defillama_adapter_skill_id_and_name() {
     let a = adapters::DefiLlamaAdapter::default();
     assert_eq!(a.name(), "defillama");
-    assert_eq!(a.source_type(), DataSource::DefiLlama);
+    assert_eq!(a.skill_id(), "defillama");
 }
 
 #[test]
-fn rwa_xyz_adapter_source_type_and_name() {
+fn rwa_xyz_adapter_skill_id_and_name() {
     let a = adapters::RwaXyzAdapter::default();
     assert_eq!(a.name(), "rwa_xyz");
-    assert_eq!(a.source_type(), DataSource::RwaXyz);
+    assert_eq!(a.skill_id(), "rwa_xyz");
 }
 
 #[test]
@@ -1105,10 +1071,6 @@ fn default_adapters_includes_new_sources() {
     let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
     assert!(names.contains(&"defillama"), "missing defillama adapter");
     assert!(names.contains(&"rwa_xyz"), "missing rwa_xyz adapter");
-
-    let sources: Vec<DataSource> = adapters.iter().map(|a| a.source_type()).collect();
-    assert!(sources.contains(&DataSource::DefiLlama));
-    assert!(sources.contains(&DataSource::RwaXyz));
 }
 
 #[test]
@@ -1204,9 +1166,6 @@ async fn chain_filter_retains_matching_source_attributes() {
     impl ExternalAdapter for DefiStub {
         fn name(&self) -> &str {
             "defillama_stub"
-        }
-        fn source_type(&self) -> DataSource {
-            DataSource::DefiLlama
         }
         async fn search(&self, _q: &str, _l: usize) -> anyhow::Result<Vec<SearchResult>> {
             Ok(vec![
@@ -1324,9 +1283,6 @@ async fn search_engine_routes_to_defillama_and_rwa_adapters() {
         fn name(&self) -> &str {
             "defillama"
         }
-        fn source_type(&self) -> DataSource {
-            DataSource::DefiLlama
-        }
         async fn search(&self, _q: &str, _l: usize) -> anyhow::Result<Vec<SearchResult>> {
             Ok(vec![SearchResult {
                 cid: DatasetCid("defillama:stablecoin:usdc".into()),
@@ -1365,9 +1321,6 @@ async fn search_engine_routes_to_defillama_and_rwa_adapters() {
     impl ExternalAdapter for RwaStub {
         fn name(&self) -> &str {
             "rwa_xyz"
-        }
-        fn source_type(&self) -> DataSource {
-            DataSource::RwaXyz
         }
         async fn search(&self, _q: &str, _l: usize) -> anyhow::Result<Vec<SearchResult>> {
             Ok(vec![SearchResult {
@@ -1464,7 +1417,7 @@ fn mcp_search_filters_parse_new_fields() {
             "protocol": "circle",
             "category": "stablecoin",
             "free_only": true,
-            "source": "defillama"
+            "skill_id": "defillama"
         }
     });
 
@@ -1481,10 +1434,13 @@ fn mcp_search_filters_parse_new_fields() {
             .and_then(|v| v.as_str())
             .map(String::from),
         min_quality: filter_obj.get("min_quality").and_then(|v| v.as_f64()),
-        source: filter_obj
-            .get("source")
+        skill_ids: filter_obj
+            .get("skill_id")
             .and_then(|v| v.as_str())
-            .map(String::from),
+            .map(|skill_id| vec![skill_id.to_string()])
+            .unwrap_or_default(),
+        source_families: vec![],
+        required_capabilities: vec![],
         chain: filter_obj
             .get("chain")
             .and_then(|v| v.as_str())
@@ -1508,7 +1464,7 @@ fn mcp_search_filters_parse_new_fields() {
     assert_eq!(filters.protocol.as_deref(), Some("circle"));
     assert_eq!(filters.category.as_deref(), Some("stablecoin"));
     assert_eq!(filters.free_only, Some(true));
-    assert_eq!(filters.source.as_deref(), Some("defillama"));
+    assert_eq!(filters.skill_ids, vec!["defillama"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1605,7 +1561,7 @@ async fn rwa_xyz_live_treasury_search() {
 fn duckdb_adapter_returns_empty_when_unconfigured() {
     let adapter = adapters::DuckDbAdapter::default();
     assert_eq!(adapter.name(), "duckdb");
-    assert_eq!(adapter.source_type(), DataSource::DuckDb);
+    assert_eq!(adapter.skill_id(), "duckdb");
     let rt = tokio::runtime::Runtime::new().unwrap();
     let results = rt.block_on(adapter.search("anything", 10)).unwrap();
     assert!(results.is_empty());
@@ -1615,7 +1571,7 @@ fn duckdb_adapter_returns_empty_when_unconfigured() {
 fn postgresql_adapter_returns_empty_when_unconfigured() {
     let adapter = adapters::PostgreSqlAdapter::default();
     assert_eq!(adapter.name(), "postgresql");
-    assert_eq!(adapter.source_type(), DataSource::PostgreSql);
+    assert_eq!(adapter.skill_id(), "postgresql");
     let rt = tokio::runtime::Runtime::new().unwrap();
     let results = rt.block_on(adapter.search("anything", 10)).unwrap();
     assert!(results.is_empty());
@@ -1634,7 +1590,7 @@ fn sql_endpoint_adapter_returns_empty_when_unconfigured() {
 fn dblp_adapter_returns_empty_name_and_source() {
     let adapter = adapters::DblpAdapter::default();
     assert_eq!(adapter.name(), "dblp");
-    assert_eq!(adapter.source_type(), DataSource::Dblp);
+    assert_eq!(adapter.skill_id(), "dblp");
 }
 
 #[test]

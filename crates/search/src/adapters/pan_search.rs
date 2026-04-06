@@ -514,6 +514,8 @@ impl PanSearchAdapter {
                 "validity": r.is_alive,
                 "snapshot_time": r.datetime,
             })),
+            governance: None,
+            provider_meta: None,
         }
     }
 }
@@ -522,10 +524,6 @@ impl PanSearchAdapter {
 impl ExternalAdapter for PanSearchAdapter {
     fn name(&self) -> &str {
         "pansearch"
-    }
-
-    fn source_type(&self) -> DataSource {
-        DataSource::PanSearch
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {

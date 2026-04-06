@@ -112,6 +112,8 @@ impl BitTorrentAdapter {
             created_at: created,
             seller_endpoint: None,
             source_attributes: None,
+                    provider_meta: None,
+                    governance: None,
         })
     }
 
@@ -173,6 +175,8 @@ impl BitTorrentAdapter {
             created_at: created,
             seller_endpoint: None,
             source_attributes: None,
+                    provider_meta: None,
+                    governance: None,
         })
     }
 
@@ -226,6 +230,8 @@ impl BitTorrentAdapter {
                     created_at: chrono::Utc::now(),
                     seller_endpoint: None,
                     source_attributes: None,
+                    provider_meta: None,
+                    governance: None,
                 })
             })
             .collect())
@@ -236,9 +242,6 @@ impl BitTorrentAdapter {
 impl ExternalAdapter for BitTorrentAdapter {
     fn name(&self) -> &str {
         "bittorrent"
-    }
-    fn source_type(&self) -> DataSource {
-        DataSource::BitTorrent
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {

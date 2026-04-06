@@ -197,6 +197,17 @@ pub enum SourceFamily {
     Custom,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillCapability {
+    Search,
+    Lookup,
+    Download,
+    SchemaProbe,
+    SamplePreview,
+    LicenseLookup,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GovernanceMeta {
     pub trust_tier: TrustTier,
@@ -223,6 +234,35 @@ pub struct RateLimitHint {
     pub requests_per_minute: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burst: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatasetArtifact {
+    pub artifact_id: String,
+    pub dataset_cid: DatasetCid,
+    pub artifact_type: ArtifactType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactType {
+    Download,
+    Schema,
+    Preview,
+    Manifest,
+    Unknown,
 }
 
 /// Where a dataset was discovered.

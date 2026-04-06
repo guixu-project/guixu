@@ -5,7 +5,9 @@ use anyhow::{Context, Result};
 use data_attestation::{fetch_buyer_reviews, summarize_reviews, BaseChainClient, ChainConfig};
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::DatasetMetadata;
-use data_core::types::{DataSource, DataType, SearchResult};
+use data_core::types::{
+    DataSource, DataType, DatasetCid, SearchResult, SkillCapability, SourceFamily,
+};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -30,7 +32,9 @@ pub struct SearchFilters {
     pub max_price: Option<f64>,
     pub license: Option<String>,
     pub min_quality: Option<f64>,
-    pub source: Option<String>,
+    pub skill_ids: Vec<String>,
+    pub source_families: Vec<SourceFamily>,
+    pub required_capabilities: Vec<SkillCapability>,
     pub chain: Option<String>,
     pub protocol: Option<String>,
     pub asset: Option<String>,
@@ -92,6 +96,86 @@ fn format_error_chain(error: &anyhow::Error) -> String {
     } else {
         parts.join(" | caused by: ")
     }
+}
+
+fn adapter_matches_filters(adapter: &dyn ExternalAdapter, filters: &SearchFilters) -> bool {
+    if !filters.skill_ids.is_empty()
+        && !filters
+            .skill_ids
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(adapter.skill_id()))
+    {
+        return false;
+    }
+
+    if !filters.source_families.is_empty()
+        && !filters
+            .source_families
+            .iter()
+            .any(|candidate| *candidate == adapter.source_family())
+    {
+        return false;
+    }
+
+    let capabilities = adapter.capabilities();
+    filters
+        .required_capabilities
+        .iter()
+        .all(|required| capabilities.contains(required))
+}
+
+fn enrich_search_result_with_skill_metadata(
+    mut result: SearchResult,
+    adapter: &dyn ExternalAdapter,
+) -> SearchResult {
+    let mut attrs = result
+        .source_attributes
+        .take()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    attrs.insert(
+        "skill_id".into(),
+        serde_json::Value::String(adapter.skill_id().to_string()),
+    );
+    attrs.insert(
+        "capabilities".into(),
+        serde_json::to_value(adapter.capabilities()).unwrap_or_else(|_| serde_json::json!([])),
+    );
+    result.source_attributes = Some(serde_json::Value::Object(attrs));
+
+    if result.provider_meta.is_none() {
+        result.provider_meta = Some(data_core::types::ProviderMeta {
+            provider_id: adapter.skill_id().to_string(),
+            source_family: adapter.source_family(),
+            labels: adapter.labels(),
+        });
+    }
+
+    result
+}
+
+fn result_skill_id(result: &SearchResult) -> Option<String> {
+    result
+        .source_attributes
+        .as_ref()
+        .and_then(|value| value.get("skill_id"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+        .or_else(|| result.provider_meta.as_ref().map(|meta| meta.provider_id.clone()))
+}
+
+fn result_capabilities(result: &SearchResult) -> Vec<SkillCapability> {
+    result
+        .source_attributes
+        .as_ref()
+        .and_then(|value| value.get("capabilities"))
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+fn result_source_family(result: &SearchResult) -> Option<SourceFamily> {
+    result.provider_meta.as_ref().map(|meta| meta.source_family)
 }
 
 impl SearchEngine {
@@ -202,9 +286,29 @@ impl SearchEngine {
                     .unwrap_or(false)
             });
         }
-        if let Some(ref src) = filters.source {
-            let source = src.to_lowercase();
-            all.retain(|r| format!("{:?}", r.source).to_lowercase().contains(&source));
+        if !filters.skill_ids.is_empty() {
+            all.retain(|r| {
+                result_skill_id(r).is_some_and(|skill_id| {
+                    filters
+                        .skill_ids
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(&skill_id))
+                })
+            });
+        }
+        if !filters.source_families.is_empty() {
+            all.retain(|r| {
+                result_source_family(r).is_some_and(|family| filters.source_families.contains(&family))
+            });
+        }
+        if !filters.required_capabilities.is_empty() {
+            all.retain(|r| {
+                let capabilities = result_capabilities(r);
+                filters
+                    .required_capabilities
+                    .iter()
+                    .all(|required| capabilities.contains(required))
+            });
         }
 
         apply_intent_hard_filters(&mut all, profile, &local_metadata_by_cid, filters);
@@ -621,15 +725,21 @@ impl SearchEngine {
     async fn search_external(
         &self,
         intent: &ParsedIntent,
-        _filters: &SearchFilters,
+        filters: &SearchFilters,
         limit: usize,
     ) -> (Vec<SearchResult>, Vec<String>) {
         let mut results = vec![];
         let mut errors = vec![];
         let external_query = build_search_query(intent);
         for adapter in &self.adapters {
+            if !adapter_matches_filters(adapter.as_ref(), filters) {
+                continue;
+            }
             match adapter.search(&external_query, limit).await {
-                Ok(mut r) => results.append(&mut r),
+                Ok(r) => results.extend(
+                    r.into_iter()
+                        .map(|result| enrich_search_result_with_skill_metadata(result, adapter.as_ref())),
+                ),
                 Err(e) => {
                     warn!(adapter = adapter.name(), error = %e, "adapter search failed");
                     errors.push(format!("{}: {e}", adapter.name()));

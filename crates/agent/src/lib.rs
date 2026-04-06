@@ -3,4 +3,5 @@
 
 pub mod contracts;
 pub mod memory;
+pub mod planner;
 pub mod workflow;

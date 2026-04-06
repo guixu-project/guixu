@@ -35,9 +35,6 @@ impl ExternalAdapter for IpfsAdapter {
     fn name(&self) -> &str {
         "ipfs"
     }
-    fn source_type(&self) -> DataSource {
-        DataSource::Ipfs
-    }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let page_size = limit.min(100).to_string();
@@ -102,6 +99,8 @@ impl ExternalAdapter for IpfsAdapter {
                     created_at: created,
                     seller_endpoint: None,
                     source_attributes: None,
+                    provider_meta: None,
+                    governance: None,
                 })
             })
             .collect())

@@ -34,9 +34,6 @@ impl ExternalAdapter for LocalFileAdapter {
     fn name(&self) -> &str {
         "local_file"
     }
-    fn source_type(&self) -> DataSource {
-        DataSource::LocalFile
-    }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         if self.dirs.is_empty() {
@@ -123,6 +120,8 @@ impl LocalFileAdapter {
             created_at: chrono::Utc::now(),
             seller_endpoint: None,
             source_attributes: None,
+                    provider_meta: None,
+                    governance: None,
         })
     }
 

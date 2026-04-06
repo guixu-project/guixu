@@ -30,9 +30,6 @@ impl ExternalAdapter for DataCiteCommonsAdapter {
     fn name(&self) -> &str {
         "datacite_commons"
     }
-    fn source_type(&self) -> DataSource {
-        DataSource::DataCiteCommons
-    }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let page_size = limit.min(25).to_string();
@@ -115,6 +112,8 @@ impl ExternalAdapter for DataCiteCommonsAdapter {
                     created_at: created,
                     seller_endpoint: None,
                     source_attributes: None,
+                    provider_meta: None,
+                    governance: None,
                 })
             })
             .collect())

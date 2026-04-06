@@ -29,9 +29,6 @@ impl ExternalAdapter for ArxivAdapter {
     fn name(&self) -> &str {
         "arxiv"
     }
-    fn source_type(&self) -> DataSource {
-        DataSource::Arxiv
-    }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         let max_results = limit.min(100).to_string();
@@ -145,6 +142,8 @@ fn parse_atom_feed(xml: &str, limit: usize) -> Result<Vec<SearchResult>> {
                 "authors": authors,
                 "has_pdf": !pdf_link.is_empty(),
             })),
+            governance: None,
+            provider_meta: None,
         });
     }
     Ok(results)

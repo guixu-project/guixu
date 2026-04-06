@@ -195,13 +195,13 @@ mod tests {
         let store = JobStore::open(dir.path()).unwrap();
 
         let job_id = JobId::new();
-        let worker = WorkerTask::new(job_id.clone(), WorkerTaskKind::SearchSource, "search ipfs");
+        let worker = WorkerTask::new(job_id.clone(), WorkerTaskKind::SearchSkill, "search ipfs");
         let event = JobEvent::new(
             job_id.clone(),
             JobEventType::WorkerStarted,
             "worker started",
             Some(worker.task_id),
-            serde_json::json!({ "source": "ipfs" }),
+            serde_json::json!({ "skill_id": "ipfs" }),
         );
 
         store.append_event(&event).unwrap();

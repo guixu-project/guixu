@@ -312,7 +312,7 @@ fn mcp_dataset_search_with_chain_filter() {
             json!({
                 "query": "stablecoin data",
                 "filters": {
-                    "source": "defillama",
+                    "skill_id": "defillama",
                     "category": "stablecoin",
                     "free_only": true
                 },

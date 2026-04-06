@@ -6,7 +6,7 @@ use data_core::agent::contracts::{
     WorkerTaskKind,
 };
 use data_core::feedback::CommunitySignal;
-use data_core::types::{DataSource, DatasetCid};
+use data_core::types::{DatasetCid, SkillCapability};
 use data_search::engine::{SearchEngine, SignalFetcher};
 use data_search::intent::QueryProfile;
 use data_storage::feedback_store::FeedbackStore;
@@ -15,6 +15,8 @@ use data_storage::metadata_store::MetadataStore;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::task::JoinSet;
+
+use crate::planner::{PlannedOperation, Planner, SkillExecutionPlan};
 
 #[derive(Clone)]
 pub struct WorkflowState {
@@ -69,6 +71,7 @@ impl WorkflowService {
 
     pub async fn run(&self, task: DelegatedDataTask) -> anyhow::Result<JobResult> {
         let job_id = task.job_id.clone();
+        let plan = Planner::build(&task);
 
         tracing::info!(job_id = %job_id, goal = %task.task.goal, "starting workflow");
 
@@ -82,8 +85,9 @@ impl WorkflowService {
             None,
             json!({ "goal": task.task.goal }),
         ));
+        let _ = self.record_plan(&plan);
 
-        let result = self.execute_workflow(task).await;
+        let result = self.execute_workflow(task, &plan).await;
 
         match result {
             Ok(mut job_result) => {
@@ -134,8 +138,12 @@ impl WorkflowService {
         }
     }
 
-    async fn execute_workflow(&self, task: DelegatedDataTask) -> anyhow::Result<JobResult> {
-        let search_output = self.search(&task).await?;
+    async fn execute_workflow(
+        &self,
+        task: DelegatedDataTask,
+        plan: &SkillExecutionPlan,
+    ) -> anyhow::Result<JobResult> {
+        let search_output = self.search(plan, &task).await?;
         let selected = self.evaluate_and_select(search_output, &task).await?;
 
         Ok(JobResult {
@@ -147,7 +155,39 @@ impl WorkflowService {
         })
     }
 
-    async fn search(&self, task: &DelegatedDataTask) -> anyhow::Result<Value> {
+    fn record_plan(&self, plan: &SkillExecutionPlan) -> anyhow::Result<()> {
+        self.state.job_store.append_event(&JobEvent::new(
+            plan.job_id.clone(),
+            JobEventType::JobQueued,
+            "planner generated execution plan",
+            None,
+            json!({
+                "stages": plan.stages.iter().map(|stage| json!({
+                    "stage_id": stage.stage_id.clone(),
+                    "name": stage.name.clone(),
+                    "strategy": stage.strategy,
+                    "tasks": stage.tasks.iter().map(|task| json!({
+                        "task_id": task.task_id.clone(),
+                        "skill_id": task.skill_id.clone(),
+                        "source_family": task.source_family,
+                        "operation": task.operation,
+                        "priority": task.priority,
+                        "timeout_ms": task.timeout_ms,
+                    })).collect::<Vec<_>>()
+                })).collect::<Vec<_>>(),
+                "stop_conditions": plan.stop_conditions.clone(),
+                "budget_policy": plan.budget_policy.clone(),
+                "rationale": plan.rationale.clone(),
+            }),
+        ))?;
+        Ok(())
+    }
+
+    async fn search(
+        &self,
+        plan: &SkillExecutionPlan,
+        task: &DelegatedDataTask,
+    ) -> anyhow::Result<Value> {
         let query = &task.task.goal;
         let base_filters = data_search::engine::SearchFilters {
             topic: None,
@@ -155,7 +195,9 @@ impl WorkflowService {
             max_price: task.task.budget.as_ref().map(|b| b.amount),
             license: None,
             min_quality: None,
-            source: None,
+            skill_ids: vec![],
+            source_families: vec![],
+            required_capabilities: task.policy.required_capabilities.clone(),
             chain: None,
             protocol: None,
             asset: None,
@@ -174,14 +216,20 @@ impl WorkflowService {
             user_profile: Default::default(),
         };
 
-        let sources = selected_sources(&task.policy.allowed_sources);
         let mut join_set = JoinSet::new();
+        let search_tasks: Vec<_> = plan
+            .stages
+            .iter()
+            .flat_map(|stage| stage.tasks.iter())
+            .filter(|planned_task| planned_task.operation == PlannedOperation::Search)
+            .cloned()
+            .collect();
 
-        for source in sources {
+        for planned_task in search_tasks {
             let worker = WorkerTask::new(
                 task.job_id.clone(),
-                WorkerTaskKind::SearchSource,
-                format!("search source {}", source_filter_name(&source)),
+                WorkerTaskKind::SearchSkill,
+                format!("search skill {}", planned_task.skill_id),
             );
             let _ = self.state.job_store.append_event(&JobEvent::new(
                 task.job_id.clone(),
@@ -191,7 +239,8 @@ impl WorkflowService {
                 json!({
                     "worker_kind": worker.kind,
                     "label": worker.label,
-                    "source": source_filter_name(&source),
+                    "skill_id": planned_task.skill_id.clone(),
+                    "source_family": planned_task.source_family,
                 }),
             ));
 
@@ -201,7 +250,13 @@ impl WorkflowService {
             let job_id = task.job_id.clone();
             let worker_id = worker.task_id.clone();
             let mut filters = base_filters.clone();
-            filters.source = Some(source_filter_name(&source).to_string());
+            filters.skill_ids = vec![planned_task.skill_id.clone()];
+            if let Some(source_family) = planned_task.source_family {
+                filters.source_families = vec![source_family];
+            }
+            if filters.required_capabilities.is_empty() {
+                filters.required_capabilities = vec![SkillCapability::Search];
+            }
 
             join_set.spawn(async move {
                 let signal_fetcher = state.signal_fetcher();
@@ -209,13 +264,13 @@ impl WorkflowService {
                     .search_engine
                     .search_with_profile(&profile, &filters, &local_metadata, &signal_fetcher, 10)
                     .await;
-                (job_id, worker_id, source, output)
+                (job_id, worker_id, planned_task, output)
             });
         }
 
         let mut merged_results = Vec::new();
         while let Some(joined) = join_set.join_next().await {
-            let (job_id, worker_id, source, output) = joined?;
+            let (job_id, worker_id, planned_task, output) = joined?;
             match output {
                 Ok(search_output) => {
                     let candidate_count = search_output.results.len();
@@ -225,7 +280,8 @@ impl WorkflowService {
                         "search worker completed",
                         Some(worker_id),
                         json!({
-                            "source": source_filter_name(&source),
+                            "skill_id": planned_task.skill_id,
+                            "source_family": planned_task.source_family,
                             "candidate_count": candidate_count,
                         }),
                     ));
@@ -235,10 +291,11 @@ impl WorkflowService {
                     let _ = self.state.job_store.append_event(&JobEvent::new(
                         job_id,
                         JobEventType::WorkerFailed,
-                        format!("search worker failed for {}", source_filter_name(&source)),
+                        format!("search worker failed for {}", planned_task.skill_id),
                         Some(worker_id),
                         json!({
-                            "source": source_filter_name(&source),
+                            "skill_id": planned_task.skill_id,
+                            "source_family": planned_task.source_family,
                             "error": error.to_string(),
                         }),
                     ));
@@ -318,45 +375,6 @@ impl WorkflowService {
         ));
 
         Ok(DatasetCid(cid_str.to_string()))
-    }
-}
-
-fn selected_sources(allowed_sources: &[DataSource]) -> Vec<DataSource> {
-    if allowed_sources.is_empty() {
-        vec![
-            DataSource::Kaggle,
-            DataSource::HuggingFace,
-            DataSource::Ipfs,
-        ]
-    } else {
-        allowed_sources.to_vec()
-    }
-}
-
-fn source_filter_name(source: &DataSource) -> &'static str {
-    match source {
-        DataSource::Kaggle => "kaggle",
-        DataSource::HuggingFace => "huggingface",
-        DataSource::Ipfs => "ipfs",
-        DataSource::BitTorrent => "bittorrent",
-        DataSource::GuixuHub => "guixu-hub",
-        DataSource::DefiLlama => "defillama",
-        DataSource::RwaXyz => "rwa_xyz",
-        DataSource::Arxiv => "arxiv",
-        DataSource::Dblp => "dblp",
-        DataSource::SemanticScholar => "semanticscholar",
-        DataSource::PanSearch => "pansearch",
-        DataSource::P2p => "p2p",
-        DataSource::PostgreSql => "postgresql",
-        DataSource::DuckDb => "duckdb",
-        DataSource::LocalFile => "localfile",
-        DataSource::GoogleDatasetSearch => "googledatasetsearch",
-        DataSource::DataCiteCommons => "datacitecommons",
-        DataSource::TheGraph => "thegraph",
-        DataSource::Spark => "spark",
-        DataSource::Flink => "flink",
-        DataSource::Presto => "presto",
-        DataSource::OpenDataSkill => "opendataskill",
     }
 }
 

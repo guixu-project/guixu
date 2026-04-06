@@ -2,14 +2,51 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::Result;
+use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use data_core::feedback::CommunitySignal;
-use data_core::types::DatasetCid;
+use data_core::types::{DatasetCid, SkillCapability, SourceFamily};
 use data_search::engine::SearchFilters;
 use data_search::intent::QueryProfile;
 
 use crate::server::AppState;
+
+fn parse_string_array(obj: &serde_json::Value, plural_key: &str, singular_key: &str) -> Vec<String> {
+    obj.get(plural_key)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items.iter()
+                .filter_map(|value| value.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .or_else(|| {
+            obj.get(singular_key)
+                .and_then(|value| value.as_str())
+                .map(|value| vec![value.to_string()])
+        })
+        .unwrap_or_default()
+}
+
+fn parse_enum_array<T>(obj: &serde_json::Value, plural_key: &str, singular_key: &str) -> Vec<T>
+where
+    T: DeserializeOwned,
+{
+    obj.get(plural_key)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items.iter()
+                .filter_map(|value| serde_json::from_value(value.clone()).ok())
+                .collect()
+        })
+        .or_else(|| {
+            obj.get(singular_key)
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .map(|value| vec![value])
+        })
+        .unwrap_or_default()
+}
 
 pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String> {
     let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
@@ -33,10 +70,17 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             .and_then(|v| v.as_str())
             .map(String::from),
         min_quality: filter_obj.get("min_quality").and_then(|v| v.as_f64()),
-        source: filter_obj
-            .get("source")
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        skill_ids: parse_string_array(&filter_obj, "skill_ids", "skill_id"),
+        source_families: parse_enum_array::<SourceFamily>(
+            &filter_obj,
+            "source_families",
+            "source_family",
+        ),
+        required_capabilities: parse_enum_array::<SkillCapability>(
+            &filter_obj,
+            "required_capabilities",
+            "required_capability",
+        ),
         chain: filter_obj
             .get("chain")
             .and_then(|v| v.as_str())
