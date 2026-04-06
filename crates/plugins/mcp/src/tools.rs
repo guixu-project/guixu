@@ -295,6 +295,86 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["query"]
             }),
         },
+        ToolDefinition {
+            name: "data_task_delegate".into(),
+            description: "Delegate a dataset discovery, valuation, and acquisition task to the Guixu Agent. The agent will search, evaluate, and select the best dataset based on the task specification. Returns a job_id for tracking.".into(),
+            annotations: mutating_annotations(false),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "host_kind": {
+                        "type": "string",
+                        "enum": ["openclaw", "codex", "opencode"],
+                        "description": "The host agent type"
+                    },
+                    "session_key": {
+                        "type": "string",
+                        "description": "Host session key for context"
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "description": "Optional run identifier"
+                    },
+                    "workspace_id": {
+                        "type": "string",
+                        "description": "Workspace identifier"
+                    },
+                    "workspace_root": {
+                        "type": "string",
+                        "description": "Optional workspace root path"
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": "What the user wants to accomplish (e.g. 'train a cat detector')"
+                    },
+                    "task_type": {
+                        "type": "string",
+                        "description": "Optional ML task type (classification, detection, etc.)"
+                    },
+                    "required_modalities": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Data modalities needed (image, video, text, tabular, audio)"
+                    },
+                    "required_columns": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Required dataset columns"
+                    },
+                    "budget_amount": {
+                        "type": "number",
+                        "description": "Budget amount"
+                    },
+                    "budget_currency": {
+                        "type": "string",
+                        "default": "USD",
+                        "description": "Budget currency"
+                    },
+                    "allow_purchase": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Whether to allow purchasing paid datasets"
+                    },
+                    "allowed_sources": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Allowed data sources (kaggle, huggingface, ipfs, etc.)"
+                    },
+                    "require_license_review": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Whether to require license review before download"
+                    },
+                    "desired_outputs": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "default": ["selected_dataset"],
+                        "description": "What outputs to produce (selected_dataset, evaluation_report, downloaded_artifact, guixu_lock)"
+                    }
+                },
+                "required": ["host_kind", "session_key", "workspace_id", "goal"]
+            }),
+        },
     ]
 }
 
@@ -332,5 +412,15 @@ mod tests {
         assert!(tool_names.iter().any(|name| name == "dataset_search"));
         assert!(tool_names.iter().any(|name| name == "dataset_evaluate"));
         assert!(!tool_names.iter().any(|name| name == "task_pipeline"));
+    }
+
+    #[test]
+    fn data_task_delegate_is_exposed() {
+        let tool_names: Vec<String> = all_tool_definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+
+        assert!(tool_names.iter().any(|name| name == "data_task_delegate"));
     }
 }

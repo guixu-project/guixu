@@ -1,12 +1,13 @@
 // Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
 // SPDX-License-Identifier: Apache-2.0
 
-use data_core::agent::contracts::{DelegatedDataTask, JobId, JobResult};
+use data_core::agent::contracts::{DelegatedDataTask, JobId, JobResult, JobState};
 use data_core::feedback::CommunitySignal;
 use data_core::types::DatasetCid;
 use data_search::engine::{SearchEngine, SignalFetcher};
 use data_search::intent::QueryProfile;
 use data_storage::feedback_store::FeedbackStore;
+use data_storage::job_store::JobStore;
 use data_storage::metadata_store::MetadataStore;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -16,6 +17,7 @@ pub struct WorkflowState {
     pub store: Arc<MetadataStore>,
     pub feedback_store: Arc<FeedbackStore>,
     pub search_engine: Arc<SearchEngine>,
+    pub job_store: Arc<JobStore>,
 }
 
 impl WorkflowState {
@@ -23,11 +25,13 @@ impl WorkflowState {
         store: MetadataStore,
         feedback_store: FeedbackStore,
         search_engine: SearchEngine,
+        job_store: JobStore,
     ) -> Self {
         Self {
             store: Arc::new(store),
             feedback_store: Arc::new(feedback_store),
             search_engine: Arc::new(search_engine),
+            job_store: Arc::new(job_store),
         }
     }
 
@@ -64,22 +68,36 @@ impl WorkflowService {
 
         tracing::info!(job_id = %job_id, goal = %task.task.goal, "starting workflow");
 
+        self.state
+            .job_store
+            .create_job(job_id.clone(), JobState::Running)?;
+
         let result = self.execute_workflow(task).await;
 
         match result {
             Ok(mut job_result) => {
-                job_result.job_id = job_id;
+                job_result.job_id = job_id.clone();
+                let final_state = if job_result.errors.is_empty() {
+                    JobState::Completed
+                } else {
+                    JobState::Failed
+                };
+                let _ = self.state.job_store.update_state(&job_id, final_state);
+                let _ = self.state.job_store.put_result(&job_result);
                 Ok(job_result)
             }
             Err(e) => {
                 tracing::error!(job_id = %job_id, error = %e, "workflow failed");
-                Ok(JobResult {
+                let _ = self.state.job_store.update_state(&job_id, JobState::Failed);
+                let job_result = JobResult {
                     job_id,
                     selected_dataset: None,
                     artifacts: vec![],
                     memory_updates: vec![],
                     errors: vec![e.to_string()],
-                })
+                };
+                let _ = self.state.job_store.put_result(&job_result);
+                Ok(job_result)
             }
         }
     }

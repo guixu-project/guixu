@@ -121,6 +121,13 @@ fn pan_search_executor<'a>(
     Box::pin(crate::handlers::pan_search::handle(args, state))
 }
 
+fn delegate_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::delegate::handle(args, state))
+}
+
 pub fn build_registry() -> ToolRegistry {
     let mut definitions = collect_definitions();
     let mut registry = ToolRegistry::new();
@@ -176,6 +183,10 @@ pub fn build_registry() -> ToolRegistry {
     registry.register(legacy_json_tool(
         require_definition(&mut definitions, "pan_search"),
         executor_from_fn(pan_search_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "data_task_delegate"),
+        executor_from_fn(delegate_executor),
     ));
 
     let all_definitions = registry.list_definitions();

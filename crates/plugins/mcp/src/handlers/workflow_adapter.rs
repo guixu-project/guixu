@@ -3,27 +3,21 @@
 
 use data_agent::workflow::{WorkflowService, WorkflowState};
 use data_core::agent::contracts::DelegatedDataTask;
+use data_storage::job_store::JobStore;
 
 use crate::state::AppState;
 
 impl AppState {
-    pub fn workflow_state(&self) -> WorkflowState {
+    pub fn workflow_state_with_job_store(&self, job_store: JobStore) -> WorkflowState {
         WorkflowState::new(
             self.store.clone(),
             self.feedback_store.clone(),
             self.search_engine.clone(),
+            job_store,
         )
     }
 
-    pub fn workflow_service(&self) -> WorkflowService {
-        WorkflowService::new(self.workflow_state())
-    }
-
-    pub async fn run_workflow(
-        &self,
-        task: DelegatedDataTask,
-    ) -> anyhow::Result<data_core::agent::contracts::JobResult> {
-        let service = self.workflow_service();
-        service.run(task).await
+    pub fn workflow_service_with_job_store(&self, job_store: JobStore) -> WorkflowService {
+        WorkflowService::new(self.workflow_state_with_job_store(job_store))
     }
 }

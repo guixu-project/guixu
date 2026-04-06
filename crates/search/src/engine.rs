@@ -2511,7 +2511,7 @@ fn searchable_result_text(result: &SearchResult) -> String {
 }
 
 fn normalized_search_result_text(result: &SearchResult) -> String {
-    searchable_result_text(result).to_lowercase()
+    searchable_result_text(result)
 }
 
 fn market_signal_score(result: &SearchResult) -> f64 {
