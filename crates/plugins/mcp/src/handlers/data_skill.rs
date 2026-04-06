@@ -5,7 +5,6 @@ use anyhow::{anyhow, Result};
 use data_core::types::{ArtifactType, DatasetArtifact, DatasetCid};
 use data_search::adapters::{execute_skill_operation, load_open_data_skills};
 use serde_json::json;
-use std::sync::Arc;
 
 use crate::state::AppState;
 

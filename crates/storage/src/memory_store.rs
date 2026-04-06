@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::Result;
-use data_core::agent::memory::{AgentMemory, MemoryKey, MemoryScope};
+use data_core::agent::memory::{AgentMemory, MemoryKey};
 use rocksdb::{Options, DB};
 use std::path::Path;
 use std::sync::Arc;

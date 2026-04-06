@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_agent::workflow::{WorkflowService, WorkflowState};
-use data_core::agent::contracts::DelegatedDataTask;
 use data_storage::job_store::JobStore;
 
 use crate::state::AppState;
