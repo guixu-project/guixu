@@ -258,6 +258,8 @@ impl WorkflowService {
                     "source": r.result.source,
                     "data_type": r.result.data_type,
                     "price": r.result.price,
+                    "provider_meta": r.result.provider_meta,
+                    "governance": r.result.governance,
                     "rank_score": r.rank_score,
                 })
             })

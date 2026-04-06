@@ -160,6 +160,8 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
                     "positive_rate": format!("{:.0}%", r.signal.positive_rate * 100.0),
                     "negative_rate": format!("{:.0}%", r.signal.negative_rate * 100.0),
                 },
+                "provider_meta": r.result.provider_meta,
+                "governance": r.result.governance,
                 "source_attributes": r.result.source_attributes,
             })
         })

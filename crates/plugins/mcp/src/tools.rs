@@ -162,6 +162,42 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "dataset_lookup".into(),
+            description: "Lookup detailed dataset metadata by CID, including schema, license, provider, and stored source attributes.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cid": { "type": "string", "description": "Dataset CID from search results" }
+                },
+                "required": ["cid"]
+            }),
+        },
+        ToolDefinition {
+            name: "dataset_schema_probe".into(),
+            description: "Return dataset schema and related type information by CID.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cid": { "type": "string", "description": "Dataset CID from search results" }
+                },
+                "required": ["cid"]
+            }),
+        },
+        ToolDefinition {
+            name: "dataset_download_by_skill".into(),
+            description: "Download a dataset through the Open Data Skill execution path. Useful for skill-backed providers and future declarative downloads.".into(),
+            annotations: local_side_effect_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cid": { "type": "string", "description": "Dataset CID from search results" }
+                },
+                "required": ["cid"]
+            }),
+        },
+        ToolDefinition {
             name: "dataset_feedback".into(),
             description: "Submit on-chain feedback after using a dataset. Recorded as an EAS attestation to help future agents evaluate this dataset.".into(),
             annotations: mutating_annotations(false),

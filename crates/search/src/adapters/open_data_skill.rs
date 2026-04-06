@@ -133,9 +133,22 @@ pub enum SkillAuth {
     BearerEnv {
         env: String,
     },
+    BasicEnv {
+        username_env: String,
+        password_env: String,
+    },
     HeaderEnv {
         header: String,
         env: String,
+    },
+    OAuthClientCredentials {
+        token_url: String,
+        client_id_env: String,
+        client_secret_env: String,
+        #[serde(default)]
+        audience: Option<String>,
+        #[serde(default)]
+        scope: Option<String>,
     },
 }
 
@@ -157,6 +170,18 @@ pub enum PaginationConfig {
         start: usize,
         max_pages: usize,
     },
+    Cursor {
+        cursor_param: String,
+        size_param: String,
+        #[serde(default)]
+        initial_cursor: Option<String>,
+        next_cursor_path: String,
+        max_pages: usize,
+    },
+    NextUrl {
+        next_url_path: String,
+        max_pages: usize,
+    },
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -169,6 +194,37 @@ pub struct SkillItemMapping {
     pub id: String,
     #[serde(default)]
     pub size_bytes: Option<String>,
+    #[serde(default)]
+    pub tags: Option<String>,
+    #[serde(default)]
+    pub license: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub download_count: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillFailureKind {
+    InvalidSpec,
+    AuthMissing,
+    AuthFailed,
+    RateLimited,
+    UpstreamUnavailable,
+    BadResponse,
+    MappingFailed,
+    UnsupportedOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillExecutionMetric {
+    pub skill_id: String,
+    pub provider_kind: String,
+    pub operation: String,
+    pub pages_fetched: usize,
+    pub result_count: usize,
+    pub auth_kind: String,
 }
 
 fn default_method() -> String {
@@ -294,7 +350,7 @@ fn build_adapter_from_skill(
 }
 
 fn validate_skill_spec(skill: &OpenDataSkillSpec) -> Result<()> {
-    if !skill.spec_version.starts_with("1.") {
+    if !(skill.spec_version.starts_with("1.") || skill.spec_version.starts_with("2.")) {
         return Err(anyhow!(
             "unsupported open data skill spec_version: {}",
             skill.spec_version
@@ -386,7 +442,45 @@ struct HttpSkillAdapter {
     client: reqwest::Client,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ExecutedOperation {
+    Search,
+    Lookup,
+    Download,
+    SchemaProbe,
+}
+
 impl HttpSkillAdapter {
+    fn classify_failure(error: &anyhow::Error) -> SkillFailureKind {
+        let message = error.to_string().to_ascii_lowercase();
+        if message.contains("missing") && message.contains("env") {
+            SkillFailureKind::AuthMissing
+        } else if message.contains("401") || message.contains("403") || message.contains("oauth") {
+            SkillFailureKind::AuthFailed
+        } else if message.contains("429") || message.contains("rate") {
+            SkillFailureKind::RateLimited
+        } else if message.contains("timeout")
+            || message.contains("unavailable")
+            || message.contains("connect")
+        {
+            SkillFailureKind::UpstreamUnavailable
+        } else if message.contains("unsupported") {
+            SkillFailureKind::UnsupportedOperation
+        } else {
+            SkillFailureKind::BadResponse
+        }
+    }
+
+    fn auth_kind_name(auth: &SkillAuth) -> &'static str {
+        match auth {
+            SkillAuth::None => "none",
+            SkillAuth::BearerEnv { .. } => "bearer_env",
+            SkillAuth::BasicEnv { .. } => "basic_env",
+            SkillAuth::HeaderEnv { .. } => "header_env",
+            SkillAuth::OAuthClientCredentials { .. } => "oauth_client_credentials",
+        }
+    }
+
     fn new(config: HttpSkillAdapterConfig) -> Self {
         Self {
             config,
@@ -433,17 +527,69 @@ impl HttpSkillAdapter {
         match &operation.auth {
             SkillAuth::None => {}
             SkillAuth::BearerEnv { env } => {
-                if let Ok(token) = std::env::var(env) {
-                    let value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))?;
-                    headers.insert(reqwest::header::AUTHORIZATION, value);
-                }
+                let token =
+                    std::env::var(env).map_err(|_| anyhow!("missing bearer token env: {env}"))?;
+                let value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))?;
+                headers.insert(reqwest::header::AUTHORIZATION, value);
+            }
+            SkillAuth::BasicEnv {
+                username_env,
+                password_env,
+            } => {
+                use base64::Engine as _;
+                let username = std::env::var(username_env)
+                    .map_err(|_| anyhow!("missing basic auth username env: {username_env}"))?;
+                let password = std::env::var(password_env)
+                    .map_err(|_| anyhow!("missing basic auth password env: {password_env}"))?;
+                let encoded = base64::engine::general_purpose::STANDARD
+                    .encode(format!("{username}:{password}"));
+                let value = reqwest::header::HeaderValue::from_str(&format!("Basic {encoded}"))?;
+                headers.insert(reqwest::header::AUTHORIZATION, value);
             }
             SkillAuth::HeaderEnv { header, env } => {
-                if let Ok(token) = std::env::var(env) {
-                    let header_name = reqwest::header::HeaderName::from_bytes(header.as_bytes())?;
-                    let header_value = reqwest::header::HeaderValue::from_str(&token)?;
-                    headers.insert(header_name, header_value);
+                let token =
+                    std::env::var(env).map_err(|_| anyhow!("missing header auth env: {env}"))?;
+                let header_name = reqwest::header::HeaderName::from_bytes(header.as_bytes())?;
+                let header_value = reqwest::header::HeaderValue::from_str(&token)?;
+                headers.insert(header_name, header_value);
+            }
+            SkillAuth::OAuthClientCredentials {
+                token_url,
+                client_id_env,
+                client_secret_env,
+                audience,
+                scope,
+            } => {
+                let client_id = std::env::var(client_id_env)
+                    .map_err(|_| anyhow!("missing oauth client id env: {client_id_env}"))?;
+                let client_secret = std::env::var(client_secret_env)
+                    .map_err(|_| anyhow!("missing oauth client secret env: {client_secret_env}"))?;
+                let mut form = vec![
+                    ("grant_type", "client_credentials".to_string()),
+                    ("client_id", client_id),
+                    ("client_secret", client_secret),
+                ];
+                if let Some(audience) = audience {
+                    form.push(("audience", audience.clone()));
                 }
+                if let Some(scope) = scope {
+                    form.push(("scope", scope.clone()));
+                }
+                let token_response = self
+                    .client
+                    .post(token_url)
+                    .form(&form)
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                let token_json = token_response.json::<serde_json::Value>().await?;
+                let access_token = token_json
+                    .get("access_token")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow!("oauth token response missing access_token"))?;
+                let value =
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {access_token}"))?;
+                headers.insert(reqwest::header::AUTHORIZATION, value);
             }
         }
 
@@ -534,6 +680,24 @@ impl HttpSkillAdapter {
                 params.insert(page_param.clone(), serde_json::json!(start + page_index));
                 params.insert(size_param.clone(), serde_json::json!(limit));
             }
+            PaginationConfig::Cursor {
+                cursor_param,
+                size_param,
+                initial_cursor,
+                ..
+            } => {
+                if page_index == 0 {
+                    if let Some(initial_cursor) = initial_cursor {
+                        params.insert(cursor_param.clone(), serde_json::json!(initial_cursor));
+                    }
+                }
+                params.insert(size_param.clone(), serde_json::json!(limit));
+            }
+            PaginationConfig::NextUrl { next_url_path, .. } => {
+                if page_index > 0 {
+                    tracing::debug!(path = %next_url_path, page_index, "next_url pagination configured but continuation extraction is not fully implemented yet");
+                }
+            }
         }
 
         let response = self.execute_request(operation, &params).await?;
@@ -545,6 +709,191 @@ impl HttpSkillAdapter {
             response
         };
         Ok(root.as_array().cloned().unwrap_or_default())
+    }
+
+    async fn execute_named_operation(
+        &self,
+        operation_name: ExecutedOperation,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        let operation = match operation_name {
+            ExecutedOperation::Search => &self.config.operations.search,
+            ExecutedOperation::Lookup => self
+                .config
+                .operations
+                .lookup
+                .as_ref()
+                .ok_or_else(|| anyhow!("lookup operation not configured"))?,
+            ExecutedOperation::Download => self
+                .config
+                .operations
+                .download
+                .as_ref()
+                .ok_or_else(|| anyhow!("download operation not configured"))?,
+            ExecutedOperation::SchemaProbe => self
+                .config
+                .operations
+                .schema_probe
+                .as_ref()
+                .ok_or_else(|| anyhow!("schema_probe operation not configured"))?,
+        };
+
+        let max_pages = match &operation.pagination {
+            PaginationConfig::None => 1,
+            PaginationConfig::OffsetLimit { max_pages, .. } => *max_pages,
+            PaginationConfig::PageNumber { max_pages, .. } => *max_pages,
+            PaginationConfig::Cursor { max_pages, .. } => *max_pages,
+            PaginationConfig::NextUrl { max_pages, .. } => *max_pages,
+        }
+        .max(1);
+
+        let mut items = Vec::new();
+        for page_index in 0..max_pages {
+            let mut page = match self
+                .fetch_page(operation, query, limit.max(1), page_index)
+                .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    let failure_kind = Self::classify_failure(&error);
+                    tracing::warn!(
+                        skill_id = %self.config.id,
+                        operation = ?operation_name,
+                        failure_kind = ?failure_kind,
+                        error = %error,
+                        "open data skill operation failed"
+                    );
+                    return Err(error);
+                }
+            };
+            let page_len = page.len();
+            items.append(&mut page);
+            if items.len() >= limit || page_len == 0 {
+                break;
+            }
+        }
+
+        let metric = SkillExecutionMetric {
+            skill_id: self.config.id.clone(),
+            provider_kind: "http_search".into(),
+            operation: format!("{:?}", operation_name).to_lowercase(),
+            pages_fetched: max_pages,
+            result_count: items.len(),
+            auth_kind: Self::auth_kind_name(&operation.auth).into(),
+        };
+        tracing::info!(skill_id = %metric.skill_id, operation = %metric.operation, result_count = metric.result_count, pages_fetched = metric.pages_fetched, auth_kind = %metric.auth_kind, "open data skill operation executed");
+
+        Ok(items)
+    }
+
+    fn normalize_search_item(&self, item: serde_json::Value, i: usize) -> SearchResult {
+        let title = item
+            .get(&self.config.item_mapping.title)
+            .and_then(|v| v.as_str())
+            .unwrap_or(&self.config.name)
+            .to_string();
+        let description = item
+            .get(&self.config.item_mapping.description)
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| Some(self.config.description.clone()));
+        let id_value = item
+            .get(&self.config.item_mapping.id)
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| format!("{}-{i}", self.config.id));
+        let size_bytes = self
+            .config
+            .item_mapping
+            .size_bytes
+            .as_ref()
+            .and_then(|field| item.get(field))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let tags = self
+            .config
+            .item_mapping
+            .tags
+            .as_ref()
+            .and_then(|field| item.get(field))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_else(|| self.config.tags.clone());
+        let license_id = self
+            .config
+            .item_mapping
+            .license
+            .as_ref()
+            .and_then(|field| item.get(field))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let created_at = self
+            .config
+            .item_mapping
+            .created_at
+            .as_ref()
+            .and_then(|field| item.get(field))
+            .and_then(|v| v.as_str())
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(chrono::Utc::now);
+        let download_count = self
+            .config
+            .item_mapping
+            .download_count
+            .as_ref()
+            .and_then(|field| item.get(field))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        SearchResult {
+            cid: DatasetCid(format!("skill:{}:{}", self.config.id, id_value)),
+            title: title.clone(),
+            description,
+            tags,
+            schema: DatasetSchema {
+                columns: vec![],
+                row_count: 0,
+                size_bytes,
+            },
+            quality: None,
+            price: Price::free(),
+            license: License {
+                spdx_id: license_id.into(),
+                commercial_use: false,
+                derivative_allowed: false,
+            },
+            provider: Did(format!("skill:{}", self.config.id)),
+            source: self.config.source.clone(),
+            market: Some(DatasetMarketStats {
+                download_count,
+                review_count: 0,
+                trade_count: 0,
+            }),
+            data_type: infer_data_type_from_title(&title),
+            created_at,
+            seller_endpoint: Some(self.config.base_url.clone()),
+            source_attributes: Some(serde_json::json!({
+                "skill_id": self.config.id,
+                "provider_kind": "http_search",
+            })),
+            provider_meta: Some(ProviderMeta {
+                provider_id: self.config.id.clone(),
+                source_family: self.config.source_family,
+                labels: self.config.tags.clone(),
+            }),
+            governance: Some(GovernanceMeta {
+                trust_tier: self.config.governance.trust_tier,
+                rate_limit_hint: self.config.governance.rate_limit_hint.clone(),
+                provenance_hint: self.config.governance.provenance_hint.clone(),
+                compliance_hint: self.config.governance.compliance_hint.clone(),
+            }),
+        }
     }
 }
 
@@ -563,96 +912,13 @@ impl ExternalAdapter for HttpSkillAdapter {
             return Ok(vec![]);
         }
 
-        let operation = &self.config.operations.search;
-        let max_pages = match &operation.pagination {
-            PaginationConfig::None => 1,
-            PaginationConfig::OffsetLimit { max_pages, .. } => *max_pages,
-            PaginationConfig::PageNumber { max_pages, .. } => *max_pages,
-        }
-        .max(1);
-
-        let page_size = limit.max(1);
-        let mut items = Vec::new();
-        for page_index in 0..max_pages {
-            let mut page = self
-                .fetch_page(operation, query, page_size, page_index)
-                .await?;
-            let page_len = page.len();
-            items.append(&mut page);
-            if items.len() >= limit || page_len == 0 {
-                break;
-            }
-        }
-
-        Ok(items
+        Ok(self
+            .execute_named_operation(ExecutedOperation::Search, query, limit)
+            .await?
             .into_iter()
             .take(limit)
             .enumerate()
-            .map(|(i, item)| {
-                let title = item
-                    .get(&self.config.item_mapping.title)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&self.config.name)
-                    .to_string();
-                let description = item
-                    .get(&self.config.item_mapping.description)
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-                    .or_else(|| Some(self.config.description.clone()));
-                let id_value = item
-                    .get(&self.config.item_mapping.id)
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-                    .unwrap_or_else(|| format!("{}-{i}", self.config.id));
-                let size_bytes = self
-                    .config
-                    .item_mapping
-                    .size_bytes
-                    .as_ref()
-                    .and_then(|field| item.get(field))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-
-                SearchResult {
-                    cid: DatasetCid(format!("skill:{}:{}", self.config.id, id_value)),
-                    title: title.clone(),
-                    description,
-                    tags: self.config.tags.clone(),
-                    schema: DatasetSchema {
-                        columns: vec![],
-                        row_count: 0,
-                        size_bytes,
-                    },
-                    quality: None,
-                    price: Price::free(),
-                    license: License {
-                        spdx_id: "unknown".into(),
-                        commercial_use: false,
-                        derivative_allowed: false,
-                    },
-                    provider: Did(format!("skill:{}", self.config.id)),
-                    source: self.config.source.clone(),
-                    market: None,
-                    data_type: infer_data_type_from_title(&title),
-                    created_at: chrono::Utc::now(),
-                    seller_endpoint: Some(self.config.base_url.clone()),
-                    source_attributes: Some(serde_json::json!({
-                        "skill_id": self.config.id,
-                        "provider_kind": "http_search",
-                    })),
-                    provider_meta: Some(ProviderMeta {
-                        provider_id: self.config.id.clone(),
-                        source_family: self.config.source_family,
-                        labels: self.config.tags.clone(),
-                    }),
-                    governance: Some(GovernanceMeta {
-                        trust_tier: self.config.governance.trust_tier,
-                        rate_limit_hint: self.config.governance.rate_limit_hint.clone(),
-                        provenance_hint: self.config.governance.provenance_hint.clone(),
-                        compliance_hint: self.config.governance.compliance_hint.clone(),
-                    }),
-                }
-            })
+            .map(|(i, item)| self.normalize_search_item(item, i))
             .collect())
     }
 }
@@ -754,6 +1020,15 @@ mod tests {
         };
 
         assert!(validate_skill_spec(&skill).is_err());
+    }
+
+    #[test]
+    fn classify_failure_auth_missing() {
+        let error = anyhow!("missing bearer token env: HF_TOKEN");
+        assert_eq!(
+            HttpSkillAdapter::classify_failure(&error),
+            SkillFailureKind::AuthMissing
+        );
     }
 }
 
