@@ -2,12 +2,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod contracts;
+pub mod memory;
 pub mod workflow;
-
-pub fn workflow_state_from_app_state(
-    store: data_storage::metadata_store::MetadataStore,
-    feedback_store: data_storage::feedback_store::FeedbackStore,
-    search_engine: data_search::engine::SearchEngine,
-) -> workflow::WorkflowState {
-    workflow::WorkflowState::new(store, feedback_store, search_engine)
-}

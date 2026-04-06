@@ -144,9 +144,10 @@ Invoke Guixu when the task involves:
 
 Do NOT invoke Guixu for local code changes, refactoring, formatting, bug fixes, or debugging unrelated to data procurement."#;
 
-const OPENCLAW_SKILL_WORKFLOW: &str = r#"## Standard Workflow
+const OPENCLAW_SKILL_WORKFLOW: &str = r#"## Two Integration Paths
 
-Always use tools in this order:
+### Option A: Manual Tool Chaining (immediate)
+Use low-level tools directly for full control:
 
 1. **intent_parse** — Parse the natural-language request into a structured profile.
    Extract task type, content keywords, data modality, and budget.
@@ -163,6 +164,18 @@ Always use tools in this order:
 
 5. **dataset_feedback** — Record on-chain attestation after use to help
    future agents evaluate this dataset.
+
+### Option B: Delegated Workflow (recommended)
+Let Guixu Agent handle the full pipeline:
+
+```
+data_task_delegate(host_kind="openclaw", session_key="...", workspace_id="...",
+                   goal="train a cat detector", task_type="detection",
+                   desired_outputs=["selected_dataset", "evaluation_report"])
+→ returns { job_id, status, task_goal }
+```
+
+Then poll `data_task_status(job_id=job_id) to check progress.
 
 ## Fallback Rules
 
@@ -217,6 +230,21 @@ dataset_evaluate(cid="kaggle:org/project",
                  task_type="forecasting",
                  required_columns=["open","high","low","close","volume"])
 → returns { score: 0-100 }
+```
+
+### Delegated Workflow Example
+```
+data_task_delegate(host_kind="openclaw",
+                   session_key="agent:main:main",
+                   workspace_id="project-123",
+                   goal="find cat image dataset for training a detector",
+                   task_type="detection",
+                   required_modalities=["image"],
+                   desired_outputs=["selected_dataset", "evaluation_report"])
+→ returns { job_id: "job_abc123", status: "queued", task_goal: "find cat image dataset..." }
+
+data_task_status(job_id="job_abc123")
+→ returns { job_id: "job_abc123", status: "completed", selected_dataset: {...} }
 ```"#;
 
 fn openclaw_skill_markdown() -> String {
