@@ -15,6 +15,7 @@ use data_core::types::AccessMode;
 use data_mcp_server::server::{AppState, McpServer};
 use data_p2p::dht::DhtIndex;
 use data_storage::feedback_store::FeedbackStore;
+use data_storage::job_store::JobStore;
 use data_storage::metadata_store::MetadataStore;
 
 mod mcp_install;
@@ -174,6 +175,7 @@ async fn cmd_start() -> Result<()> {
 
     let store = MetadataStore::open(&NodeConfig::db_path())?;
     let feedback_store = FeedbackStore::open(&NodeConfig::config_dir().join("feedback_db"))?;
+    let job_store = JobStore::open(&NodeConfig::config_dir().join("job_db"))?;
 
     // Build privacy config from node config
     let privacy_config = data_auth::privacy::PrivacyConfig {
@@ -274,6 +276,7 @@ async fn cmd_start() -> Result<()> {
             }),
             store,
             feedback_store,
+            job_store,
             &config.payment,
             &config.external_duckdb,
             &config.external_postgresql,
@@ -332,6 +335,7 @@ async fn cmd_mcp(mode: String) -> Result<()> {
 
     let store = MetadataStore::open(&NodeConfig::db_path())?;
     let feedback_store = FeedbackStore::open(&NodeConfig::config_dir().join("feedback_db"))?;
+    let job_store = JobStore::open(&NodeConfig::config_dir().join("job_db"))?;
 
     let privacy_config = data_auth::privacy::PrivacyConfig {
         level: match config.privacy_level {
@@ -366,6 +370,7 @@ async fn cmd_mcp(mode: String) -> Result<()> {
             dht,
             store,
             feedback_store,
+            job_store,
             &config.payment,
             &config.external_duckdb,
             &config.external_postgresql,

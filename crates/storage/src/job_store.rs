@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use data_core::agent::contracts::{JobId, JobResult, JobState, JobStatus};
+use data_core::agent::contracts::{JobEvent, JobId, JobResult, JobState, JobStatus};
 use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -91,11 +91,48 @@ impl JobStore {
         Ok(results)
     }
 
+    pub fn append_event(&self, event: &JobEvent) -> Result<()> {
+        let key = format!(
+            "event:{}:{}",
+            event.job_id.0,
+            event.timestamp.timestamp_millis()
+        );
+        let value = serde_json::to_vec(event)?;
+        self.db.put(key.as_bytes(), &value)?;
+        Ok(())
+    }
+
+    pub fn list_events(&self, job_id: &JobId) -> Result<Vec<JobEvent>> {
+        let prefix = format!("event:{}:", job_id.0);
+        let mut results = vec![];
+        let iter = self.db.prefix_iterator(prefix.as_bytes());
+        for item in iter {
+            let (k, v) = item?;
+            if !k.starts_with(prefix.as_bytes()) {
+                break;
+            }
+            if let Ok(event) = serde_json::from_slice::<JobEvent>(&v) {
+                results.push(event);
+            }
+        }
+        results.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        Ok(results)
+    }
+
     pub fn delete_job(&self, job_id: &JobId) -> Result<()> {
         let key = format!("job:{}", job_id.0);
         self.db.delete(key.as_bytes())?;
         let result_key = format!("result:{}", job_id.0);
         self.db.delete(result_key.as_bytes())?;
+        let event_prefix = format!("event:{}:", job_id.0);
+        let keys: Result<Vec<Vec<u8>>> = self
+            .db
+            .prefix_iterator(event_prefix.as_bytes())
+            .map(|item| item.map(|(k, _)| k.to_vec()).map_err(Into::into))
+            .collect();
+        for key in keys? {
+            self.db.delete(key)?;
+        }
         Ok(())
     }
 }
@@ -103,6 +140,7 @@ impl JobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use data_core::agent::contracts::{JobEventType, WorkerTask, WorkerTaskKind};
     use tempfile::tempdir;
 
     #[test]
@@ -149,5 +187,26 @@ mod tests {
 
         let status = store.get_status(&job_id).unwrap().unwrap();
         assert_eq!(status.state, JobState::Completed);
+    }
+
+    #[test]
+    fn test_job_events_roundtrip() {
+        let dir = tempdir().unwrap();
+        let store = JobStore::open(dir.path()).unwrap();
+
+        let job_id = JobId::new();
+        let worker = WorkerTask::new(job_id.clone(), WorkerTaskKind::SearchSource, "search ipfs");
+        let event = JobEvent::new(
+            job_id.clone(),
+            JobEventType::WorkerStarted,
+            "worker started",
+            Some(worker.task_id),
+            serde_json::json!({ "source": "ipfs" }),
+        );
+
+        store.append_event(&event).unwrap();
+        let events = store.list_events(&job_id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, JobEventType::WorkerStarted);
     }
 }

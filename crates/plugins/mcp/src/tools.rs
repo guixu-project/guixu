@@ -375,6 +375,83 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["host_kind", "session_key", "workspace_id", "goal"]
             }),
         },
+        ToolDefinition {
+            name: "data_task_status".into(),
+            description: "Get the status of a delegated data task. Returns current state, selected dataset if completed, and any errors.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID returned by data_task_delegate"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "data_task_approve".into(),
+            description: "Approve or reject a pending action (purchase, publish, credential use) for a delegated task.".into(),
+            annotations: mutating_annotations(true),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID"
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["purchase", "publish", "override_policy"],
+                        "description": "The action type being approved"
+                    },
+                    "approved": {
+                        "type": "boolean",
+                        "description": "Whether to approve (true) or reject (false)"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional notes explaining the decision"
+                    }
+                },
+                "required": ["job_id", "action", "approved"]
+            }),
+        },
+        ToolDefinition {
+            name: "data_task_cancel".into(),
+            description: "Cancel a running or queued delegated task.".into(),
+            annotations: mutating_annotations(true),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID to cancel"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional reason for cancellation"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "data_task_artifacts".into(),
+            description: "Get the artifacts produced by a completed delegated task.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
     ]
 }
 

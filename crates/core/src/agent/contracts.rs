@@ -188,6 +188,103 @@ pub struct JobStatus {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerTask {
+    pub task_id: String,
+    pub parent_job_id: JobId,
+    pub kind: WorkerTaskKind,
+    pub label: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerTaskKind {
+    SearchSource,
+    EvaluateCandidate,
+    LicenseReview,
+    FetchCommunitySignal,
+    DownloadArtifact,
+    BuildArtifact,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerTaskState {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerTaskResult {
+    pub task_id: String,
+    pub parent_job_id: JobId,
+    pub kind: WorkerTaskKind,
+    pub status: WorkerTaskState,
+    pub payload: serde_json::Value,
+    pub completed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobEvent {
+    pub event_id: String,
+    pub job_id: JobId,
+    pub event_type: JobEventType,
+    pub message: String,
+    pub worker_task_id: Option<String>,
+    pub payload: serde_json::Value,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobEventType {
+    JobQueued,
+    JobStarted,
+    JobCompleted,
+    JobFailed,
+    ApprovalRequired,
+    WorkerStarted,
+    WorkerCompleted,
+    WorkerFailed,
+    ArtifactProduced,
+}
+
+impl WorkerTask {
+    pub fn new(parent_job_id: JobId, kind: WorkerTaskKind, label: impl Into<String>) -> Self {
+        Self {
+            task_id: uuid::Uuid::new_v4().to_string(),
+            parent_job_id,
+            kind,
+            label: label.into(),
+            created_at: Utc::now(),
+        }
+    }
+}
+
+impl JobEvent {
+    pub fn new(
+        job_id: JobId,
+        event_type: JobEventType,
+        message: impl Into<String>,
+        worker_task_id: Option<String>,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            job_id,
+            event_type,
+            message: message.into(),
+            worker_task_id,
+            payload,
+            timestamp: Utc::now(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
@@ -257,5 +354,31 @@ mod tests {
         let price = budget.as_price();
         assert_eq!(price.amount, 25.0);
         assert_eq!(price.currency, "USD");
+    }
+
+    #[test]
+    fn test_worker_task_and_job_event_creation() {
+        let job_id = JobId::new();
+        let worker = WorkerTask::new(
+            job_id.clone(),
+            WorkerTaskKind::SearchSource,
+            "search huggingface",
+        );
+        assert_eq!(worker.parent_job_id, job_id);
+        assert_eq!(worker.kind, WorkerTaskKind::SearchSource);
+        assert_eq!(worker.label, "search huggingface");
+
+        let event = JobEvent::new(
+            worker.parent_job_id.clone(),
+            JobEventType::WorkerStarted,
+            "worker started",
+            Some(worker.task_id.clone()),
+            serde_json::json!({ "source": "huggingface" }),
+        );
+        assert_eq!(event.event_type, JobEventType::WorkerStarted);
+        assert_eq!(
+            event.worker_task_id.as_deref(),
+            Some(worker.task_id.as_str())
+        );
     }
 }

@@ -128,6 +128,34 @@ fn delegate_executor<'a>(
     Box::pin(crate::handlers::delegate::handle(args, state))
 }
 
+fn job_status_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::job_api::status(args, state))
+}
+
+fn job_approve_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::job_api::approve(args, state))
+}
+
+fn job_cancel_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::job_api::cancel(args, state))
+}
+
+fn job_artifacts_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::job_api::artifacts(args, state))
+}
+
 pub fn build_registry() -> ToolRegistry {
     let mut definitions = collect_definitions();
     let mut registry = ToolRegistry::new();
@@ -187,6 +215,22 @@ pub fn build_registry() -> ToolRegistry {
     registry.register(legacy_json_tool(
         require_definition(&mut definitions, "data_task_delegate"),
         executor_from_fn(delegate_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "data_task_status"),
+        executor_from_fn(job_status_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "data_task_approve"),
+        executor_from_fn(job_approve_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "data_task_cancel"),
+        executor_from_fn(job_cancel_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "data_task_artifacts"),
+        executor_from_fn(job_artifacts_executor),
     ));
 
     let all_definitions = registry.list_definitions();
