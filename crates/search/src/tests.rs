@@ -598,6 +598,7 @@ fn default_adapters_covers_all_expected_sources() {
 /// Adapters that require credentials/config should return empty results
 /// gracefully when not configured, never panic.
 #[tokio::test]
+#[ignore] // hits real network APIs — run with `cargo test -- --ignored`
 async fn unconfigured_adapters_return_empty_without_error() {
     let adapters = adapters::default_adapters();
     for adapter in &adapters {
