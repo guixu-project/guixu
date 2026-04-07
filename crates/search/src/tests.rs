@@ -1668,36 +1668,32 @@ async fn rwa_xyz_live_treasury_search() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// DuckDB / PostgreSQL / SQL Endpoint adapter tests
+// SqlCatalogAdapter tests (via default_adapters which loads skill JSONs)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn duckdb_adapter_returns_empty_when_unconfigured() {
-    let adapter = adapters::DuckDbAdapter::default();
-    assert_eq!(adapter.name(), "duckdb");
-    assert_eq!(adapter.skill_id(), "duckdb");
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let results = rt.block_on(adapter.search("anything", 10)).unwrap();
-    assert!(results.is_empty());
-}
+fn sql_catalog_adapters_return_empty_when_unconfigured() {
+    // With no catalogs configured, all sql_catalog adapters should load but return empty
+    let all = adapters::default_adapters();
+    let ids: Vec<&str> = all.iter().map(|a| a.skill_id()).collect();
+    assert!(ids.contains(&"duckdb"), "missing duckdb skill");
+    assert!(ids.contains(&"postgresql"), "missing postgresql skill");
+    assert!(ids.contains(&"sql_endpoint"), "missing sql_endpoint skill");
 
-#[test]
-fn postgresql_adapter_returns_empty_when_unconfigured() {
-    let adapter = adapters::PostgreSqlAdapter::default();
-    assert_eq!(adapter.name(), "postgresql");
-    assert_eq!(adapter.skill_id(), "postgresql");
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let results = rt.block_on(adapter.search("anything", 10)).unwrap();
-    assert!(results.is_empty());
-}
-
-#[test]
-fn sql_endpoint_adapter_returns_empty_when_unconfigured() {
-    let adapter = adapters::SqlEndpointAdapter::default();
-    assert_eq!(adapter.name(), "sql_endpoint");
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let results = rt.block_on(adapter.search("anything", 10)).unwrap();
-    assert!(results.is_empty());
+    for a in &all {
+        match a.skill_id() {
+            "duckdb" | "postgresql" | "sql_endpoint" => {
+                let results = rt.block_on(a.search("anything", 10)).unwrap();
+                assert!(
+                    results.is_empty(),
+                    "{} should be empty without catalogs",
+                    a.skill_id()
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 #[test]
@@ -1733,16 +1729,16 @@ fn adapters_with_config_passes_catalogs() {
     }];
 
     let adapters = adapters::adapters_with_config(&[], &duckdb_cats, &pg_cats, &sql_cats);
-    let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
-    assert!(names.contains(&"duckdb"));
-    assert!(names.contains(&"postgresql"));
-    assert!(names.contains(&"sql_endpoint"));
+    let ids: Vec<&str> = adapters.iter().map(|a| a.skill_id()).collect();
+    assert!(ids.contains(&"duckdb"));
+    assert!(ids.contains(&"postgresql"));
+    assert!(ids.contains(&"sql_endpoint"));
 
     // No duplicates
-    let mut unique = names.clone();
+    let mut unique = ids.clone();
     unique.sort();
     unique.dedup();
-    assert_eq!(names.len(), unique.len());
+    assert_eq!(ids.len(), unique.len());
 }
 
 #[test]
@@ -1802,10 +1798,20 @@ fn node_config_parses_external_catalogs() {
 #[tokio::test]
 #[ignore] // requires network — DuckDB HTTP server on localhost:9999
 async fn duckdb_http_live_search() {
-    let adapter = adapters::DuckDbAdapter::with_catalogs(vec![data_core::config::DuckDbCatalog {
-        label: "test".into(),
-        url: "http://localhost:9999".into(),
-    }]);
+    use crate::adapters::sql_catalog::{CatalogEntry, SqlCatalogAdapter, SqlCatalogEngine};
+    let adapter = SqlCatalogAdapter::new(
+        "duckdb".into(),
+        "DuckDB Catalog".into(),
+        SqlCatalogEngine::Duckdb,
+        vec![CatalogEntry {
+            label: "test".into(),
+            url: "http://localhost:9999".into(),
+            schemas: vec![],
+            catalog: None,
+        }],
+        None,
+        vec![],
+    );
     let results = adapter.search("test", 10).await.unwrap();
     for r in &results {
         assert_eq!(r.source, DataSource::DuckDb);
@@ -1818,14 +1824,22 @@ async fn duckdb_http_live_search() {
 #[tokio::test]
 #[ignore] // requires network — PostgreSQL on localhost
 async fn postgresql_live_search() {
+    use crate::adapters::sql_catalog::{CatalogEntry, SqlCatalogAdapter, SqlCatalogEngine};
     let url = std::env::var("GUIXU_TEST_POSTGRES_URL")
         .unwrap_or_else(|_| "postgres://localhost/postgres".into());
-    let adapter =
-        adapters::PostgreSqlAdapter::with_catalogs(vec![data_core::config::PostgreSqlCatalog {
+    let adapter = SqlCatalogAdapter::new(
+        "postgresql".into(),
+        "PostgreSQL Catalog".into(),
+        SqlCatalogEngine::Postgresql,
+        vec![CatalogEntry {
             label: "test".into(),
             url,
             schemas: vec!["public".into()],
-        }]);
+            catalog: None,
+        }],
+        None,
+        vec![],
+    );
     let results = adapter.search("test", 10).await.unwrap();
     for r in &results {
         assert_eq!(r.source, DataSource::PostgreSql);
@@ -1836,14 +1850,20 @@ async fn postgresql_live_search() {
 #[tokio::test]
 #[ignore] // requires network — Presto/Trino on localhost:8080
 async fn presto_live_search() {
-    let adapter =
-        adapters::SqlEndpointAdapter::with_catalogs(vec![data_core::config::SqlEndpointCatalog {
+    use crate::adapters::sql_catalog::{CatalogEntry, SqlCatalogAdapter, SqlCatalogEngine};
+    let adapter = SqlCatalogAdapter::new(
+        "sql_endpoint".into(),
+        "SQL Endpoint".into(),
+        SqlCatalogEngine::Presto,
+        vec![CatalogEntry {
             label: "test".into(),
             url: "http://localhost:8080".into(),
-            engine: data_core::config::SqlEngine::Presto,
-            catalog: None,
             schemas: vec![],
-        }]);
+            catalog: None,
+        }],
+        None,
+        vec![],
+    );
     let results = adapter.search("test", 10).await.unwrap();
     for r in &results {
         assert_eq!(r.source, DataSource::Presto);

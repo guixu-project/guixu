@@ -2,7 +2,7 @@
   "spec_version": "2.0",
   "id": "duckdb",
   "name": "DuckDB Catalog",
-  "description": "Search configured DuckDB catalogs via built-in native adapter.",
+  "description": "Search configured DuckDB catalogs for tables and columns.",
   "source": "duckdb",
   "tags": [
     "database",
@@ -18,7 +18,7 @@
     "search": true,
     "lookup": false,
     "download": false,
-    "schema_probe": false,
+    "schema_probe": true,
     "sample_preview": false,
     "license_lookup": false
   },
@@ -28,7 +28,8 @@
     "compliance_hint": "enforce local access controls for configured databases"
   },
   "provider": {
-    "kind": "native_adapter",
-    "adapter": "duckdb"
+    "kind": "sql_catalog",
+    "engine": "duckdb",
+    "catalogs": { "kind": "from_config" }
   }
 }

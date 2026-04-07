@@ -108,6 +108,14 @@ fn enabled_skill_capabilities_match_configured_operations() {
                     skill.id
                 );
             }
+            SkillProvider::SqlCatalog { .. } => {
+                // sql_catalog skills get schema_probe for free
+                assert!(
+                    skill.capabilities.search,
+                    "sql_catalog skill must support search: {}",
+                    skill.id
+                );
+            }
         }
     }
 }

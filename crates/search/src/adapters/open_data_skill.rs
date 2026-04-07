@@ -12,9 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use super::util::infer_data_type_from_title;
 use super::{
-    ArxivAdapter, BitTorrentAdapter, DefiLlamaAdapter, DuckDbAdapter, ExternalAdapter,
-    GoogleDatasetSearchAdapter, LocalFileAdapter, PanSearchAdapter, PostgreSqlAdapter,
-    RwaXyzAdapter, SqlEndpointAdapter,
+    sql_catalog, ArxivAdapter, BitTorrentAdapter, DefiLlamaAdapter, ExternalAdapter,
+    GoogleDatasetSearchAdapter, LocalFileAdapter, PanSearchAdapter, RwaXyzAdapter,
 };
 
 const BUILTIN_SKILL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/skills/builtin");
@@ -120,6 +119,11 @@ pub enum SkillProvider {
         operations: Box<SkillOperations>,
         #[serde(default)]
         item_mapping: Box<SkillItemMapping>,
+    },
+    SqlCatalog {
+        engine: sql_catalog::SqlCatalogEngine,
+        #[serde(default)]
+        catalogs: sql_catalog::CatalogSource,
     },
 }
 
@@ -386,9 +390,7 @@ fn build_adapter_from_skill(
     sql_catalogs: &[SqlEndpointCatalog],
 ) -> Result<Box<dyn ExternalAdapter>> {
     match &skill.provider {
-        SkillProvider::NativeAdapter { adapter } => {
-            native_adapter_from_name(adapter, duckdb_catalogs, pg_catalogs, sql_catalogs)
-        }
+        SkillProvider::NativeAdapter { adapter } => native_adapter_from_name(adapter),
         SkillProvider::HttpSearch {
             base_url,
             operations,
@@ -406,6 +408,72 @@ fn build_adapter_from_skill(
             operations: *(*operations).clone(),
             item_mapping: *(*item_mapping).clone(),
         }))),
+        SkillProvider::SqlCatalog { engine, catalogs } => {
+            let governance_meta = GovernanceMeta {
+                trust_tier: skill.governance.trust_tier,
+                rate_limit_hint: skill.governance.rate_limit_hint.clone(),
+                provenance_hint: skill.governance.provenance_hint.clone(),
+                compliance_hint: skill.governance.compliance_hint.clone(),
+            };
+            let entries = resolve_catalog_entries(
+                engine,
+                catalogs,
+                duckdb_catalogs,
+                pg_catalogs,
+                sql_catalogs,
+            );
+            Ok(Box::new(sql_catalog::SqlCatalogAdapter::new(
+                skill.id.clone(),
+                skill.name.clone(),
+                engine.clone(),
+                entries,
+                Some(governance_meta),
+                skill.tags.clone(),
+            )))
+        }
+    }
+}
+
+fn resolve_catalog_entries(
+    engine: &sql_catalog::SqlCatalogEngine,
+    source: &sql_catalog::CatalogSource,
+    duckdb_catalogs: &[DuckDbCatalog],
+    pg_catalogs: &[PostgreSqlCatalog],
+    sql_catalogs: &[SqlEndpointCatalog],
+) -> Vec<sql_catalog::CatalogEntry> {
+    match source {
+        sql_catalog::CatalogSource::Inline { entries } => entries.clone(),
+        sql_catalog::CatalogSource::FromConfig => match engine {
+            sql_catalog::SqlCatalogEngine::Postgresql => pg_catalogs
+                .iter()
+                .map(|c| sql_catalog::CatalogEntry {
+                    label: c.label.clone(),
+                    url: c.url.clone(),
+                    schemas: c.schemas.clone(),
+                    catalog: None,
+                })
+                .collect(),
+            sql_catalog::SqlCatalogEngine::Duckdb => duckdb_catalogs
+                .iter()
+                .map(|c| sql_catalog::CatalogEntry {
+                    label: c.label.clone(),
+                    url: c.url.clone(),
+                    schemas: vec![],
+                    catalog: None,
+                })
+                .collect(),
+            sql_catalog::SqlCatalogEngine::Presto
+            | sql_catalog::SqlCatalogEngine::Spark
+            | sql_catalog::SqlCatalogEngine::Flink => sql_catalogs
+                .iter()
+                .map(|c| sql_catalog::CatalogEntry {
+                    label: c.label.clone(),
+                    url: c.url.clone(),
+                    schemas: c.schemas.clone(),
+                    catalog: c.catalog.clone(),
+                })
+                .collect(),
+        },
     }
 }
 
@@ -429,17 +497,9 @@ pub fn validate_skill_spec(skill: &OpenDataSkillSpec) -> Result<()> {
     Ok(())
 }
 
-fn native_adapter_from_name(
-    adapter: &str,
-    duckdb_catalogs: &[DuckDbCatalog],
-    pg_catalogs: &[PostgreSqlCatalog],
-    sql_catalogs: &[SqlEndpointCatalog],
-) -> Result<Box<dyn ExternalAdapter>> {
+fn native_adapter_from_name(adapter: &str) -> Result<Box<dyn ExternalAdapter>> {
     Ok(match adapter {
         "bittorrent" => Box::new(BitTorrentAdapter::default()),
-        "postgresql" => Box::new(PostgreSqlAdapter::with_catalogs(pg_catalogs.to_vec())),
-        "duckdb" => Box::new(DuckDbAdapter::with_catalogs(duckdb_catalogs.to_vec())),
-        "sql_endpoint" => Box::new(SqlEndpointAdapter::with_catalogs(sql_catalogs.to_vec())),
         "local_file" => Box::new(LocalFileAdapter::default()),
         "google_dataset_search" => Box::new(GoogleDatasetSearchAdapter::default()),
         "defillama" => Box::new(DefiLlamaAdapter::default()),

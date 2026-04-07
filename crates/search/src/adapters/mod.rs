@@ -5,14 +5,12 @@ mod arxiv;
 mod bittorrent;
 mod datacite_commons;
 mod defillama;
-mod duckdb;
 mod google_dataset_search;
 mod local_file;
 mod open_data_skill;
 pub mod pan_search;
-mod postgresql;
 mod rwa_xyz;
-mod sql_endpoint;
+pub(crate) mod sql_catalog;
 pub(crate) mod util;
 
 use anyhow::{anyhow, Result};
@@ -23,7 +21,6 @@ pub use arxiv::ArxivAdapter;
 pub use bittorrent::BitTorrentAdapter;
 pub use datacite_commons::DataCiteCommonsAdapter;
 pub use defillama::DefiLlamaAdapter;
-pub use duckdb::DuckDbAdapter;
 pub use google_dataset_search::GoogleDatasetSearchAdapter;
 pub use local_file::LocalFileAdapter;
 pub use open_data_skill::{
@@ -31,9 +28,7 @@ pub use open_data_skill::{
     OpenDataSkillSpec, SkillProvider,
 };
 pub use pan_search::PanSearchAdapter;
-pub use postgresql::PostgreSqlAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
-pub use sql_endpoint::SqlEndpointAdapter;
 
 #[cfg(test)]
 pub(crate) use util::infer_data_type_from_title;
