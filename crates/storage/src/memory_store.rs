@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(memory.decisions.len(), 1);
         assert_eq!(memory.recent_segments.len(), 1);
 
-        let best = memory.get_best_mapping("cat classification");
+        let best = memory.get_best_mapping("cat image classification");
         assert!(best.is_some());
         assert_eq!(best.unwrap().dataset_cid, "hf:org/cat-dataset");
     }
