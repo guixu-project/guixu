@@ -1,7 +1,7 @@
 // Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
 // SPDX-License-Identifier: Apache-2.0
 
-//! Integration test: search "年少有为" via PanSearchAdapter against live PanSou.
+//! Integration test: search a known PanSou title via PanSearchAdapter.
 //!
 //! Run with: cargo test -p data-search --test pan_search_live -- --nocapture
 //! Requires network access to the PanSou instance.

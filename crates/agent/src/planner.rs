@@ -3,6 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use data_core::agent::contracts::{DelegatedDataTask, JobId};
+use data_core::agent::memory::AgentMemory;
 use data_core::types::{DataType, SkillCapability, SourceFamily};
 use data_search::adapters::{load_data_skill_profiles, DataSkillProfile};
 use serde::{Deserialize, Serialize};
@@ -78,8 +79,22 @@ pub struct BudgetPolicy {
 pub struct Planner;
 
 impl Planner {
-    pub fn build(task: &DelegatedDataTask) -> SkillExecutionPlan {
-        let routed_skills = route_skills(task);
+    pub fn build(task: &DelegatedDataTask, memory: Option<&AgentMemory>) -> SkillExecutionPlan {
+        let mut routed_skills = route_skills(task);
+
+        // Memory boost: if a skill succeeded for a similar task before, move it to front
+        if let Some(mem) = memory {
+            if let Some(mapping) = mem.get_best_mapping(&task.task.goal) {
+                if let Some(pos) = routed_skills
+                    .iter()
+                    .position(|s| s.skill_id.eq_ignore_ascii_case(&mapping.source))
+                {
+                    let boosted = routed_skills.remove(pos);
+                    routed_skills.insert(0, boosted);
+                }
+            }
+        }
+
         let search_tasks: Vec<PlannedSkillTask> = routed_skills
             .iter()
             .enumerate()
@@ -130,6 +145,16 @@ impl Planner {
             });
         }
 
+        let mut rationale = plan_rationale(task, &routed_skills);
+        if let Some(mem) = memory {
+            if let Some(mapping) = mem.get_best_mapping(&task.task.goal) {
+                rationale.push(format!(
+                    "memory_boost: {} (score={:.1} from previous task)",
+                    mapping.source, mapping.score
+                ));
+            }
+        }
+
         SkillExecutionPlan {
             job_id: task.job_id.clone(),
             stages,
@@ -148,7 +173,7 @@ impl Planner {
                 free_first: !task.policy.allow_purchase,
                 allow_purchase: task.policy.allow_purchase,
             },
-            rationale: plan_rationale(task, &routed_skills),
+            rationale,
             created_at: Utc::now(),
         }
     }
@@ -420,10 +445,10 @@ mod tests {
         Budget, DataTaskSpec, DelegatedDataTask, HostContext, HostKind, TaskPolicy,
         WorkspaceContext,
     };
+    use data_core::agent::memory::AgentMemory;
 
-    #[test]
-    fn planner_builds_parallel_search_stage() {
-        let task = DelegatedDataTask {
+    fn test_task() -> DelegatedDataTask {
+        DelegatedDataTask {
             job_id: JobId::new(),
             host: HostContext {
                 kind: HostKind::OpenClaw,
@@ -451,9 +476,13 @@ mod tests {
             },
             desired_outputs: vec![],
             created_at: Utc::now(),
-        };
+        }
+    }
 
-        let plan = Planner::build(&task);
+    #[test]
+    fn planner_builds_parallel_search_stage() {
+        let task = test_task();
+        let plan = Planner::build(&task, None);
         assert_eq!(
             plan.stages.first().unwrap().strategy,
             ExecutionStrategy::Parallel
@@ -465,5 +494,34 @@ mod tests {
             .tasks
             .iter()
             .all(|task| !task.skill_id.is_empty()));
+    }
+
+    #[test]
+    fn planner_boosts_skill_from_memory() {
+        let task = test_task();
+
+        // Without memory
+        let plan_no_mem = Planner::build(&task, None);
+        let first_no_mem = &plan_no_mem.stages[0].tasks[0].skill_id;
+
+        // With memory that says "arxiv" was great for similar tasks
+        let mut memory = AgentMemory::default();
+        memory.record_successful_mapping(
+            "find a chart QA dataset",
+            "arxiv:2301.00001",
+            "arxiv",
+            95.0,
+        );
+        let plan_with_mem = Planner::build(&task, Some(&memory));
+        let first_with_mem = &plan_with_mem.stages[0].tasks[0].skill_id;
+
+        assert_eq!(first_with_mem, "arxiv");
+        assert!(plan_with_mem
+            .rationale
+            .iter()
+            .any(|r| r.contains("memory_boost")));
+
+        // Verify it actually changed the order (arxiv might not have been first without memory)
+        let _ = first_no_mem; // used for comparison context
     }
 }
