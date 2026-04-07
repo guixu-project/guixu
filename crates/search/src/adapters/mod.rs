@@ -68,6 +68,12 @@ pub trait ExternalAdapter: Send + Sync {
             self.skill_id()
         ))
     }
+    async fn query(&self, _id: &str, _question: &str) -> Result<serde_json::Value> {
+        Err(anyhow!(
+            "query unsupported for adapter: {}",
+            self.skill_id()
+        ))
+    }
 }
 
 pub fn infer_source_family_for_skill_id(skill_id: &str) -> SourceFamily {

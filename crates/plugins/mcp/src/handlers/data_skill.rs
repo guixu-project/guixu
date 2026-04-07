@@ -159,6 +159,32 @@ pub async fn schema_probe(args: serde_json::Value, state: &AppState) -> Result<S
     }))?)
 }
 
+pub async fn query(args: serde_json::Value, state: &AppState) -> Result<String> {
+    let cid = args
+        .get("cid")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing cid"))?;
+    let question = args
+        .get("question")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing question"))?;
+
+    let skill_id = skill_id_from_cid(cid)
+        .ok_or_else(|| anyhow!("dataset_query requires a skill-backed CID"))?;
+
+    let result = state
+        .search_engine
+        .query_by_skill(skill_id, cid, question)
+        .await?;
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "cid": cid,
+        "skill_id": skill_id,
+        "question": question,
+        "result": result,
+    }))?)
+}
+
 pub async fn download_via_skill(args: serde_json::Value, state: &AppState) -> Result<String> {
     let cid = args
         .get("cid")

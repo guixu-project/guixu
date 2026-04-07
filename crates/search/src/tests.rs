@@ -1811,6 +1811,7 @@ async fn duckdb_http_live_search() {
         }],
         None,
         vec![],
+        None,
     );
     let results = adapter.search("test", 10).await.unwrap();
     for r in &results {
@@ -1839,6 +1840,7 @@ async fn postgresql_live_search() {
         }],
         None,
         vec![],
+        None,
     );
     let results = adapter.search("test", 10).await.unwrap();
     for r in &results {
@@ -1863,6 +1865,7 @@ async fn presto_live_search() {
         }],
         None,
         vec![],
+        None,
     );
     let results = adapter.search("test", 10).await.unwrap();
     for r in &results {

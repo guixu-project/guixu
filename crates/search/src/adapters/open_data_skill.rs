@@ -53,6 +53,8 @@ pub struct SkillCapabilities {
     pub sample_preview: bool,
     #[serde(default)]
     pub license_lookup: bool,
+    #[serde(default)]
+    pub query: bool,
 }
 
 impl SkillCapabilities {
@@ -75,6 +77,9 @@ impl SkillCapabilities {
         }
         if self.license_lookup {
             capabilities.push(SkillCapability::LicenseLookup);
+        }
+        if self.query {
+            capabilities.push(SkillCapability::Query);
         }
         capabilities
     }
@@ -123,7 +128,9 @@ pub enum SkillProvider {
     SqlCatalog {
         engine: sql_catalog::SqlCatalogEngine,
         #[serde(default)]
-        catalogs: sql_catalog::CatalogSource,
+        catalogs: Box<sql_catalog::CatalogSource>,
+        #[serde(default)]
+        nl2sql: Box<Option<sql_catalog::Nl2SqlConfig>>,
     },
 }
 
@@ -408,7 +415,11 @@ fn build_adapter_from_skill(
             operations: *(*operations).clone(),
             item_mapping: *(*item_mapping).clone(),
         }))),
-        SkillProvider::SqlCatalog { engine, catalogs } => {
+        SkillProvider::SqlCatalog {
+            engine,
+            catalogs,
+            nl2sql,
+        } => {
             let governance_meta = GovernanceMeta {
                 trust_tier: skill.governance.trust_tier,
                 rate_limit_hint: skill.governance.rate_limit_hint.clone(),
@@ -417,7 +428,7 @@ fn build_adapter_from_skill(
             };
             let entries = resolve_catalog_entries(
                 engine,
-                catalogs,
+                catalogs.as_ref(),
                 duckdb_catalogs,
                 pg_catalogs,
                 sql_catalogs,
@@ -429,6 +440,7 @@ fn build_adapter_from_skill(
                 entries,
                 Some(governance_meta),
                 skill.tags.clone(),
+                *nl2sql.clone(),
             )))
         }
     }
@@ -548,6 +560,73 @@ struct HttpSkillAdapterConfig {
     governance: SkillGovernance,
     operations: SkillOperations,
     item_mapping: SkillItemMapping,
+}
+
+/// Apply `SkillAuth` to a `reqwest::RequestBuilder`.
+pub async fn apply_skill_auth(
+    req: reqwest::RequestBuilder,
+    auth: &SkillAuth,
+) -> Result<reqwest::RequestBuilder> {
+    Ok(match auth {
+        SkillAuth::None => req,
+        SkillAuth::BearerEnv { env } => {
+            let token =
+                std::env::var(env).map_err(|_| anyhow!("missing bearer token env: {env}"))?;
+            req.bearer_auth(token)
+        }
+        SkillAuth::BasicEnv {
+            username_env,
+            password_env,
+        } => {
+            let username = std::env::var(username_env)
+                .map_err(|_| anyhow!("missing basic auth username env: {username_env}"))?;
+            let password = std::env::var(password_env)
+                .map_err(|_| anyhow!("missing basic auth password env: {password_env}"))?;
+            req.basic_auth(username, Some(password))
+        }
+        SkillAuth::HeaderEnv { header, env } => {
+            let token =
+                std::env::var(env).map_err(|_| anyhow!("missing header auth env: {env}"))?;
+            req.header(header, token)
+        }
+        SkillAuth::OAuthClientCredentials {
+            token_url,
+            client_id_env,
+            client_secret_env,
+            audience,
+            scope,
+        } => {
+            let client_id = std::env::var(client_id_env)
+                .map_err(|_| anyhow!("missing oauth client id env: {client_id_env}"))?;
+            let client_secret = std::env::var(client_secret_env)
+                .map_err(|_| anyhow!("missing oauth client secret env: {client_secret_env}"))?;
+            let mut form = vec![
+                ("grant_type", "client_credentials".to_string()),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+            ];
+            if let Some(audience) = audience {
+                form.push(("audience", audience.clone()));
+            }
+            if let Some(scope) = scope {
+                form.push(("scope", scope.clone()));
+            }
+            let token_json: serde_json::Value = reqwest::Client::new()
+                .post(token_url)
+                .form(&form)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            let access_token = token_json
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("oauth token response missing access_token"))?
+                .to_string();
+            req.bearer_auth(access_token)
+        }
+    })
 }
 
 struct HttpSkillAdapter {

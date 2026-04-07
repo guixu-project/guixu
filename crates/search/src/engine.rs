@@ -243,6 +243,18 @@ impl SearchEngine {
         adapter.schema_probe(id).await
     }
 
+    pub async fn query_by_skill(
+        &self,
+        skill_id: &str,
+        id: &str,
+        question: &str,
+    ) -> Result<serde_json::Value> {
+        let adapter = self
+            .adapter_by_skill_id(skill_id)
+            .with_context(|| format!("adapter not found for skill: {skill_id}"))?;
+        adapter.query(id, question).await
+    }
+
     /// Main search entry point — called by MCP tool `dataset_search`.
     /// `local_metadata` comes from the RocksDB store (P2P-discovered datasets).
     /// `signal_fetcher` retrieves on-chain community feedback for TCV ranking.

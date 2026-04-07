@@ -212,6 +212,78 @@ pub enum CatalogSource {
 }
 
 // ---------------------------------------------------------------------------
+// NL2SQL configuration — optional, user-provided
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Nl2SqlConfig {
+    pub endpoint: String,
+    #[serde(default = "default_nl2sql_method")]
+    pub method: String,
+    #[serde(default)]
+    pub auth: super::open_data_skill::SkillAuth,
+    #[serde(default)]
+    pub request_mapping: Nl2SqlRequestMapping,
+    #[serde(default)]
+    pub response_mapping: Nl2SqlResponseMapping,
+}
+
+fn default_nl2sql_method() -> String {
+    "POST".into()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Nl2SqlRequestMapping {
+    #[serde(default = "default_question_field")]
+    pub question_field: String,
+    #[serde(default = "default_schema_field")]
+    pub schema_field: String,
+    #[serde(default)]
+    pub dialect_field: Option<String>,
+    #[serde(default)]
+    pub table_field: Option<String>,
+    #[serde(default)]
+    pub static_params: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Default for Nl2SqlRequestMapping {
+    fn default() -> Self {
+        Self {
+            question_field: default_question_field(),
+            schema_field: default_schema_field(),
+            dialect_field: None,
+            table_field: None,
+            static_params: Default::default(),
+        }
+    }
+}
+
+fn default_question_field() -> String {
+    "question".into()
+}
+fn default_schema_field() -> String {
+    "schema".into()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Nl2SqlResponseMapping {
+    #[serde(default = "default_sql_field")]
+    pub sql_field: String,
+}
+
+impl Default for Nl2SqlResponseMapping {
+    fn default() -> Self {
+        Self {
+            sql_field: default_sql_field(),
+        }
+    }
+}
+
+fn default_sql_field() -> String {
+    "sql".into()
+}
+
+// ---------------------------------------------------------------------------
 // SqlCatalogAdapter — unified adapter for all SQL-based catalog search
 // ---------------------------------------------------------------------------
 
@@ -222,6 +294,7 @@ pub struct SqlCatalogAdapter {
     entries: Vec<CatalogEntry>,
     governance: Option<GovernanceMeta>,
     tags: Vec<String>,
+    nl2sql: Option<Nl2SqlConfig>,
 }
 
 impl SqlCatalogAdapter {
@@ -232,6 +305,7 @@ impl SqlCatalogAdapter {
         entries: Vec<CatalogEntry>,
         governance: Option<GovernanceMeta>,
         tags: Vec<String>,
+        nl2sql: Option<Nl2SqlConfig>,
     ) -> Self {
         Self {
             skill_id,
@@ -240,6 +314,7 @@ impl SqlCatalogAdapter {
             entries,
             governance,
             tags,
+            nl2sql,
         }
     }
 
@@ -588,6 +663,52 @@ impl ExternalAdapter for SqlCatalogAdapter {
             })
             .collect())
     }
+
+    async fn query(&self, id: &str, question: &str) -> Result<serde_json::Value> {
+        let nl2sql = self
+            .nl2sql
+            .as_ref()
+            .ok_or_else(|| anyhow!("nl2sql not configured for skill: {}", self.skill_id))?;
+
+        let (entry, schema, table) = self.parse_table_id(id)?;
+        let executor = self.make_executor(entry);
+
+        // 1. Get table schema
+        let col_sql = self.columns_sql(entry, schema, table);
+        let columns = executor.execute(&col_sql).await?;
+        let schema_desc = columns
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} {}",
+                    r.first().cloned().unwrap_or_default(),
+                    r.get(1).cloned().unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        // 2. Call NL2SQL API
+        let sql = self
+            .call_nl2sql(nl2sql, question, table, &schema_desc)
+            .await?;
+
+        // 3. Execute SQL
+        let rows = executor.execute(&sql).await?;
+
+        // 4. Build column headers from first row or schema
+        let col_names: Vec<String> = columns
+            .iter()
+            .map(|r| r.first().cloned().unwrap_or_default())
+            .collect();
+
+        Ok(serde_json::json!({
+            "sql": sql,
+            "columns": col_names,
+            "rows": rows,
+            "row_count": rows.len(),
+        }))
+    }
 }
 
 impl SqlCatalogAdapter {
@@ -608,5 +729,66 @@ impl SqlCatalogAdapter {
             .find(|e| e.label == label)
             .ok_or_else(|| anyhow!("catalog label not found: {label}"))?;
         Ok((entry, schema, table))
+    }
+
+    async fn call_nl2sql(
+        &self,
+        config: &Nl2SqlConfig,
+        question: &str,
+        table: &str,
+        schema_desc: &str,
+    ) -> Result<String> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        let mut body = serde_json::Map::new();
+        for (k, v) in &config.request_mapping.static_params {
+            body.insert(k.clone(), v.clone());
+        }
+        body.insert(
+            config.request_mapping.question_field.clone(),
+            serde_json::Value::String(question.to_string()),
+        );
+        body.insert(
+            config.request_mapping.schema_field.clone(),
+            serde_json::Value::String(schema_desc.to_string()),
+        );
+        if let Some(ref dialect_field) = config.request_mapping.dialect_field {
+            body.insert(
+                dialect_field.clone(),
+                serde_json::Value::String(self.engine_name().to_string()),
+            );
+        }
+        if let Some(ref table_field) = config.request_mapping.table_field {
+            body.insert(
+                table_field.clone(),
+                serde_json::Value::String(table.to_string()),
+            );
+        }
+
+        let mut req = client.post(&config.endpoint);
+        req = super::open_data_skill::apply_skill_auth(req, &config.auth).await?;
+
+        let resp = req
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await?;
+
+        let sql = resp
+            .get(&config.response_mapping.sql_field)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "nl2sql response missing '{}' field",
+                    config.response_mapping.sql_field
+                )
+            })?;
+
+        Ok(sql.to_string())
     }
 }
