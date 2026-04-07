@@ -5,9 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub use crate::types::{
-    DataSource, DataType, DatasetCid, Price, SkillCapability, SourceFamily,
-};
+pub use crate::types::{DataSource, DataType, DatasetCid, Price, SkillCapability, SourceFamily};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegatedDataTask {

@@ -8,6 +8,11 @@
     "academic",
     "doi"
   ],
+  "routing_hints": [
+    "doi",
+    "academic registry",
+    "dataset metadata"
+  ],
   "enabled": true,
   "capabilities": {
     "search": true,

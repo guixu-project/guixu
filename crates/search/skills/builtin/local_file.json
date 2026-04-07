@@ -1,5 +1,5 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "local_file",
   "name": "Local Files",
   "description": "Search local directories via built-in native adapter.",
@@ -8,7 +8,25 @@
     "local",
     "filesystem"
   ],
+  "routing_hints": [
+    "local files",
+    "filesystem",
+    "workspace data"
+  ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "verified",
+    "provenance_hint": "local filesystem inventory configured by the current runtime",
+    "compliance_hint": "enforce local file permissions and workspace data handling policies"
+  },
   "provider": {
     "kind": "native_adapter",
     "adapter": "local_file"

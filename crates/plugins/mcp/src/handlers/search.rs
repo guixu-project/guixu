@@ -12,11 +12,16 @@ use data_search::intent::QueryProfile;
 
 use crate::server::AppState;
 
-fn parse_string_array(obj: &serde_json::Value, plural_key: &str, singular_key: &str) -> Vec<String> {
+fn parse_string_array(
+    obj: &serde_json::Value,
+    plural_key: &str,
+    singular_key: &str,
+) -> Vec<String> {
     obj.get(plural_key)
         .and_then(|value| value.as_array())
         .map(|items| {
-            items.iter()
+            items
+                .iter()
                 .filter_map(|value| value.as_str().map(ToString::to_string))
                 .collect()
         })
@@ -35,7 +40,8 @@ where
     obj.get(plural_key)
         .and_then(|value| value.as_array())
         .map(|items| {
-            items.iter()
+            items
+                .iter()
                 .filter_map(|value| serde_json::from_value(value.clone()).ok())
                 .collect()
         })

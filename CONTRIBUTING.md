@@ -35,3 +35,11 @@ Unless you explicitly state otherwise in writing and the maintainers agree, any 
 - Do not add third-party trademarks or logos in a way that implies endorsement.
 - If you are contributing on behalf of an organization, make sure you have authority to do so.
 - Run `python3 scripts/spdx_headers.py fix` if you add new first-party source or documentation files without the standard short copyright header.
+
+## Provider integration policy
+
+- New dataset providers should be added as Open Data Skill JSON files first.
+- Prefer `provider.kind = "http_search"` when the upstream source is a standard HTTP or HTTPS API with JSON responses, conventional auth, and conventional pagination.
+- Use `provider.kind = "native_adapter"` only when the provider cannot be represented declaratively yet, such as XML-only protocols, HTML scraping, complex local-runtime integration, stream-oriented downloads, or bespoke auth flows.
+- Pull requests that add a new `native_adapter` should explain why `http_search` is not sufficient.
+- Built-in skills should use `spec_version: "2.0"` and include explicit `routing_hints`, `capabilities`, and `governance` metadata.

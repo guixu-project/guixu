@@ -312,7 +312,12 @@ fn profile_tokens(profile: &DataSkillProfile) -> Vec<String> {
     tokens.push(profile.skill_id.to_ascii_lowercase());
     tokens.push(profile.name.to_ascii_lowercase());
     tokens.push(profile.description.to_ascii_lowercase());
-    tokens.extend(profile.labels.iter().map(|label| label.to_ascii_lowercase()));
+    tokens.extend(
+        profile
+            .labels
+            .iter()
+            .map(|label| label.to_ascii_lowercase()),
+    );
     tokens.extend(
         profile
             .routing_hints
@@ -350,9 +355,15 @@ fn task_type_keywords(task_type: &str) -> &'static [&'static str] {
             "rwa",
             "defi",
         ],
-        "retrieval" | "summarization" | "evaluation" => {
-            &["academic", "papers", "doi", "text", "nlp", "search", "preprints"]
-        }
+        "retrieval" | "summarization" | "evaluation" => &[
+            "academic",
+            "papers",
+            "doi",
+            "text",
+            "nlp",
+            "search",
+            "preprints",
+        ],
         _ => &[],
     }
 }
@@ -443,14 +454,16 @@ mod tests {
         };
 
         let plan = Planner::build(&task);
-        assert_eq!(plan.stages.first().unwrap().strategy, ExecutionStrategy::Parallel);
-        assert!(
-            plan.stages
-                .first()
-                .unwrap()
-                .tasks
-                .iter()
-                .all(|task| !task.skill_id.is_empty())
+        assert_eq!(
+            plan.stages.first().unwrap().strategy,
+            ExecutionStrategy::Parallel
         );
+        assert!(plan
+            .stages
+            .first()
+            .unwrap()
+            .tasks
+            .iter()
+            .all(|task| !task.skill_id.is_empty()));
     }
 }

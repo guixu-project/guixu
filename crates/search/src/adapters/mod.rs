@@ -21,7 +21,7 @@ mod semantic_scholar;
 mod sql_endpoint;
 pub(crate) mod util;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use data_core::config::{DuckDbCatalog, PostgreSqlCatalog, SqlEndpointCatalog};
 use data_core::types::{SearchResult, SkillCapability, SourceFamily};
 
@@ -39,7 +39,7 @@ pub use kaggle::KaggleAdapter;
 pub use local_file::LocalFileAdapter;
 pub use open_data_skill::{
     execute_skill_operation, load_data_skill_profiles, load_open_data_skills, DataSkillProfile,
-    OpenDataSkillSpec,
+    OpenDataSkillSpec, SkillProvider,
 };
 pub use pan_search::PanSearchAdapter;
 pub use postgresql::PostgreSqlAdapter;
@@ -67,6 +67,24 @@ pub trait ExternalAdapter: Send + Sync {
         vec![]
     }
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>>;
+    async fn lookup(&self, _id: &str) -> Result<Vec<serde_json::Value>> {
+        Err(anyhow!(
+            "lookup unsupported for adapter: {}",
+            self.skill_id()
+        ))
+    }
+    async fn download(&self, _id: &str) -> Result<Vec<serde_json::Value>> {
+        Err(anyhow!(
+            "download unsupported for adapter: {}",
+            self.skill_id()
+        ))
+    }
+    async fn schema_probe(&self, _id: &str) -> Result<Vec<serde_json::Value>> {
+        Err(anyhow!(
+            "schema_probe unsupported for adapter: {}",
+            self.skill_id()
+        ))
+    }
 }
 
 pub fn infer_source_family_for_skill_id(skill_id: &str) -> SourceFamily {

@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 
 use super::util::infer_data_type_from_title;
 use super::{
-    ArxivAdapter, BitTorrentAdapter, DataCiteCommonsAdapter, DblpAdapter, DefiLlamaAdapter,
-    DuckDbAdapter, ExternalAdapter, GoogleDatasetSearchAdapter, GuixuHubAdapter,
-    HuggingFaceAdapter, IpfsAdapter, KaggleAdapter, LocalFileAdapter, PanSearchAdapter,
-    PostgreSqlAdapter, RwaXyzAdapter, SemanticScholarAdapter, SqlEndpointAdapter,
+    ArxivAdapter, BitTorrentAdapter, DblpAdapter, DefiLlamaAdapter, DuckDbAdapter, ExternalAdapter,
+    GoogleDatasetSearchAdapter, GuixuHubAdapter, HuggingFaceAdapter, IpfsAdapter, KaggleAdapter,
+    LocalFileAdapter, PanSearchAdapter, PostgreSqlAdapter, RwaXyzAdapter, SemanticScholarAdapter,
+    SqlEndpointAdapter,
 };
 
 const BUILTIN_SKILL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/skills/builtin");
@@ -117,9 +117,10 @@ pub enum SkillProvider {
     },
     HttpSearch {
         base_url: String,
-        operations: SkillOperations,
+        #[allow(clippy::large_enum_variant)]
+        operations: Box<SkillOperations>,
         #[serde(default)]
-        item_mapping: SkillItemMapping,
+        item_mapping: Box<SkillItemMapping>,
     },
 }
 
@@ -403,8 +404,8 @@ fn build_adapter_from_skill(
             base_url: base_url.clone(),
             capabilities: skill.capabilities.clone(),
             governance: skill.governance.clone(),
-            operations: operations.clone(),
-            item_mapping: item_mapping.clone(),
+            operations: *(*operations).clone(),
+            item_mapping: *(*item_mapping).clone(),
         }))),
     }
 }
@@ -534,8 +535,8 @@ pub async fn execute_skill_operation(
         base_url: base_url.clone(),
         capabilities: skill.capabilities.clone(),
         governance: skill.governance.clone(),
-        operations: operations.clone(),
-        item_mapping: item_mapping.clone(),
+        operations: *(*operations).clone(),
+        item_mapping: *(*item_mapping).clone(),
     });
 
     let operation = match operation_name {
@@ -591,14 +592,6 @@ impl HttpSkillAdapter {
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
-    }
-
-    fn endpoint_url(&self) -> String {
-        format!(
-            "{}{}",
-            self.config.base_url.trim_end_matches('/'),
-            self.config.operations.search.path
-        )
     }
 
     fn value_at_path<'a>(
@@ -1089,7 +1082,7 @@ impl HttpSkillAdapter {
 #[async_trait::async_trait]
 impl ExternalAdapter for HttpSkillAdapter {
     fn name(&self) -> &str {
-        &self.config.id
+        &self.config.name
     }
 
     fn skill_id(&self) -> &str {
@@ -1121,6 +1114,43 @@ impl ExternalAdapter for HttpSkillAdapter {
             .enumerate()
             .map(|(i, item)| self.normalize_search_item(item, i))
             .collect())
+    }
+
+    async fn lookup(&self, id: &str) -> Result<Vec<serde_json::Value>> {
+        if !self.config.capabilities.supports(SkillCapability::Lookup) {
+            return Err(anyhow!(
+                "lookup unsupported for adapter: {}",
+                self.skill_id()
+            ));
+        }
+        self.execute_named_operation(ExecutedOperation::Lookup, id, 1)
+            .await
+    }
+
+    async fn download(&self, id: &str) -> Result<Vec<serde_json::Value>> {
+        if !self.config.capabilities.supports(SkillCapability::Download) {
+            return Err(anyhow!(
+                "download unsupported for adapter: {}",
+                self.skill_id()
+            ));
+        }
+        self.execute_named_operation(ExecutedOperation::Download, id, 1)
+            .await
+    }
+
+    async fn schema_probe(&self, id: &str) -> Result<Vec<serde_json::Value>> {
+        if !self
+            .config
+            .capabilities
+            .supports(SkillCapability::SchemaProbe)
+        {
+            return Err(anyhow!(
+                "schema_probe unsupported for adapter: {}",
+                self.skill_id()
+            ));
+        }
+        self.execute_named_operation(ExecutedOperation::SchemaProbe, id, 1)
+            .await
     }
 }
 

@@ -1,5 +1,5 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "ipfs",
   "name": "IPFS",
   "description": "Search IPFS-hosted datasets via built-in native adapter.",
@@ -8,7 +8,25 @@
     "decentralized",
     "files"
   ],
+  "routing_hints": [
+    "ipfs",
+    "content addressed",
+    "decentralized files"
+  ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "community",
+    "provenance_hint": "IPFS content identifiers and public gateways",
+    "compliance_hint": "verify content provenance and legal usage before retrieval"
+  },
   "provider": {
     "kind": "native_adapter",
     "adapter": "ipfs"

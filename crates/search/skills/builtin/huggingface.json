@@ -1,5 +1,5 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "huggingface",
   "name": "HuggingFace",
   "description": "Search Hugging Face datasets via built-in native adapter.",
@@ -10,7 +10,25 @@
     "vision",
     "audio"
   ],
+  "routing_hints": [
+    "ml datasets",
+    "nlp",
+    "model training"
+  ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "verified",
+    "provenance_hint": "Hugging Face Hub dataset index",
+    "compliance_hint": "inspect dataset card and license before production use"
+  },
   "provider": {
     "kind": "native_adapter",
     "adapter": "huggingface"

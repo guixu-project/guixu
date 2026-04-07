@@ -203,6 +203,46 @@ impl SearchEngine {
         self
     }
 
+    fn adapter_by_skill_id(&self, skill_id: &str) -> Option<&dyn ExternalAdapter> {
+        self.adapters
+            .iter()
+            .find(|adapter| adapter.skill_id().eq_ignore_ascii_case(skill_id))
+            .map(|adapter| adapter.as_ref())
+    }
+
+    pub async fn lookup_by_skill(
+        &self,
+        skill_id: &str,
+        id: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let adapter = self
+            .adapter_by_skill_id(skill_id)
+            .with_context(|| format!("adapter not found for skill: {skill_id}"))?;
+        adapter.lookup(id).await
+    }
+
+    pub async fn download_by_skill(
+        &self,
+        skill_id: &str,
+        id: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let adapter = self
+            .adapter_by_skill_id(skill_id)
+            .with_context(|| format!("adapter not found for skill: {skill_id}"))?;
+        adapter.download(id).await
+    }
+
+    pub async fn schema_probe_by_skill(
+        &self,
+        skill_id: &str,
+        id: &str,
+    ) -> Result<Vec<serde_json::Value>> {
+        let adapter = self
+            .adapter_by_skill_id(skill_id)
+            .with_context(|| format!("adapter not found for skill: {skill_id}"))?;
+        adapter.schema_probe(id).await
+    }
+
     /// Main search entry point — called by MCP tool `dataset_search`.
     /// `local_metadata` comes from the RocksDB store (P2P-discovered datasets).
     /// `signal_fetcher` retrieves on-chain community feedback for TCV ranking.

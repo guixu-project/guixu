@@ -142,6 +142,8 @@ struct StubAdapter {
     results: Vec<SearchResult>,
 }
 
+struct MultiOpStubAdapter;
+
 #[async_trait::async_trait]
 impl ExternalAdapter for StubAdapter {
     fn name(&self) -> &str {
@@ -153,8 +155,87 @@ impl ExternalAdapter for StubAdapter {
     }
 }
 
+#[async_trait::async_trait]
+impl ExternalAdapter for MultiOpStubAdapter {
+    fn name(&self) -> &str {
+        "multi_op"
+    }
+
+    fn skill_id(&self) -> &str {
+        "multi_op"
+    }
+
+    fn capabilities(&self) -> Vec<SkillCapability> {
+        vec![
+            SkillCapability::Search,
+            SkillCapability::Lookup,
+            SkillCapability::Download,
+            SkillCapability::SchemaProbe,
+        ]
+    }
+
+    async fn search(&self, _query: &str, _limit: usize) -> anyhow::Result<Vec<SearchResult>> {
+        Ok(vec![])
+    }
+
+    async fn lookup(&self, id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(vec![serde_json::json!({"kind": "lookup", "id": id})])
+    }
+
+    async fn download(&self, id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(vec![serde_json::json!({"kind": "download", "id": id})])
+    }
+
+    async fn schema_probe(&self, id: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(vec![serde_json::json!({"kind": "schema_probe", "id": id})])
+    }
+}
+
 fn make_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
     SearchEngine::new(VectorIndex, IntentParser, adapters)
+}
+
+#[tokio::test]
+async fn search_engine_routes_lookup_download_and_schema_probe_by_skill() {
+    let engine = make_engine(vec![Box::new(MultiOpStubAdapter)]);
+
+    let lookup = engine
+        .lookup_by_skill("multi_op", "dataset-1")
+        .await
+        .unwrap();
+    let download = engine
+        .download_by_skill("multi_op", "dataset-1")
+        .await
+        .unwrap();
+    let schema = engine
+        .schema_probe_by_skill("multi_op", "dataset-1")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        lookup,
+        vec![serde_json::json!({"kind": "lookup", "id": "dataset-1"})]
+    );
+    assert_eq!(
+        download,
+        vec![serde_json::json!({"kind": "download", "id": "dataset-1"})]
+    );
+    assert_eq!(
+        schema,
+        vec![serde_json::json!({"kind": "schema_probe", "id": "dataset-1"})]
+    );
+}
+
+#[tokio::test]
+async fn search_engine_returns_error_for_unknown_skill_lookup() {
+    let engine = make_engine(vec![]);
+    let error = engine
+        .lookup_by_skill("missing_skill", "dataset-1")
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("adapter not found for skill: missing_skill"));
 }
 
 #[tokio::test]
@@ -467,37 +548,50 @@ async fn search_with_task_type_prefers_results_matching_requested_modality() {
 #[test]
 fn default_adapters_covers_all_expected_sources() {
     let adapters = adapters::default_adapters();
-    let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
+    let skill_ids: Vec<&str> = adapters.iter().map(|a| a.skill_id()).collect();
 
     // Expected adapters present
-    assert!(names.contains(&"kaggle"), "missing kaggle adapter");
+    assert!(skill_ids.contains(&"kaggle"), "missing kaggle adapter");
     assert!(
-        names.contains(&"huggingface"),
+        skill_ids.contains(&"huggingface"),
         "missing huggingface adapter"
     );
-    assert!(names.contains(&"ipfs"), "missing ipfs adapter");
-    assert!(names.contains(&"bittorrent"), "missing bittorrent adapter");
-    assert!(names.contains(&"postgresql"), "missing postgresql adapter");
-    assert!(names.contains(&"duckdb"), "missing duckdb adapter");
-    assert!(names.contains(&"guixu_hub"), "missing guixu_hub adapter");
-    assert!(names.contains(&"local_file"), "missing local_file adapter");
+    assert!(skill_ids.contains(&"ipfs"), "missing ipfs adapter");
     assert!(
-        names.contains(&"google_dataset_search"),
+        skill_ids.contains(&"bittorrent"),
+        "missing bittorrent adapter"
+    );
+    assert!(
+        skill_ids.contains(&"postgresql"),
+        "missing postgresql adapter"
+    );
+    assert!(skill_ids.contains(&"duckdb"), "missing duckdb adapter");
+    assert!(
+        skill_ids.contains(&"guixu_hub"),
+        "missing guixu_hub adapter"
+    );
+    assert!(
+        skill_ids.contains(&"local_file"),
+        "missing local_file adapter"
+    );
+    assert!(
+        skill_ids.contains(&"google_dataset_search"),
         "missing google_dataset_search adapter"
     );
     assert!(
-        names.contains(&"datacite_commons"),
+        skill_ids.contains(&"datacite_commons"),
         "missing datacite_commons adapter"
     );
+    assert!(skill_ids.contains(&"dblp"), "missing dblp adapter");
 
-    // No duplicate names
-    let mut unique = names.clone();
+    // No duplicate skill ids
+    let mut unique = skill_ids.clone();
     unique.sort();
     unique.dedup();
     assert_eq!(
-        names.len(),
+        skill_ids.len(),
         unique.len(),
-        "duplicate adapter names detected"
+        "duplicate adapter skill ids detected"
     );
 }
 
@@ -542,7 +636,13 @@ fn adapter_metadata_is_consistent() {
             !adapter.skill_id().is_empty(),
             "adapter skill_id must not be empty"
         );
-        assert_eq!(adapter.skill_id(), adapter.name());
+        assert!(
+            adapter.name() == adapter.skill_id()
+                || !adapter.name().eq_ignore_ascii_case(adapter.skill_id()),
+            "adapter should either align name/skill_id or expose a distinct human-readable skill-backed name: {} vs {}",
+            adapter.name(),
+            adapter.skill_id()
+        );
     }
 }
 
@@ -588,10 +688,14 @@ fn google_adapter_skill_id_and_name() {
 
 /// DataCite Commons adapter should expose the expected skill id.
 #[test]
-fn datacite_adapter_skill_id_and_name() {
-    let adapter = adapters::DataCiteCommonsAdapter::default();
-    assert_eq!(adapter.name(), "datacite_commons");
-    assert_eq!(adapter.skill_id(), "datacite_commons");
+fn datacite_skill_is_loaded_via_default_adapters() {
+    let adapters = adapters::default_adapters();
+    let datacite = adapters
+        .iter()
+        .find(|adapter| adapter.skill_id() == "datacite_commons")
+        .expect("datacite_commons should be loaded via built-in skills");
+    assert_eq!(datacite.skill_id(), "datacite_commons");
+    assert!(!datacite.name().is_empty());
 }
 
 #[test]
@@ -1614,10 +1718,10 @@ fn dblp_adapter_returns_empty_name_and_source() {
 #[test]
 fn default_adapters_includes_dblp_and_sql_endpoint() {
     let adapters = adapters::default_adapters();
-    let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
-    assert!(names.contains(&"dblp"), "missing dblp adapter");
+    let skill_ids: Vec<&str> = adapters.iter().map(|a| a.skill_id()).collect();
+    assert!(skill_ids.contains(&"dblp"), "missing dblp skill");
     assert!(
-        names.contains(&"sql_endpoint"),
+        skill_ids.contains(&"sql_endpoint"),
         "missing sql_endpoint adapter"
     );
 }
