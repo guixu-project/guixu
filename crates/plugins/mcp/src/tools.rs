@@ -236,6 +236,19 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "dataset_query".into(),
+            description: "Query a database dataset using natural language. Requires a CID from a sql_catalog skill that has nl2sql configured. The natural-language question is translated to SQL by the data provider's NL2SQL service and executed against the database.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cid": { "type": "string", "description": "Dataset CID (e.g. postgresql:prod:public.orders)" },
+                    "question": { "type": "string", "description": "Natural language question about the data" }
+                },
+                "required": ["cid", "question"]
+            }),
+        },
+        ToolDefinition {
             name: "dataset_download_by_skill".into(),
             description: "Download a dataset through the Open Data Skill execution path. Useful for skill-backed providers and future declarative downloads.".into(),
             annotations: local_side_effect_annotations(),

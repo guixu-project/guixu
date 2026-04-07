@@ -206,6 +206,7 @@ pub enum SkillCapability {
     SchemaProbe,
     SamplePreview,
     LicenseLookup,
+    Query,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

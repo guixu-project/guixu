@@ -4,48 +4,31 @@
 mod arxiv;
 mod bittorrent;
 mod datacite_commons;
-mod dblp;
 mod defillama;
-mod duckdb;
 mod google_dataset_search;
-mod guixu_hub;
-mod huggingface;
-mod ipfs;
-mod kaggle;
 mod local_file;
 mod open_data_skill;
 pub mod pan_search;
-mod postgresql;
 mod rwa_xyz;
-mod semantic_scholar;
-mod sql_endpoint;
+pub(crate) mod sql_catalog;
 pub(crate) mod util;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use data_core::config::{DuckDbCatalog, PostgreSqlCatalog, SqlEndpointCatalog};
 use data_core::types::{SearchResult, SkillCapability, SourceFamily};
 
 pub use arxiv::ArxivAdapter;
 pub use bittorrent::BitTorrentAdapter;
 pub use datacite_commons::DataCiteCommonsAdapter;
-pub use dblp::DblpAdapter;
 pub use defillama::DefiLlamaAdapter;
-pub use duckdb::DuckDbAdapter;
 pub use google_dataset_search::GoogleDatasetSearchAdapter;
-pub use guixu_hub::GuixuHubAdapter;
-pub use huggingface::HuggingFaceAdapter;
-pub use ipfs::IpfsAdapter;
-pub use kaggle::KaggleAdapter;
 pub use local_file::LocalFileAdapter;
 pub use open_data_skill::{
     execute_skill_operation, load_data_skill_profiles, load_open_data_skills, DataSkillProfile,
-    OpenDataSkillSpec,
+    OpenDataSkillSpec, SkillProvider,
 };
 pub use pan_search::PanSearchAdapter;
-pub use postgresql::PostgreSqlAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
-pub use semantic_scholar::SemanticScholarAdapter;
-pub use sql_endpoint::SqlEndpointAdapter;
 
 #[cfg(test)]
 pub(crate) use util::infer_data_type_from_title;
@@ -67,6 +50,30 @@ pub trait ExternalAdapter: Send + Sync {
         vec![]
     }
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>>;
+    async fn lookup(&self, _id: &str) -> Result<Vec<serde_json::Value>> {
+        Err(anyhow!(
+            "lookup unsupported for adapter: {}",
+            self.skill_id()
+        ))
+    }
+    async fn download(&self, _id: &str) -> Result<Vec<serde_json::Value>> {
+        Err(anyhow!(
+            "download unsupported for adapter: {}",
+            self.skill_id()
+        ))
+    }
+    async fn schema_probe(&self, _id: &str) -> Result<Vec<serde_json::Value>> {
+        Err(anyhow!(
+            "schema_probe unsupported for adapter: {}",
+            self.skill_id()
+        ))
+    }
+    async fn query(&self, _id: &str, _question: &str) -> Result<serde_json::Value> {
+        Err(anyhow!(
+            "query unsupported for adapter: {}",
+            self.skill_id()
+        ))
+    }
 }
 
 pub fn infer_source_family_for_skill_id(skill_id: &str) -> SourceFamily {

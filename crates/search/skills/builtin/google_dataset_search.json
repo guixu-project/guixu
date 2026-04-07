@@ -1,5 +1,5 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "google_dataset_search",
   "name": "Google Dataset Search",
   "description": "Search Google Dataset Search via built-in native adapter.",
@@ -8,7 +8,25 @@
     "web",
     "dataset-index"
   ],
+  "routing_hints": [
+    "dataset index",
+    "web registry",
+    "metadata discovery"
+  ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "verified",
+    "provenance_hint": "Google Dataset Search index results",
+    "compliance_hint": "follow linked publisher terms for actual dataset usage"
+  },
   "provider": {
     "kind": "native_adapter",
     "adapter": "google_dataset_search"

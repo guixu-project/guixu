@@ -9,6 +9,11 @@
     "http",
     "registry"
   ],
+  "routing_hints": [
+    "example provider",
+    "http registry",
+    "template"
+  ],
   "enabled": false,
   "capabilities": {
     "search": true,

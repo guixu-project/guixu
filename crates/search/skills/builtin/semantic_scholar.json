@@ -1,5 +1,5 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "semantic_scholar",
   "name": "Semantic Scholar",
   "description": "Search Semantic Scholar via built-in native adapter.",
@@ -8,9 +8,44 @@
     "academic",
     "papers"
   ],
+  "routing_hints": [
+    "papers",
+    "citations",
+    "academic search"
+  ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "verified",
+    "provenance_hint": "Semantic Scholar academic graph",
+    "compliance_hint": "verify rights on linked full-text resources"
+  },
   "provider": {
-    "kind": "native_adapter",
-    "adapter": "semantic_scholar"
+    "kind": "http_search",
+    "base_url": "https://api.semanticscholar.org",
+    "operations": {
+      "search": {
+        "path": "/graph/v1/paper/search",
+        "method": "GET",
+        "query_param": "query",
+        "limit_param": "limit",
+        "static_params": {
+          "fields": "paperId,title,abstract,authors,year,venue,citationCount,openAccessPdf,externalIds"
+        },
+        "result_path": "data"
+      }
+    },
+    "item_mapping": {
+      "title": "title",
+      "description": "abstract",
+      "id": "paperId"
+    }
   }
 }

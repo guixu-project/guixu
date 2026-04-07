@@ -1,5 +1,5 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "bittorrent",
   "name": "BitTorrent",
   "description": "Search BitTorrent datasets via built-in native adapter.",
@@ -8,7 +8,25 @@
     "torrent",
     "files"
   ],
+  "routing_hints": [
+    "torrent",
+    "decentralized files",
+    "bulk download"
+  ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "community",
+    "provenance_hint": "torrent metadata and public trackers",
+    "compliance_hint": "verify legal rights before downloading or redistributing"
+  },
   "provider": {
     "kind": "native_adapter",
     "adapter": "bittorrent"

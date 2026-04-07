@@ -79,6 +79,7 @@ pub(crate) fn infer_data_type_from_title(title: &str) -> DataType {
     DataType::Tabular
 }
 
+#[allow(dead_code)]
 pub(super) fn parse_data_type(value: &str) -> Option<DataType> {
     match value.trim().to_lowercase().as_str() {
         "tabular" => Some(DataType::Tabular),

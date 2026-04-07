@@ -1,5 +1,5 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "dblp",
   "name": "DBLP",
   "description": "Search DBLP via built-in native adapter.",
@@ -8,9 +8,45 @@
     "academic",
     "papers"
   ],
+  "routing_hints": [
+    "bibliography",
+    "papers",
+    "academic search"
+  ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "verified",
+    "provenance_hint": "DBLP computer science bibliography",
+    "compliance_hint": "confirm downstream rights on linked content"
+  },
   "provider": {
-    "kind": "native_adapter",
-    "adapter": "dblp"
+    "kind": "http_search",
+    "base_url": "https://dblp.org",
+    "operations": {
+      "search": {
+        "path": "/search/publ/api",
+        "method": "GET",
+        "query_param": "q",
+        "limit_param": "h",
+        "static_params": {
+          "format": "json",
+          "c": "0"
+        },
+        "result_path": "result.hits.hit"
+      }
+    },
+    "item_mapping": {
+      "title": "info.title",
+      "description": "info.venue",
+      "id": "info.key"
+    }
   }
 }

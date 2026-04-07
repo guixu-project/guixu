@@ -4,15 +4,25 @@
 use data_agent::workflow::{WorkflowService, WorkflowState};
 use data_storage::job_store::JobStore;
 
+use data_storage::memory_store::MemoryStore;
+
 use crate::state::AppState;
 
 impl AppState {
     pub fn workflow_state_with_job_store(&self, job_store: JobStore) -> WorkflowState {
+        let memory_store =
+            MemoryStore::open(&data_core::config::NodeConfig::config_dir().join("memory_db"))
+                .unwrap_or_else(|_| {
+                    tracing::warn!("failed to open memory store, using temp dir");
+                    MemoryStore::open(&std::env::temp_dir().join("guixu-memory-fallback"))
+                        .expect("failed to open fallback memory store")
+                });
         WorkflowState::new(
             self.store.clone(),
             self.feedback_store.clone(),
             self.search_engine.clone(),
             job_store,
+            memory_store,
         )
     }
 

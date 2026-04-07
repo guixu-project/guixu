@@ -12,10 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use super::util::infer_data_type_from_title;
 use super::{
-    ArxivAdapter, BitTorrentAdapter, DataCiteCommonsAdapter, DblpAdapter, DefiLlamaAdapter,
-    DuckDbAdapter, ExternalAdapter, GoogleDatasetSearchAdapter, GuixuHubAdapter,
-    HuggingFaceAdapter, IpfsAdapter, KaggleAdapter, LocalFileAdapter, PanSearchAdapter,
-    PostgreSqlAdapter, RwaXyzAdapter, SemanticScholarAdapter, SqlEndpointAdapter,
+    sql_catalog, ArxivAdapter, BitTorrentAdapter, DefiLlamaAdapter, ExternalAdapter,
+    GoogleDatasetSearchAdapter, LocalFileAdapter, PanSearchAdapter, RwaXyzAdapter,
 };
 
 const BUILTIN_SKILL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/skills/builtin");
@@ -55,6 +53,8 @@ pub struct SkillCapabilities {
     pub sample_preview: bool,
     #[serde(default)]
     pub license_lookup: bool,
+    #[serde(default)]
+    pub query: bool,
 }
 
 impl SkillCapabilities {
@@ -77,6 +77,9 @@ impl SkillCapabilities {
         }
         if self.license_lookup {
             capabilities.push(SkillCapability::LicenseLookup);
+        }
+        if self.query {
+            capabilities.push(SkillCapability::Query);
         }
         capabilities
     }
@@ -117,9 +120,17 @@ pub enum SkillProvider {
     },
     HttpSearch {
         base_url: String,
-        operations: SkillOperations,
+        #[allow(clippy::large_enum_variant)]
+        operations: Box<SkillOperations>,
         #[serde(default)]
-        item_mapping: SkillItemMapping,
+        item_mapping: Box<SkillItemMapping>,
+    },
+    SqlCatalog {
+        engine: sql_catalog::SqlCatalogEngine,
+        #[serde(default)]
+        catalogs: Box<sql_catalog::CatalogSource>,
+        #[serde(default)]
+        nl2sql: Box<Option<sql_catalog::Nl2SqlConfig>>,
     },
 }
 
@@ -386,9 +397,7 @@ fn build_adapter_from_skill(
     sql_catalogs: &[SqlEndpointCatalog],
 ) -> Result<Box<dyn ExternalAdapter>> {
     match &skill.provider {
-        SkillProvider::NativeAdapter { adapter } => {
-            native_adapter_from_name(adapter, duckdb_catalogs, pg_catalogs, sql_catalogs)
-        }
+        SkillProvider::NativeAdapter { adapter } => native_adapter_from_name(adapter),
         SkillProvider::HttpSearch {
             base_url,
             operations,
@@ -403,9 +412,80 @@ fn build_adapter_from_skill(
             base_url: base_url.clone(),
             capabilities: skill.capabilities.clone(),
             governance: skill.governance.clone(),
-            operations: operations.clone(),
-            item_mapping: item_mapping.clone(),
+            operations: *(*operations).clone(),
+            item_mapping: *(*item_mapping).clone(),
         }))),
+        SkillProvider::SqlCatalog {
+            engine,
+            catalogs,
+            nl2sql,
+        } => {
+            let governance_meta = GovernanceMeta {
+                trust_tier: skill.governance.trust_tier,
+                rate_limit_hint: skill.governance.rate_limit_hint.clone(),
+                provenance_hint: skill.governance.provenance_hint.clone(),
+                compliance_hint: skill.governance.compliance_hint.clone(),
+            };
+            let entries = resolve_catalog_entries(
+                engine,
+                catalogs.as_ref(),
+                duckdb_catalogs,
+                pg_catalogs,
+                sql_catalogs,
+            );
+            Ok(Box::new(sql_catalog::SqlCatalogAdapter::new(
+                skill.id.clone(),
+                skill.name.clone(),
+                engine.clone(),
+                entries,
+                Some(governance_meta),
+                skill.tags.clone(),
+                *nl2sql.clone(),
+            )))
+        }
+    }
+}
+
+fn resolve_catalog_entries(
+    engine: &sql_catalog::SqlCatalogEngine,
+    source: &sql_catalog::CatalogSource,
+    duckdb_catalogs: &[DuckDbCatalog],
+    pg_catalogs: &[PostgreSqlCatalog],
+    sql_catalogs: &[SqlEndpointCatalog],
+) -> Vec<sql_catalog::CatalogEntry> {
+    match source {
+        sql_catalog::CatalogSource::Inline { entries } => entries.clone(),
+        sql_catalog::CatalogSource::FromConfig => match engine {
+            sql_catalog::SqlCatalogEngine::Postgresql => pg_catalogs
+                .iter()
+                .map(|c| sql_catalog::CatalogEntry {
+                    label: c.label.clone(),
+                    url: c.url.clone(),
+                    schemas: c.schemas.clone(),
+                    catalog: None,
+                })
+                .collect(),
+            sql_catalog::SqlCatalogEngine::Duckdb => duckdb_catalogs
+                .iter()
+                .map(|c| sql_catalog::CatalogEntry {
+                    label: c.label.clone(),
+                    url: c.url.clone(),
+                    schemas: vec![],
+                    catalog: None,
+                })
+                .collect(),
+            sql_catalog::SqlCatalogEngine::Presto
+            | sql_catalog::SqlCatalogEngine::Spark
+            | sql_catalog::SqlCatalogEngine::Flink => sql_catalogs
+                .iter()
+                .map(|c| sql_catalog::CatalogEntry {
+                    label: c.label.clone(),
+                    url: c.url.clone(),
+                    schemas: c.schemas.clone(),
+                    catalog: c.catalog.clone(),
+                })
+                .collect(),
+        },
     }
 }
 
@@ -429,28 +509,14 @@ pub fn validate_skill_spec(skill: &OpenDataSkillSpec) -> Result<()> {
     Ok(())
 }
 
-fn native_adapter_from_name(
-    adapter: &str,
-    duckdb_catalogs: &[DuckDbCatalog],
-    pg_catalogs: &[PostgreSqlCatalog],
-    sql_catalogs: &[SqlEndpointCatalog],
-) -> Result<Box<dyn ExternalAdapter>> {
+fn native_adapter_from_name(adapter: &str) -> Result<Box<dyn ExternalAdapter>> {
     Ok(match adapter {
-        "kaggle" => Box::new(KaggleAdapter::default()),
-        "huggingface" => Box::new(HuggingFaceAdapter::default()),
-        "ipfs" => Box::new(IpfsAdapter::default()),
-        "guixu_hub" => Box::new(GuixuHubAdapter::default()),
         "bittorrent" => Box::new(BitTorrentAdapter::default()),
-        "postgresql" => Box::new(PostgreSqlAdapter::with_catalogs(pg_catalogs.to_vec())),
-        "duckdb" => Box::new(DuckDbAdapter::with_catalogs(duckdb_catalogs.to_vec())),
-        "sql_endpoint" => Box::new(SqlEndpointAdapter::with_catalogs(sql_catalogs.to_vec())),
         "local_file" => Box::new(LocalFileAdapter::default()),
         "google_dataset_search" => Box::new(GoogleDatasetSearchAdapter::default()),
         "defillama" => Box::new(DefiLlamaAdapter::default()),
         "rwa_xyz" => Box::new(RwaXyzAdapter::default()),
         "pan_search" => Box::new(PanSearchAdapter::default()),
-        "dblp" => Box::new(DblpAdapter::default()),
-        "semantic_scholar" => Box::new(SemanticScholarAdapter::default()),
         "arxiv" => Box::new(ArxivAdapter::default()),
         other => return Err(anyhow!("unknown native adapter: {other}")),
     })
@@ -496,6 +562,73 @@ struct HttpSkillAdapterConfig {
     item_mapping: SkillItemMapping,
 }
 
+/// Apply `SkillAuth` to a `reqwest::RequestBuilder`.
+pub async fn apply_skill_auth(
+    req: reqwest::RequestBuilder,
+    auth: &SkillAuth,
+) -> Result<reqwest::RequestBuilder> {
+    Ok(match auth {
+        SkillAuth::None => req,
+        SkillAuth::BearerEnv { env } => {
+            let token =
+                std::env::var(env).map_err(|_| anyhow!("missing bearer token env: {env}"))?;
+            req.bearer_auth(token)
+        }
+        SkillAuth::BasicEnv {
+            username_env,
+            password_env,
+        } => {
+            let username = std::env::var(username_env)
+                .map_err(|_| anyhow!("missing basic auth username env: {username_env}"))?;
+            let password = std::env::var(password_env)
+                .map_err(|_| anyhow!("missing basic auth password env: {password_env}"))?;
+            req.basic_auth(username, Some(password))
+        }
+        SkillAuth::HeaderEnv { header, env } => {
+            let token =
+                std::env::var(env).map_err(|_| anyhow!("missing header auth env: {env}"))?;
+            req.header(header, token)
+        }
+        SkillAuth::OAuthClientCredentials {
+            token_url,
+            client_id_env,
+            client_secret_env,
+            audience,
+            scope,
+        } => {
+            let client_id = std::env::var(client_id_env)
+                .map_err(|_| anyhow!("missing oauth client id env: {client_id_env}"))?;
+            let client_secret = std::env::var(client_secret_env)
+                .map_err(|_| anyhow!("missing oauth client secret env: {client_secret_env}"))?;
+            let mut form = vec![
+                ("grant_type", "client_credentials".to_string()),
+                ("client_id", client_id),
+                ("client_secret", client_secret),
+            ];
+            if let Some(audience) = audience {
+                form.push(("audience", audience.clone()));
+            }
+            if let Some(scope) = scope {
+                form.push(("scope", scope.clone()));
+            }
+            let token_json: serde_json::Value = reqwest::Client::new()
+                .post(token_url)
+                .form(&form)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            let access_token = token_json
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("oauth token response missing access_token"))?
+                .to_string();
+            req.bearer_auth(access_token)
+        }
+    })
+}
+
 struct HttpSkillAdapter {
     config: HttpSkillAdapterConfig,
     client: reqwest::Client,
@@ -534,8 +667,8 @@ pub async fn execute_skill_operation(
         base_url: base_url.clone(),
         capabilities: skill.capabilities.clone(),
         governance: skill.governance.clone(),
-        operations: operations.clone(),
-        item_mapping: item_mapping.clone(),
+        operations: *(*operations).clone(),
+        item_mapping: *(*item_mapping).clone(),
     });
 
     let operation = match operation_name {
@@ -591,14 +724,6 @@ impl HttpSkillAdapter {
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
-    }
-
-    fn endpoint_url(&self) -> String {
-        format!(
-            "{}{}",
-            self.config.base_url.trim_end_matches('/'),
-            self.config.operations.search.path
-        )
     }
 
     fn value_at_path<'a>(
@@ -1089,7 +1214,7 @@ impl HttpSkillAdapter {
 #[async_trait::async_trait]
 impl ExternalAdapter for HttpSkillAdapter {
     fn name(&self) -> &str {
-        &self.config.id
+        &self.config.name
     }
 
     fn skill_id(&self) -> &str {
@@ -1121,6 +1246,43 @@ impl ExternalAdapter for HttpSkillAdapter {
             .enumerate()
             .map(|(i, item)| self.normalize_search_item(item, i))
             .collect())
+    }
+
+    async fn lookup(&self, id: &str) -> Result<Vec<serde_json::Value>> {
+        if !self.config.capabilities.supports(SkillCapability::Lookup) {
+            return Err(anyhow!(
+                "lookup unsupported for adapter: {}",
+                self.skill_id()
+            ));
+        }
+        self.execute_named_operation(ExecutedOperation::Lookup, id, 1)
+            .await
+    }
+
+    async fn download(&self, id: &str) -> Result<Vec<serde_json::Value>> {
+        if !self.config.capabilities.supports(SkillCapability::Download) {
+            return Err(anyhow!(
+                "download unsupported for adapter: {}",
+                self.skill_id()
+            ));
+        }
+        self.execute_named_operation(ExecutedOperation::Download, id, 1)
+            .await
+    }
+
+    async fn schema_probe(&self, id: &str) -> Result<Vec<serde_json::Value>> {
+        if !self
+            .config
+            .capabilities
+            .supports(SkillCapability::SchemaProbe)
+        {
+            return Err(anyhow!(
+                "schema_probe unsupported for adapter: {}",
+                self.skill_id()
+            ));
+        }
+        self.execute_named_operation(ExecutedOperation::SchemaProbe, id, 1)
+            .await
     }
 }
 

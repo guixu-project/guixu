@@ -105,7 +105,7 @@ fn clean_title(raw: &str) -> String {
         .unwrap_or(raw.len());
     let mut title: String = raw[..cut].trim().to_string();
 
-    // Strip leading "#分类🗄 " style prefixes
+    // Strip leading category-style prefixes such as "#Category🗄 "
     if let Some(pos) = title.find('🗄') {
         let after = &title[pos + '🗄'.len_utf8()..].trim_start();
         if !after.is_empty() {

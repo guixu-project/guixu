@@ -1,3 +1,8 @@
+<!--
+Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Open Data Skill Spec v2 Draft
 
 ## Purpose
@@ -292,8 +297,9 @@ Declarative provider driven by executable HTTP operations.
 }
 ```
 
-Current runtime executes only `operations.search`, but the spec reserves the
-full operation model now so new source integrations don't need another schema rewrite.
+Current runtime executes `operations.search`, and the skill execution path also
+supports `lookup`, `download`, and `schema_probe` when those operations are
+declared by the provider and surfaced through the adapter capability model.
 
 ---
 

@@ -1,17 +1,36 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "sql_endpoint",
   "name": "SQL Endpoint",
-  "description": "Search SQL-over-HTTP catalogs via built-in native adapter.",
+  "description": "Search SQL-over-HTTP catalogs (Presto/Trino, Spark, Flink) for tables and columns.",
   "source": "presto",
   "tags": [
     "sql",
     "endpoint",
     "catalog"
   ],
+  "routing_hints": [
+    "sql endpoint",
+    "http sql",
+    "catalog search"
+  ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": true,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "verified",
+    "provenance_hint": "configured SQL-over-HTTP catalogs from local runtime",
+    "compliance_hint": "respect upstream endpoint auth, quota, and data access policy"
+  },
   "provider": {
-    "kind": "native_adapter",
-    "adapter": "sql_endpoint"
+    "kind": "sql_catalog",
+    "engine": "presto",
+    "catalogs": { "kind": "from_config" }
   }
 }

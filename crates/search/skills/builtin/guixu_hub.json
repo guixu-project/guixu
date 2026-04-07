@@ -1,16 +1,50 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "guixu_hub",
   "name": "Guixu Hub",
-  "description": "Search Guixu Hub marketplace datasets via built-in native adapter.",
+  "description": "Search Guixu Hub marketplace datasets.",
   "source": "guixu_hub",
   "tags": [
     "marketplace",
     "onchain"
   ],
+  "routing_hints": [
+    "marketplace",
+    "onchain datasets",
+    "guixu hub"
+  ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "verified",
+    "provenance_hint": "Guixu Hub marketplace index",
+    "compliance_hint": "review market terms and seller-specific license constraints"
+  },
   "provider": {
-    "kind": "native_adapter",
-    "adapter": "guixu_hub"
+    "kind": "http_search",
+    "base_url": "https://www.guixu.org",
+    "operations": {
+      "search": {
+        "path": "/api/hub/datasets",
+        "method": "GET",
+        "query_param": "q",
+        "limit_param": "limit"
+      }
+    },
+    "item_mapping": {
+      "title": "title",
+      "description": "description",
+      "id": "id",
+      "tags": "tags",
+      "download_count": "metrics.download_count",
+      "created_at": "created_at"
+    }
   }
 }

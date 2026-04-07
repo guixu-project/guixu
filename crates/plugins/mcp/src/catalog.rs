@@ -79,6 +79,13 @@ fn schema_probe_executor<'a>(
     Box::pin(crate::handlers::data_skill::schema_probe(args, state))
 }
 
+fn query_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::data_skill::query(args, state))
+}
+
 fn download_by_skill_executor<'a>(
     args: serde_json::Value,
     state: &'a crate::state::AppState,
@@ -208,6 +215,10 @@ pub fn build_registry() -> ToolRegistry {
     registry.register(legacy_json_tool(
         require_definition(&mut definitions, "dataset_schema_probe"),
         executor_from_fn(schema_probe_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "dataset_query"),
+        executor_from_fn(query_executor),
     ));
     registry.register(legacy_json_tool(
         require_definition(&mut definitions, "dataset_download_by_skill"),

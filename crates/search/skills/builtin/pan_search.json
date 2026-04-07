@@ -1,5 +1,5 @@
 {
-  "spec_version": "1.0",
+  "spec_version": "2.0",
   "id": "pan_search",
   "name": "Pan Search",
   "description": "Search public cloud-drive shares via built-in native adapter.",
@@ -8,7 +8,25 @@
     "cloud-drive",
     "public-share"
   ],
+  "routing_hints": [
+    "cloud drive",
+    "public shares",
+    "file discovery"
+  ],
   "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": false,
+    "download": false,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "community",
+    "provenance_hint": "public cloud-drive share indexes",
+    "compliance_hint": "validate ownership and sharing rights before use"
+  },
   "provider": {
     "kind": "native_adapter",
     "adapter": "pan_search"
