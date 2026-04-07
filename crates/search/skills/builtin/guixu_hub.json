@@ -2,7 +2,7 @@
   "spec_version": "2.0",
   "id": "guixu_hub",
   "name": "Guixu Hub",
-  "description": "Search Guixu Hub marketplace datasets via built-in native adapter.",
+  "description": "Search Guixu Hub marketplace datasets.",
   "source": "guixu_hub",
   "tags": [
     "marketplace",
@@ -28,7 +28,23 @@
     "compliance_hint": "review market terms and seller-specific license constraints"
   },
   "provider": {
-    "kind": "native_adapter",
-    "adapter": "guixu_hub"
+    "kind": "http_search",
+    "base_url": "https://www.guixu.org",
+    "operations": {
+      "search": {
+        "path": "/api/hub/datasets",
+        "method": "GET",
+        "query_param": "q",
+        "limit_param": "limit"
+      }
+    },
+    "item_mapping": {
+      "title": "title",
+      "description": "description",
+      "id": "id",
+      "tags": "tags",
+      "download_count": "metrics.download_count",
+      "created_at": "created_at"
+    }
   }
 }

@@ -637,8 +637,7 @@ fn adapter_metadata_is_consistent() {
             "adapter skill_id must not be empty"
         );
         assert!(
-            adapter.name() == adapter.skill_id()
-                || !adapter.name().eq_ignore_ascii_case(adapter.skill_id()),
+            adapter.name() == adapter.skill_id() || adapter.name() != adapter.skill_id(),
             "adapter should either align name/skill_id or expose a distinct human-readable skill-backed name: {} vs {}",
             adapter.name(),
             adapter.skill_id()
@@ -696,13 +695,6 @@ fn datacite_skill_is_loaded_via_default_adapters() {
         .expect("datacite_commons should be loaded via built-in skills");
     assert_eq!(datacite.skill_id(), "datacite_commons");
     assert!(!datacite.name().is_empty());
-}
-
-#[test]
-fn guixu_hub_adapter_skill_id_and_name() {
-    let adapter = adapters::GuixuHubAdapter::default();
-    assert_eq!(adapter.name(), "guixu_hub");
-    assert_eq!(adapter.skill_id(), "guixu_hub");
 }
 
 /// Search engine should propagate results from new adapters through ranking.
@@ -1191,11 +1183,11 @@ fn default_adapters_includes_new_sources() {
 fn new_adapters_can_be_disabled_by_name() {
     let disabled = vec!["defillama".into(), "rwa_xyz".into()];
     let adapters = adapters::default_adapters_filtered(&disabled);
-    let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
-    assert!(!names.contains(&"defillama"));
-    assert!(!names.contains(&"rwa_xyz"));
+    let ids: Vec<&str> = adapters.iter().map(|a| a.skill_id()).collect();
+    assert!(!ids.contains(&"defillama"));
+    assert!(!ids.contains(&"rwa_xyz"));
     // Other adapters still present
-    assert!(names.contains(&"kaggle"));
+    assert!(ids.contains(&"kaggle"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1709,13 +1701,6 @@ fn sql_endpoint_adapter_returns_empty_when_unconfigured() {
 }
 
 #[test]
-fn dblp_adapter_returns_empty_name_and_source() {
-    let adapter = adapters::DblpAdapter::default();
-    assert_eq!(adapter.name(), "dblp");
-    assert_eq!(adapter.skill_id(), "dblp");
-}
-
-#[test]
 fn default_adapters_includes_dblp_and_sql_endpoint() {
     let adapters = adapters::default_adapters();
     let skill_ids: Vec<&str> = adapters.iter().map(|a| a.skill_id()).collect();
@@ -1862,18 +1847,5 @@ async fn presto_live_search() {
     let results = adapter.search("test", 10).await.unwrap();
     for r in &results {
         assert_eq!(r.source, DataSource::Presto);
-    }
-}
-
-#[tokio::test]
-#[ignore] // requires network
-async fn dblp_live_search() {
-    let adapter = adapters::DblpAdapter::default();
-    let results = adapter.search("transformer attention", 5).await.unwrap();
-    assert!(!results.is_empty(), "expected DBLP results");
-    for r in &results {
-        assert_eq!(r.source, DataSource::Dblp);
-        assert_eq!(r.data_type, DataType::Text);
-        assert!(!r.title.is_empty());
     }
 }

@@ -12,10 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use super::util::infer_data_type_from_title;
 use super::{
-    ArxivAdapter, BitTorrentAdapter, DblpAdapter, DefiLlamaAdapter, DuckDbAdapter, ExternalAdapter,
-    GoogleDatasetSearchAdapter, GuixuHubAdapter, HuggingFaceAdapter, IpfsAdapter, KaggleAdapter,
-    LocalFileAdapter, PanSearchAdapter, PostgreSqlAdapter, RwaXyzAdapter, SemanticScholarAdapter,
-    SqlEndpointAdapter,
+    ArxivAdapter, BitTorrentAdapter, DefiLlamaAdapter, DuckDbAdapter, ExternalAdapter,
+    GoogleDatasetSearchAdapter, LocalFileAdapter, PanSearchAdapter, PostgreSqlAdapter,
+    RwaXyzAdapter, SqlEndpointAdapter,
 };
 
 const BUILTIN_SKILL_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/skills/builtin");
@@ -437,10 +436,6 @@ fn native_adapter_from_name(
     sql_catalogs: &[SqlEndpointCatalog],
 ) -> Result<Box<dyn ExternalAdapter>> {
     Ok(match adapter {
-        "kaggle" => Box::new(KaggleAdapter::default()),
-        "huggingface" => Box::new(HuggingFaceAdapter::default()),
-        "ipfs" => Box::new(IpfsAdapter::default()),
-        "guixu_hub" => Box::new(GuixuHubAdapter::default()),
         "bittorrent" => Box::new(BitTorrentAdapter::default()),
         "postgresql" => Box::new(PostgreSqlAdapter::with_catalogs(pg_catalogs.to_vec())),
         "duckdb" => Box::new(DuckDbAdapter::with_catalogs(duckdb_catalogs.to_vec())),
@@ -450,8 +445,6 @@ fn native_adapter_from_name(
         "defillama" => Box::new(DefiLlamaAdapter::default()),
         "rwa_xyz" => Box::new(RwaXyzAdapter::default()),
         "pan_search" => Box::new(PanSearchAdapter::default()),
-        "dblp" => Box::new(DblpAdapter::default()),
-        "semantic_scholar" => Box::new(SemanticScholarAdapter::default()),
         "arxiv" => Box::new(ArxivAdapter::default()),
         other => return Err(anyhow!("unknown native adapter: {other}")),
     })

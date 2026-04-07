@@ -2,7 +2,7 @@
   "spec_version": "2.0",
   "id": "ipfs",
   "name": "IPFS",
-  "description": "Search IPFS-hosted datasets via built-in native adapter.",
+  "description": "Search IPFS-hosted datasets via ipfs-search.com API.",
   "source": "ipfs",
   "tags": [
     "decentralized",
@@ -28,7 +28,26 @@
     "compliance_hint": "verify content provenance and legal usage before retrieval"
   },
   "provider": {
-    "kind": "native_adapter",
-    "adapter": "ipfs"
+    "kind": "http_search",
+    "base_url": "https://api.ipfs-search.com",
+    "operations": {
+      "search": {
+        "path": "/v1/search",
+        "method": "GET",
+        "query_param": "q",
+        "limit_param": "page_size",
+        "static_params": {
+          "type": "file"
+        },
+        "result_path": "hits"
+      }
+    },
+    "item_mapping": {
+      "title": "title",
+      "description": "description",
+      "id": "hash",
+      "size_bytes": "size",
+      "created_at": "first-seen"
+    }
   }
 }

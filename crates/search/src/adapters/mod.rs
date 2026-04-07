@@ -4,20 +4,14 @@
 mod arxiv;
 mod bittorrent;
 mod datacite_commons;
-mod dblp;
 mod defillama;
 mod duckdb;
 mod google_dataset_search;
-mod guixu_hub;
-mod huggingface;
-mod ipfs;
-mod kaggle;
 mod local_file;
 mod open_data_skill;
 pub mod pan_search;
 mod postgresql;
 mod rwa_xyz;
-mod semantic_scholar;
 mod sql_endpoint;
 pub(crate) mod util;
 
@@ -28,14 +22,9 @@ use data_core::types::{SearchResult, SkillCapability, SourceFamily};
 pub use arxiv::ArxivAdapter;
 pub use bittorrent::BitTorrentAdapter;
 pub use datacite_commons::DataCiteCommonsAdapter;
-pub use dblp::DblpAdapter;
 pub use defillama::DefiLlamaAdapter;
 pub use duckdb::DuckDbAdapter;
 pub use google_dataset_search::GoogleDatasetSearchAdapter;
-pub use guixu_hub::GuixuHubAdapter;
-pub use huggingface::HuggingFaceAdapter;
-pub use ipfs::IpfsAdapter;
-pub use kaggle::KaggleAdapter;
 pub use local_file::LocalFileAdapter;
 pub use open_data_skill::{
     execute_skill_operation, load_data_skill_profiles, load_open_data_skills, DataSkillProfile,
@@ -44,7 +33,6 @@ pub use open_data_skill::{
 pub use pan_search::PanSearchAdapter;
 pub use postgresql::PostgreSqlAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
-pub use semantic_scholar::SemanticScholarAdapter;
 pub use sql_endpoint::SqlEndpointAdapter;
 
 #[cfg(test)]
