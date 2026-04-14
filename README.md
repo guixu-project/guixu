@@ -15,6 +15,16 @@ curl -fsSL https://raw.githubusercontent.com/guixu-project/guixu/main/install.sh
 
 That's it. The installer downloads the binary, initializes a local node, auto-detects your AI clients (Codex, Cursor, Claude Code, OpenCode, OpenClaw), and registers the Guixu MCP server with each one.
 
+## Development
+
+After cloning the repository, run the bootstrap script to configure git hooks:
+
+```bash
+./bootstrap.sh
+```
+
+This configures `core.hooksPath` to use the project's `.githooks/` directory, enabling automatic pre-commit checks (SPDX headers, English comments, formatting, clippy) before each commit.
+
 
 ## AI Agent Integration (MCP)
 

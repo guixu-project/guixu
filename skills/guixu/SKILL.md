@@ -1,3 +1,8 @@
+<!--
+Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+SPDX-License-Identifier: Apache-2.0
+-->
+
 ---
 name: guixu
 description: "Dataset discovery, valuation, and acquisition for AI training. Use when: (1) finding datasets for model training or fine-tuning, (2) evaluating dataset quality and relevance, (3) downloading datasets from Kaggle, HuggingFace, IPFS, or other sources, (4) assessing dataset licensing and provenance, (5) acquiring paid or free datasets. NOT for: generic web search (use browser), local file operations (use file tools), or data labeling/annotation tasks."

@@ -25,19 +25,19 @@
 //!
 //! ```
 //! use data_storage::trace_sanitizer::{TraceSanitizer, SanitizationLevel};
-//! use data_storage::trace_store::{TraceStore, SpanRecord, SpanType};
+//! use data_storage::trace_store::TraceStore;
+//! use std::path::Path;
 //!
 //! let store = TraceStore::open_in_memory().unwrap();
 //! let sanitizer = TraceSanitizer::new(SanitizationLevel::Standard);
 //!
 //! // Export all guixu traces with standard sanitization
-//! let report = sanitizer.export_traces(&store, "guixu", "sanitized_traces.jsonl").unwrap();
+//! let report = sanitizer.export_traces(&store, "guixu", Path::new("sanitized_traces.jsonl")).unwrap();
 //! println!("Exported {} spans, redacted {} fields", report.spans_exported, report.total_redactions);
 //! ```
 
-use crate::trace_store::{SpanRecord, SpanType, TraceSource, TraceStore};
+use crate::trace_store::{SpanRecord, TraceStore};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -149,33 +149,25 @@ fn re_uuid() -> &'static Regex {
 }
 
 fn re_file_path() -> &'static Regex {
-    RE_FILE_PATH.get_or_init(|| {
-        Regex::new(r"(?:/[a-zA-Z0-9_\-.]+)+/?|/~/[a-zA-Z0-9_\-./]+").unwrap()
-    })
+    RE_FILE_PATH
+        .get_or_init(|| Regex::new(r"(?:/[a-zA-Z0-9_\-.]+)+/?|/~/[a-zA-Z0-9_\-./]+").unwrap())
 }
 
 fn re_url() -> &'static Regex {
-    RE_URL.get_or_init(|| {
-        Regex::new(r"https?://[^\s\\]+").unwrap()
-    })
+    RE_URL.get_or_init(|| Regex::new(r"https?://[^\s\\]+").unwrap())
 }
 
 fn re_ip() -> &'static Regex {
-    RE_IP.get_or_init(|| {
-        Regex::new(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b").unwrap()
-    })
+    RE_IP.get_or_init(|| Regex::new(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b").unwrap())
 }
 
 fn re_email() -> &'static Regex {
-    RE_EMAIL.get_or_init(|| {
-        Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap()
-    })
+    RE_EMAIL
+        .get_or_init(|| Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap())
 }
 
 fn re_api_key() -> &'static Regex {
-    RE_API_KEY.get_or_init(|| {
-        Regex::new(r"(sk[_-]|pk[_-]|token[=-])[a-zA-Z0-9_\-]{16,}").unwrap()
-    })
+    RE_API_KEY.get_or_init(|| Regex::new(r"(sk[_-]|pk[_-]|token[=-])[a-zA-Z0-9_\-]{16,}").unwrap())
 }
 
 /// Identifier renaming map to make IDs consistent within a single export.
@@ -192,7 +184,7 @@ impl IdRenamer {
     }
 
     /// Rename an identifier, returning a consistent generic name.
-    fn rename(&mut self, id_type: &str, original: &str) -> String {
+    fn rename(&mut self, id_type: &str, _original: &str) -> String {
         let counter = self.counters.entry(id_type.to_string()).or_insert(0);
         *counter += 1;
         format!("{}_{:03}", id_type, counter)
@@ -234,11 +226,9 @@ impl TraceSanitizer {
         let mut new_attrs = serde_json::Map::new();
         if let serde_json::Value::Object(ref obj) = span.attributes {
             for (k, v) in obj {
-                let (new_k, new_v, categories) = self.sanitize_key_value(k, v, &mut id_renamer, &mut report);
+                let (new_k, new_v, _categories) =
+                    self.sanitize_key_value(k, v, &mut id_renamer, &mut report);
                 new_attrs.insert(new_k, new_v);
-                for cat in categories {
-                    report.summary.add(cat);
-                }
             }
         }
 
@@ -289,9 +279,11 @@ impl TraceSanitizer {
         });
         result.error = None;
         // Keep model only if it looks like a generic model name (not org-specific)
-        result.model = span.model.as_ref().filter(|m| {
-            !m.contains('/') && !m.contains(':')
-        }).cloned();
+        result.model = span
+            .model
+            .as_ref()
+            .filter(|m| !m.contains('/') && !m.contains(':'))
+            .cloned();
 
         result
     }
@@ -299,10 +291,24 @@ impl TraceSanitizer {
     /// Redact content fields (prompt, completion, input, output, query, etc.) in attributes.
     fn redact_content_fields(&self, span: &mut SpanRecord, report: &mut RedactionReport) {
         const CONTENT_FIELDS: &[&str] = &[
-            "prompt", "completion", "input", "output", "content", "query",
-            "search_query", "message", "user_prompt", "system_prompt",
-            "reasoning", "thought", "result", "response", "tool_input",
-            "tool_output", "file_content", "logs",
+            "prompt",
+            "completion",
+            "input",
+            "output",
+            "content",
+            "query",
+            "search_query",
+            "message",
+            "user_prompt",
+            "system_prompt",
+            "reasoning",
+            "thought",
+            "result",
+            "response",
+            "tool_input",
+            "tool_output",
+            "file_content",
+            "logs",
         ];
 
         if let serde_json::Value::Object(ref mut obj) = span.attributes {
@@ -326,10 +332,11 @@ impl TraceSanitizer {
         id_renamer: &mut IdRenamer,
         report: &mut RedactionReport,
     ) -> (String, serde_json::Value, Vec<&'static str>) {
-        let mut categories = Vec::new();
-
         // Determine if this key looks like an identifier
-        let new_key = if matches!(key, "workspace_id" | "job_id" | "session_id" | "user_id" | "trace_id") {
+        let new_key = if matches!(
+            key,
+            "workspace_id" | "job_id" | "session_id" | "user_id" | "trace_id"
+        ) {
             report.summary.add("uuid"); // counts as a redaction
             id_renamer.rename(key.replace("_id", "").as_str(), "")
         } else {
@@ -345,11 +352,8 @@ impl TraceSanitizer {
             serde_json::Value::Object(inner) => {
                 let mut new_inner = serde_json::Map::new();
                 for (k, v) in inner {
-                    let (nk, nv, cats) = self.sanitize_key_value(k, v, id_renamer, report);
+                    let (nk, nv, _cats) = self.sanitize_key_value(k, v, id_renamer, report);
                     new_inner.insert(nk, nv);
-                    for cat in cats {
-                        report.summary.add(cat);
-                    }
                 }
                 serde_json::Value::Object(new_inner)
             }
@@ -370,11 +374,11 @@ impl TraceSanitizer {
             _ => value.clone(),
         };
 
-        (new_key, new_value, categories)
+        (new_key, new_value, vec![])
     }
 
     /// Apply all regex-based redactions to a string.
-    fn redact_string(&self, s: &str, report: &mut RedactionReport) -> String {
+    fn redact_string(&self, s: &str, _report: &mut RedactionReport) -> String {
         let mut result = s.to_string();
 
         // UUIDs
@@ -389,7 +393,9 @@ impl TraceSanitizer {
 
         // File paths
         if re_file_path().is_match(&result) {
-            result = re_file_path().replace_all(&result, "[FILE_PATH]").to_string();
+            result = re_file_path()
+                .replace_all(&result, "[FILE_PATH]")
+                .to_string();
         }
 
         // IP addresses
@@ -411,7 +417,12 @@ impl TraceSanitizer {
     }
 
     /// Export traces from the store to a JSONL file with sanitization.
-    pub fn export_traces(&self, store: &TraceStore, source: &str, output_path: &Path) -> Result<SanitizationReport> {
+    pub fn export_traces(
+        &self,
+        store: &TraceStore,
+        source: &str,
+        output_path: &Path,
+    ) -> Result<SanitizationReport> {
         let mut report = SanitizationReport {
             level: self.level,
             source: source.to_string(),
@@ -423,7 +434,9 @@ impl TraceSanitizer {
         let mut file = File::create(output_path)?;
 
         for summary in traces {
-            let spans = store.get_trace_spans(&summary.trace_id, source).unwrap_or_default();
+            let spans = store
+                .get_trace_spans(&summary.trace_id, source)
+                .unwrap_or_default();
             for span in spans {
                 let sanitized = self.sanitize_span(&span);
                 let json = serde_json::to_string(&sanitized)?;
@@ -448,7 +461,12 @@ impl TraceSanitizer {
     }
 
     /// Export a single trace to a JSON-serializable structure with sanitization.
-    pub fn export_trace(&self, store: &TraceStore, trace_id: &str, source: &str) -> Result<Vec<SpanRecord>> {
+    pub fn export_trace(
+        &self,
+        store: &TraceStore,
+        trace_id: &str,
+        source: &str,
+    ) -> Result<Vec<SpanRecord>> {
         let spans = store.get_trace_spans(trace_id, source)?;
         Ok(spans.iter().map(|s| self.sanitize_span(s)).collect())
     }
@@ -470,8 +488,8 @@ struct RedactionReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace_store::TraceStore;
-    use chrono::Duration;
+    use crate::trace_store::{TraceSource, TraceStore};
+    use chrono::{Duration, Utc};
 
     fn make_test_span() -> SpanRecord {
         let now = Utc::now();
@@ -486,8 +504,14 @@ mod tests {
         .with_end_time(now + Duration::milliseconds(100))
         .with_source(TraceSource::Guixu)
         .with_attribute("workspace_id", serde_json::json!("ws_abc123def456"))
-        .with_attribute("user_prompt", serde_json::json!("Find datasets about climate change from https://example.com"))
-        .with_attribute("api_key_used", serde_json::json!("sk_test_abcdefghijklmnopqrstuvwxyz"))
+        .with_attribute(
+            "user_prompt",
+            serde_json::json!("Find datasets about climate change from https://example.com"),
+        )
+        .with_attribute(
+            "api_key_used",
+            serde_json::json!("sk_test_abcdefghijklmnopqrstuvwxyz"),
+        )
     }
 
     #[test]

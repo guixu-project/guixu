@@ -216,7 +216,10 @@ fn cmd_trace(action: TraceAction) -> Result<()> {
                 "off" => SanitizationLevel::Off,
                 "standard" => SanitizationLevel::Standard,
                 "strict" => SanitizationLevel::Strict,
-                _ => anyhow::bail!("Unknown level: {}. Use 'off', 'standard', or 'strict'.", level),
+                _ => anyhow::bail!(
+                    "Unknown level: {}. Use 'off', 'standard', or 'strict'.",
+                    level
+                ),
             };
 
             let sanitizer = TraceSanitizer::new(sanitization_level);
@@ -243,10 +246,10 @@ fn cmd_trace(action: TraceAction) -> Result<()> {
                 println!("\n=== {} traces (source={}) ===", traces.len(), s);
                 for t in traces {
                     println!(
-                        "  {}  spans={:3}  duration={:8.1f}ms  tokens={:6}/{:6}  {}",
+                        "  {}  spans={}  duration={}ms  tokens={}/{}  {}",
                         t.trace_id,
                         t.span_count,
-                        t.total_duration_ms,
+                        format!("{:.2}", t.total_duration_ms),
                         t.total_input_tokens,
                         t.total_output_tokens,
                         t.last_span_time.format("%Y-%m-%d %H:%M")
@@ -254,7 +257,11 @@ fn cmd_trace(action: TraceAction) -> Result<()> {
                 }
             }
         }
-        TraceAction::Query { trace_id, source, db } => {
+        TraceAction::Query {
+            trace_id,
+            source,
+            db,
+        } => {
             let store = TraceStore::open(Path::new(&db))?;
             let spans = store.get_trace_spans(&trace_id, &source)?;
             if spans.is_empty() {
@@ -264,10 +271,10 @@ fn cmd_trace(action: TraceAction) -> Result<()> {
             println!("Trace {} ({} spans):\n", trace_id, spans.len());
             for s in spans {
                 println!(
-                    "  {:20} {:8} {:12.2f}ms  in={:5} out={:5}  {}",
+                    "  {:20} {:8} {:>12}ms  in={:>5} out={:>5}  {}",
                     s.span_id.chars().take(20).collect::<String>(),
                     s.span_type.as_str(),
-                    s.duration_ms,
+                    format!("{:.2}", s.duration_ms),
                     s.input_tokens.unwrap_or(0),
                     s.output_tokens.unwrap_or(0),
                     s.model.as_deref().unwrap_or("-"),
