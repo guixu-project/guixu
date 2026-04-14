@@ -5,6 +5,7 @@ pub mod feedback_store;
 pub mod job_store;
 pub mod memory_store;
 pub mod metadata_store;
+pub mod trace_store;
 
 #[cfg(test)]
 mod tests;
