@@ -395,75 +395,11 @@ impl TraceStore {
         Ok(())
     }
 
-    /// Insert multiple spans in a batch
+    /// Insert multiple spans in a batch.
     pub fn insert_spans(&self, spans: &[SpanRecord]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                r#"
-                INSERT INTO trace_spans (
-                    trace_id, span_id, parent_span_id, span_name, span_type,
-                    source, start_time_us, end_time_us, duration_ms, attributes,
-                    input_tokens, output_tokens, model, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                "#,
-            )?;
-
-            for span in spans {
-                stmt.execute(params![
-                    span.trace_id,
-                    span.span_id,
-                    span.parent_span_id,
-                    span.span_name,
-                    span.span_type.as_str(),
-                    span.source.as_str(),
-                    datetime_to_micros(span.start_time),
-                    datetime_to_micros(span.end_time),
-                    span.duration_ms,
-                    span.attributes.to_string(),
-                    span.input_tokens,
-                    span.output_tokens,
-                    span.model,
-                    span.error,
-                ])?;
-            }
-            drop(stmt);
-
-            // Batch upsert trace summaries
-            for span in spans {
-                let _ = self.upsert_trace_summary_tx(&tx, span);
-            }
+        for span in spans {
+            self.insert_span(span)?;
         }
-        tx.commit()?;
-        Ok(())
-    }
-
-    fn upsert_trace_summary_tx(&self, tx: &duckdb::Transaction, span: &SpanRecord) -> Result<()> {
-        tx.execute(
-            r#"
-            INSERT INTO traces (trace_id, trace_name, source, first_span_time_us, last_span_time_us,
-                               total_duration_ms, span_count, total_input_tokens, total_output_tokens)
-            VALUES (?, NULL, ?, ?, ?, ?, 1, ?, ?)
-            ON CONFLICT (trace_id, source) DO UPDATE SET
-                first_span_time_us  = CASE WHEN traces.first_span_time_us > EXCLUDED.first_span_time_us
-                                         THEN traces.first_span_time_us ELSE EXCLUDED.first_span_time_us END,
-                last_span_time_us   = CASE WHEN traces.last_span_time_us < EXCLUDED.last_span_time_us
-                                         THEN traces.last_span_time_us ELSE EXCLUDED.last_span_time_us END,
-                total_duration_ms = traces.total_duration_ms + EXCLUDED.total_duration_ms,
-                span_count = traces.span_count + 1,
-                total_input_tokens  = traces.total_input_tokens  + COALESCE(EXCLUDED.total_input_tokens, 0),
-                total_output_tokens = traces.total_output_tokens + COALESCE(EXCLUDED.total_output_tokens, 0)
-            "#,
-            params![
-                span.trace_id,
-                span.source.as_str(),
-                datetime_to_micros(span.start_time),
-                datetime_to_micros(span.end_time),
-                span.duration_ms,
-                span.input_tokens.unwrap_or(0),
-                span.output_tokens.unwrap_or(0),
-            ],
-        )?;
         Ok(())
     }
 

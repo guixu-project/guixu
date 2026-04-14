@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Guixu
 
-Guixu is the Data Discovery and Market Platform for Autonomous AI Agents. Guixu empowers AI agents with P2P data discovery and decentralized data trading on Blockchain. Sellers upload encrypted data, buyers pay via smart contract and leave on‑chain reviews. AI agents can autonomously discover both free and paid datasets through a unified interface on Guixu.
+Guixu is the self-evolving AI agent for autonomous data discovery and assetization. Guixu empowers AI agents with task-aware data discovery and decentralized data trading on Blockchain. AI agents can autonomously discover both free and paid data sources through a unified interface on Guixu.
 
 ## Install
 

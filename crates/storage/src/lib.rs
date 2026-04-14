@@ -6,6 +6,8 @@ pub mod job_store;
 pub mod memory_store;
 pub mod metadata_store;
 pub mod trace_store;
+pub mod trace_import;
+pub mod trace_sanitizer;
 
 #[cfg(test)]
 mod tests;
