@@ -47,6 +47,11 @@ enum Commands {
         #[arg(long, default_value = "light", global = true)]
         mode: String,
     },
+    /// Manage AI agent traces (import, export, query, sanitize).
+    Trace {
+        #[command(subcommand)]
+        action: TraceAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -60,6 +65,75 @@ enum McpAction {
     Uninstall {
         /// Target client: codex, cursor, claude-code, opencode, openclaw
         client: String,
+    },
+}
+
+/// Trace management subcommands.
+#[derive(Subcommand)]
+enum TraceAction {
+    /// Import traces from an external provider (OpenAI or Claude).
+    Import {
+        /// Provider: openai or claude
+        #[arg(long)]
+        provider: String,
+
+        /// Path to the trace file (JSONL format)
+        #[arg(long)]
+        file: String,
+
+        /// Path to the DuckDB trace database
+        #[arg(long, default_value = "traces.duckdb")]
+        db: String,
+
+        /// Skip malformed records (default: true)
+        #[arg(long, default_value = "true")]
+        skip_errors: bool,
+    },
+    /// Export traces with sanitization.
+    Export {
+        /// Source of traces to export: guixu, openai, or claude
+        #[arg(long, default_value = "guixu")]
+        source: String,
+
+        /// Output file path
+        #[arg(long)]
+        output: String,
+
+        /// Sanitization level: off, standard, strict
+        #[arg(long, default_value = "standard")]
+        level: String,
+
+        /// Path to the DuckDB trace database
+        #[arg(long, default_value = "traces.duckdb")]
+        db: String,
+    },
+    /// List recent traces.
+    List {
+        /// Source filter: guixu, openai, or claude (default: all)
+        #[arg(long)]
+        source: Option<String>,
+
+        /// Maximum number of traces to show
+        #[arg(long, default_value = "20")]
+        limit: i64,
+
+        /// Path to the DuckDB trace database
+        #[arg(long, default_value = "traces.duckdb")]
+        db: String,
+    },
+    /// Query spans from a specific trace.
+    Query {
+        /// Trace ID
+        #[arg(long)]
+        trace_id: String,
+
+        /// Source of traces
+        #[arg(long, default_value = "guixu")]
+        source: String,
+
+        /// Path to the DuckDB trace database
+        #[arg(long, default_value = "traces.duckdb")]
+        db: String,
     },
 }
 
@@ -80,8 +154,127 @@ async fn main() -> Result<()> {
             Some(McpAction::Uninstall { client }) => cmd_mcp_uninstall(&client)?,
             None => cmd_mcp(mode).await?,
         },
+        Commands::Trace { action } => cmd_trace(action)?,
     }
 
+    Ok(())
+}
+
+fn cmd_trace(action: TraceAction) -> Result<()> {
+    use data_storage::trace_import::{ClaudeImporter, OpenAiImporter, TraceImporter};
+    use data_storage::trace_sanitizer::{SanitizationLevel, TraceSanitizer};
+    use data_storage::trace_store::TraceStore;
+    use std::path::Path;
+
+    match action {
+        TraceAction::Import {
+            provider,
+            file,
+            db,
+            skip_errors,
+        } => {
+            let store = TraceStore::open(Path::new(&db))?;
+            let config = data_storage::trace_import::ImporterConfig {
+                skip_errors,
+                ..Default::default()
+            };
+
+            let report = match provider.as_str() {
+                "openai" => {
+                    let importer = OpenAiImporter::new(config);
+                    importer.import_file(Path::new(&file), &store)?
+                }
+                "claude" => {
+                    let importer = ClaudeImporter::new(config);
+                    importer.import_file(Path::new(&file), &store)?
+                }
+                _ => {
+                    anyhow::bail!("Unknown provider: {}. Use 'openai' or 'claude'.", provider);
+                }
+            };
+
+            println!(
+                "Import complete: {} spans imported, {} traces, {} errors",
+                report.spans_imported,
+                report.traces_processed,
+                report.errors.len()
+            );
+            if !report.errors.is_empty() {
+                for e in &report.errors {
+                    eprintln!("  line {}: {}", e.line, e.message);
+                }
+            }
+        }
+        TraceAction::Export {
+            source,
+            output,
+            level,
+            db,
+        } => {
+            let store = TraceStore::open(Path::new(&db))?;
+            let sanitization_level = match level.as_str() {
+                "off" => SanitizationLevel::Off,
+                "standard" => SanitizationLevel::Standard,
+                "strict" => SanitizationLevel::Strict,
+                _ => anyhow::bail!("Unknown level: {}. Use 'off', 'standard', or 'strict'.", level),
+            };
+
+            let sanitizer = TraceSanitizer::new(sanitization_level);
+            let report = sanitizer.export_traces(&store, &source, Path::new(&output))?;
+
+            println!(
+                "Export complete: {} spans exported, {} redactions (level={})",
+                report.spans_exported, report.total_redactions, level
+            );
+        }
+        TraceAction::List { source, limit, db } => {
+            let store = TraceStore::open(Path::new(&db))?;
+            let sources: Vec<&str> = if let Some(s) = &source {
+                vec![s.as_str()]
+            } else {
+                vec!["guixu", "openai", "claude"]
+            };
+
+            for s in sources {
+                let traces = store.list_traces(s, limit)?;
+                if traces.is_empty() {
+                    continue;
+                }
+                println!("\n=== {} traces (source={}) ===", traces.len(), s);
+                for t in traces {
+                    println!(
+                        "  {}  spans={:3}  duration={:8.1f}ms  tokens={:6}/{:6}  {}",
+                        t.trace_id,
+                        t.span_count,
+                        t.total_duration_ms,
+                        t.total_input_tokens,
+                        t.total_output_tokens,
+                        t.last_span_time.format("%Y-%m-%d %H:%M")
+                    );
+                }
+            }
+        }
+        TraceAction::Query { trace_id, source, db } => {
+            let store = TraceStore::open(Path::new(&db))?;
+            let spans = store.get_trace_spans(&trace_id, &source)?;
+            if spans.is_empty() {
+                println!("No spans found for trace_id={} source={}", trace_id, source);
+                return Ok(());
+            }
+            println!("Trace {} ({} spans):\n", trace_id, spans.len());
+            for s in spans {
+                println!(
+                    "  {:20} {:8} {:12.2f}ms  in={:5} out={:5}  {}",
+                    s.span_id.chars().take(20).collect::<String>(),
+                    s.span_type.as_str(),
+                    s.duration_ms,
+                    s.input_tokens.unwrap_or(0),
+                    s.output_tokens.unwrap_or(0),
+                    s.model.as_deref().unwrap_or("-"),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
