@@ -14,4 +14,5 @@ pub mod state;
 pub mod stdio;
 pub mod tool_adapters;
 pub mod tools;
+pub mod trace_context;
 pub mod web_ui;

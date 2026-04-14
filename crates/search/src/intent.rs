@@ -1,8 +1,10 @@
 // Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(dead_code)]
+
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -96,7 +98,6 @@ pub trait QueryProfiler: Send + Sync {
 #[derive(Debug, Clone, Default)]
 pub struct IntentParser;
 
-const MEMORY_SEARCH_LIMIT: usize = 6;
 const DEFAULT_MAX_LATENCY_SECS: f64 = 30.0;
 const CONTEXT_WINDOW_BYTES: usize = 48;
 const DEFAULT_BUDGET: &str = "0 USD";
@@ -105,7 +106,6 @@ const DEFAULT_BUDGET: &str = "0 USD";
 struct IntentContext {
     user_profile: UserProfile,
     bandwidth_bytes_per_sec: u64,
-    related_memories: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -235,17 +235,11 @@ struct LlmIntentProfile {
     data_standard: DataStandard,
 }
 
-fn build_user_prompt(
-    query: &str,
-    user_profile: &UserProfile,
-    related_memories: &[String],
-) -> Result<String> {
+fn build_user_prompt(query: &str, user_profile: &UserProfile) -> Result<String> {
     let hardware_json = serde_json::to_string_pretty(user_profile)?;
-    let memories_section = format_memory_context(related_memories);
     Ok(format!(
         "Extract dataset search intent as json.\n\
          Query:\n{query}\n\n\
-         Relevant user memories:\n{memories_section}\n\n\
          Hardware profile:\n{hardware_json}\n"
     ))
 }
@@ -642,159 +636,13 @@ pub(crate) fn load_setting_env_value(key: &str) -> Option<String> {
     data_core::env::load_setting_env_value(key)
 }
 
-fn collect_intent_context(query: &str, include_memories: bool) -> IntentContext {
+fn collect_intent_context(_query: &str) -> IntentContext {
     let user_profile = collect_user_profile();
-    let related_memories = if include_memories {
-        retrieve_related_memories(query, MEMORY_SEARCH_LIMIT)
-    } else {
-        Vec::new()
-    };
 
     IntentContext {
         user_profile,
         bandwidth_bytes_per_sec: collect_local_bandwidth_bytes_per_sec(),
-        related_memories,
     }
-}
-
-fn retrieve_related_memories(query: &str, limit: usize) -> Vec<String> {
-    let entries = load_memory_entries();
-    retrieve_related_memories_from_entries(query, &entries, limit)
-}
-
-fn load_memory_entries() -> Vec<String> {
-    let Some(path) = resolve_memory_path() else {
-        return Vec::new();
-    };
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("- "))
-        .map(|line| line.trim_start_matches("- ").trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect()
-}
-
-fn resolve_memory_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("USER_MEMORY_PATH") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-
-    for base in [
-        std::env::current_dir().ok(),
-        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR"))),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let Some(path) = find_memory_path_from_base(&base) {
-            return Some(path);
-        }
-    }
-
-    None
-}
-
-fn find_memory_path_from_base(base: &Path) -> Option<PathBuf> {
-    for ancestor in base.ancestors() {
-        let candidate = ancestor.join("files").join("MEMORY.md");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn retrieve_related_memories_from_entries(
-    query: &str,
-    entries: &[String],
-    limit: usize,
-) -> Vec<String> {
-    if limit == 0 {
-        return Vec::new();
-    }
-
-    let named_entities = extract_named_entities(query);
-    let entity_matchers: Vec<(String, HashSet<String>)> = named_entities
-        .iter()
-        .map(|entity| {
-            (
-                entity.to_lowercase(),
-                tokenize_for_search(entity)
-                    .into_iter()
-                    .collect::<HashSet<_>>(),
-            )
-        })
-        .filter(|(_, tokens)| !tokens.is_empty())
-        .collect();
-    let keyword_terms: HashSet<String> = extract_salient_terms(query).into_iter().collect();
-
-    let mut entity_ranked: Vec<(usize, usize, String)> = Vec::new();
-    let mut keyword_ranked: Vec<(usize, usize, String)> = Vec::new();
-
-    for entry in entries.iter() {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
-        }
-
-        let entry_lower = entry.to_lowercase();
-        let entry_tokens: HashSet<String> = tokenize_for_search(entry).into_iter().collect();
-
-        let mut entity_score = 0usize;
-        for (entity_phrase, entity_tokens) in &entity_matchers {
-            if entity_phrase.len() > 1 && entry_lower.contains(entity_phrase) {
-                entity_score += 20 + entity_tokens.len() * 3;
-                continue;
-            }
-
-            if entity_tokens.len() >= 2
-                && entity_tokens
-                    .iter()
-                    .all(|token| entry_tokens.contains(token))
-            {
-                entity_score += 12 + entity_tokens.len() * 2;
-                continue;
-            }
-
-            if entity_tokens.len() == 1
-                && entity_tokens
-                    .iter()
-                    .next()
-                    .is_some_and(|token| entry_tokens.contains(token))
-            {
-                entity_score += 8;
-            }
-        }
-
-        let keyword_score = keyword_terms
-            .iter()
-            .filter(|keyword| entry_tokens.contains(*keyword))
-            .count()
-            * 2;
-
-        if entity_score > 0 {
-            entity_ranked.push((entity_score + keyword_score, entry.len(), entry.to_string()));
-        } else if keyword_score > 0 {
-            keyword_ranked.push((keyword_score, entry.len(), entry.to_string()));
-        }
-    }
-
-    let mut ranked = if !entity_matchers.is_empty() && !entity_ranked.is_empty() {
-        entity_ranked
-    } else {
-        keyword_ranked
-    };
-
-    ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    ranked.truncate(limit);
-    ranked.into_iter().map(|(_, _, entry)| entry).collect()
 }
 
 fn extract_named_entities(query: &str) -> Vec<String> {
@@ -899,13 +747,13 @@ pub fn extract_salient_terms_for_test(query: &str) -> Vec<String> {
 /// Build the user prompt for intent parsing, suitable for sending to any LLM.
 pub fn build_intent_user_prompt(query: &str) -> Result<String> {
     let query_owned = query.to_string();
-    let ctx = collect_intent_context(&query_owned, true);
-    build_user_prompt(query, &ctx.user_profile, &ctx.related_memories)
+    let ctx = collect_intent_context(&query_owned);
+    build_user_prompt(query, &ctx.user_profile)
 }
 
 /// Parse an LLM response (JSON text) into a [`QueryProfile`].
 pub fn parse_intent_response(query: &str, llm_content: &str) -> Result<QueryProfile> {
-    let ctx = collect_intent_context(query, true);
+    let ctx = collect_intent_context(query);
     parse_llm_intent_content(
         query,
         &ctx.user_profile,
@@ -944,18 +792,6 @@ fn parse_llm_intent_content(
         data_standard,
         user_profile: user_profile.clone(),
     })
-}
-
-fn format_memory_context(related_memories: &[String]) -> String {
-    if related_memories.is_empty() {
-        return "- None".to_string();
-    }
-
-    related_memories
-        .iter()
-        .map(|memory| format!("- {memory}"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn tokenize_surface(value: &str) -> Vec<String> {
@@ -1066,19 +902,6 @@ fn dedupe_strings(values: Vec<String>) -> Vec<String> {
         }
     }
     deduped
-}
-
-#[cfg(test)]
-pub(crate) fn retrieve_related_memories_for_test(
-    query: &str,
-    entries: &[&str],
-    limit: usize,
-) -> Vec<String> {
-    let entries = entries
-        .iter()
-        .map(|entry| entry.to_string())
-        .collect::<Vec<_>>();
-    retrieve_related_memories_from_entries(query, &entries, limit)
 }
 
 fn collect_user_profile() -> UserProfile {

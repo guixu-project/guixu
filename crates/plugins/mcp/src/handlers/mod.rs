@@ -14,4 +14,5 @@ pub mod pan_search;
 pub mod purchase;
 pub mod reviews;
 pub mod search;
+pub mod trace_hooks;
 pub mod workflow_adapter;

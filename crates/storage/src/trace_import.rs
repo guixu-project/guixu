@@ -20,14 +20,15 @@
 //! # Example
 //!
 //! ```
-//! use data_storage::trace_import::{OpenAiImporter, ImporterConfig};
+//! use data_storage::trace_import::{OpenAiImporter, ImporterConfig, TraceImporter};
 //! use data_storage::trace_store::TraceStore;
 //!
 //! let store = TraceStore::open_in_memory().unwrap();
 //! let importer = OpenAiImporter::new(ImporterConfig::default());
 //!
-//! // Import from a JSONL file (one trace JSON per line)
-//! let report = importer.import_file("openai_traces.jsonl", &store).unwrap();
+//! // Import from a JSONL string (in-memory)
+//! let jsonl = r#"{"trace_id":"t1","span_id":"s1","name":"test","type":"agent","start_time":"2026-01-01T00:00:00Z","end_time":"2026-01-01T00:00:01Z"}"#;
+//! let report = importer.import_str(jsonl, &store).unwrap();
 //! println!("Imported {} spans, {} errors", report.spans_imported, report.errors.len());
 //! ```
 
@@ -61,7 +62,7 @@ impl Default for ImporterConfig {
 }
 
 /// Import report summarizing what was imported and what errors occurred.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImportReport {
     /// Number of spans successfully imported.
     pub spans_imported: usize,
@@ -71,17 +72,6 @@ pub struct ImportReport {
     pub spans_skipped: usize,
     /// Errors encountered during import.
     pub errors: Vec<ImportError>,
-}
-
-impl Default for ImportReport {
-    fn default() -> Self {
-        Self {
-            spans_imported: 0,
-            traces_processed: 0,
-            spans_skipped: 0,
-            errors: Vec::new(),
-        }
-    }
 }
 
 /// A single import error with location context.
@@ -192,23 +182,20 @@ impl OpenAiImporter {
             .to_string();
 
         // span_type
-        let type_str = obj
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("other");
+        let type_str = obj.get("type").and_then(|v| v.as_str()).unwrap_or("other");
         let span_type = Self::detect_span_type(type_str);
 
         // Timestamps
         let start_time = obj
             .get("start_time")
             .or_else(|| obj.get("created_at"))
-            .and_then(|v| parse_timestamp(v))
+            .and_then(parse_timestamp)
             .unwrap_or_else(Utc::now);
 
         let end_time = obj
             .get("end_time")
             .or_else(|| obj.get("completed_at"))
-            .and_then(|v| parse_timestamp(v))
+            .and_then(parse_timestamp)
             .unwrap_or_else(Utc::now);
 
         // Token usage
@@ -244,7 +231,10 @@ impl OpenAiImporter {
 
         // Build attributes JSON with all remaining fields + schema version markers
         let mut attrs = serde_json::Map::new();
-        attrs.insert("schema_version".to_string(), self.config.schema_version.clone().into());
+        attrs.insert(
+            "schema_version".to_string(),
+            self.config.schema_version.clone().into(),
+        );
         attrs.insert("source_schema".to_string(), "openai".into());
         attrs.insert("raw_type".to_string(), type_str.into());
 
@@ -252,10 +242,11 @@ impl OpenAiImporter {
             let k_str: &str = k;
             match k_str {
                 // Already handled fields — skip
-                "trace_id" | "id" | "span_id" | "parent_id" | "parent_span_id"
-                | "name" | "type" | "start_time" | "end_time" | "created_at"
-                | "completed_at" | "usage" | "input_tokens" | "output_tokens"
-                | "model" | "error" | "status" | "metadata" => continue,
+                "trace_id" | "id" | "span_id" | "parent_id" | "parent_span_id" | "name"
+                | "type" | "start_time" | "end_time" | "created_at" | "completed_at" | "usage"
+                | "input_tokens" | "output_tokens" | "model" | "error" | "status" | "metadata" => {
+                    continue
+                }
                 _ => {
                     attrs.insert(k.clone(), v.clone());
                 }
@@ -357,7 +348,8 @@ impl TraceImporter for OpenAiImporter {
         let mut seen_trace_ids = std::collections::HashSet::new();
 
         for (line_num, line) in reader.lines().enumerate() {
-            let line = line.map_err(|e| anyhow::anyhow!("failed to read line {}: {}", line_num + 1, e))?;
+            let line =
+                line.map_err(|e| anyhow::anyhow!("failed to read line {}: {}", line_num + 1, e))?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -448,9 +440,9 @@ impl ClaudeImporter {
     }
 
     fn parse_span(&self, value: &serde_json::Value, line_num: usize) -> Result<SpanRecord> {
-        let obj = value.as_object().ok_or_else(|| {
-            anyhow::anyhow!("line {}: expected JSON object", line_num)
-        })?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("line {}: expected JSON object", line_num))?;
 
         // trace_id
         let trace_id = obj
@@ -495,16 +487,13 @@ impl ClaudeImporter {
         // Timestamps
         let start_time = obj
             .get("start_time")
-            .and_then(|v| parse_timestamp(v))
-            .or_else(|| {
-                obj.get("timestamp")
-                    .and_then(|v| parse_timestamp(v))
-            })
+            .and_then(parse_timestamp)
+            .or_else(|| obj.get("timestamp").and_then(parse_timestamp))
             .unwrap_or_else(Utc::now);
 
         let end_time = obj
             .get("end_time")
-            .and_then(|v| parse_timestamp(v))
+            .and_then(parse_timestamp)
             .unwrap_or_else(Utc::now);
 
         // Token usage — Claude uses `usage` object or top-level
@@ -534,7 +523,10 @@ impl ClaudeImporter {
 
         // Build attributes
         let mut attrs = serde_json::Map::new();
-        attrs.insert("schema_version".to_string(), self.config.schema_version.clone().into());
+        attrs.insert(
+            "schema_version".to_string(),
+            self.config.schema_version.clone().into(),
+        );
         attrs.insert("source_schema".to_string(), "claude".into());
         attrs.insert("raw_type".to_string(), type_str.into());
 
@@ -546,10 +538,11 @@ impl ClaudeImporter {
         for (k, v) in obj {
             let k_str: &str = k;
             match k_str {
-                "trace_id" | "id" | "span_id" | "parent_id" | "parent_span_id"
-                | "name" | "span_name" | "type" | "span_type" | "start_time"
-                | "end_time" | "timestamp" | "usage" | "input_tokens"
-                | "output_tokens" | "model" | "error" | "events" => continue,
+                "trace_id" | "id" | "span_id" | "parent_id" | "parent_span_id" | "name"
+                | "span_name" | "type" | "span_type" | "start_time" | "end_time" | "timestamp"
+                | "usage" | "input_tokens" | "output_tokens" | "model" | "error" | "events" => {
+                    continue
+                }
                 _ => {
                     attrs.insert(k.clone(), v.clone());
                 }
@@ -647,7 +640,8 @@ impl TraceImporter for ClaudeImporter {
         let mut seen_trace_ids = std::collections::HashSet::new();
 
         for (line_num, line) in reader.lines().enumerate() {
-            let line = line.map_err(|e| anyhow::anyhow!("failed to read line {}: {}", line_num + 1, e))?;
+            let line =
+                line.map_err(|e| anyhow::anyhow!("failed to read line {}: {}", line_num + 1, e))?;
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -708,9 +702,7 @@ fn parse_timestamp(v: &serde_json::Value) -> Option<DateTime<Utc>> {
             DateTime::from_timestamp(n.as_i64().unwrap(), 0)
         }
         // Unix epoch seconds as number (f64)
-        serde_json::Value::Number(n) => {
-            DateTime::from_timestamp(n.as_i64().unwrap_or(0), 0)
-        }
+        serde_json::Value::Number(n) => DateTime::from_timestamp(n.as_i64().unwrap_or(0), 0),
         // Already a unix timestamp integer
         _ => None,
     }

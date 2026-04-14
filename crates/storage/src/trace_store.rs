@@ -13,12 +13,12 @@
 //! ```
 //! use data_storage::trace_store::{TraceStore, SpanRecord, SpanType};
 //!
-//! let store = TraceStore::open("traces.duckdb").unwrap();
+//! let store = TraceStore::open_in_memory().unwrap();
 //!
-//! let span = SpanRecord::new(
+//! let span: SpanRecord = SpanRecord::new(
 //!     "trace_001",
 //!     "span_001",
-//!     None,
+//!     None::<String>,
 //!     "agent_loop",
 //!     SpanType::Agent,
 //! );
@@ -70,7 +70,7 @@ impl SpanType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "agent" => SpanType::Agent,
             "generation" => SpanType::Generation,
@@ -102,7 +102,7 @@ impl TraceSource {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "guixu" => TraceSource::Guixu,
             "openai" => TraceSource::OpenAi,
@@ -182,7 +182,10 @@ impl SpanRecord {
     /// Set end time and calculate duration
     pub fn with_end_time(mut self, t: DateTime<Utc>) -> Self {
         self.end_time = t;
-        self.duration_ms = (self.end_time - self.start_time).num_microseconds().unwrap_or(0) as f64 / 1000.0;
+        self.duration_ms = (self.end_time - self.start_time)
+            .num_microseconds()
+            .unwrap_or(0) as f64
+            / 1000.0;
         self
     }
 
@@ -242,6 +245,7 @@ pub struct TraceSummary {
 /// DuckDB-backed trace store for AI agent traces
 #[derive(Clone)]
 pub struct TraceStore {
+    #[allow(clippy::arc_with_non_send_sync)]
     conn: Arc<Connection>,
 }
 
@@ -262,7 +266,10 @@ impl TraceStore {
     /// Open or create a trace database at the given path
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let store = Self { conn: Arc::new(conn) };
+        #[allow(clippy::arc_with_non_send_sync)]
+        let store = Self {
+            conn: Arc::new(conn),
+        };
         store.init_schema()?;
         Ok(store)
     }
@@ -270,7 +277,10 @@ impl TraceStore {
     /// Open an in-memory database (for testing or temporary use)
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let store = Self { conn: Arc::new(conn) };
+        #[allow(clippy::arc_with_non_send_sync)]
+        let store = Self {
+            conn: Arc::new(conn),
+        };
         store.init_schema()?;
         Ok(store)
     }
@@ -280,7 +290,7 @@ impl TraceStore {
     /// Schema design principles (per Phase 1):
     /// - Stable columns for core fields (trace_id, span_id, parent_span_id, span_type,
     ///   start_time, end_time, duration_ms, source, model, token counts, error)
-    /// -变动字段入 JSON: provider-specific and OTel GenAI development 语义约定字段
+    /// - Variable fields go into JSON: provider-specific and OTel GenAI semantic convention fields
     ///   go into `attributes` JSON to tolerate spec churn
     /// - Idempotency: (source, trace_id, span_id) is the unique key for deduplication
     /// - All time columns stored as BIGINT (microseconds since epoch) to avoid
@@ -420,7 +430,7 @@ impl TraceStore {
             Ok(TraceSummary {
                 trace_id: row.get(0)?,
                 trace_name: row.get(1)?,
-                source: TraceSource::from_str(&row.get::<_, String>(2)?),
+                source: TraceSource::parse(&row.get::<_, String>(2)?),
                 first_span_time: micros_to_datetime(row.get::<_, i64>(3)?),
                 last_span_time: micros_to_datetime(row.get::<_, i64>(4)?),
                 total_duration_ms: row.get(5)?,
@@ -428,10 +438,10 @@ impl TraceStore {
                 total_input_tokens: row.get(7)?,
                 total_output_tokens: row.get(8)?,
             })
-})?;
+        })?;
 
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
+    }
 
     /// Get all spans for a given trace
     pub fn get_trace_spans(&self, trace_id: &str, source: &str) -> Result<Vec<SpanRecord>> {
@@ -448,14 +458,15 @@ impl TraceStore {
 
         let rows = stmt.query_map(params![trace_id, source], |row| {
             let attrs_str: String = row.get(9)?;
-            let attributes: serde_json::Value = serde_json::from_str(&attrs_str).unwrap_or(serde_json::json!({}));
+            let attributes: serde_json::Value =
+                serde_json::from_str(&attrs_str).unwrap_or(serde_json::json!({}));
             Ok(SpanRecord {
                 trace_id: row.get(0)?,
                 span_id: row.get(1)?,
                 parent_span_id: row.get(2)?,
                 span_name: row.get(3)?,
-                span_type: SpanType::from_str(&row.get::<_, String>(4)?),
-                source: TraceSource::from_str(&row.get::<_, String>(5)?),
+                span_type: SpanType::parse(&row.get::<_, String>(4)?),
+                source: TraceSource::parse(&row.get::<_, String>(5)?),
                 start_time: micros_to_datetime(row.get::<_, i64>(6)?),
                 end_time: micros_to_datetime(row.get::<_, i64>(7)?),
                 duration_ms: row.get(8)?,
@@ -525,14 +536,15 @@ impl TraceStore {
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             let attrs_str: String = row.get(9)?;
-            let attributes: serde_json::Value = serde_json::from_str(&attrs_str).unwrap_or(serde_json::json!({}));
+            let attributes: serde_json::Value =
+                serde_json::from_str(&attrs_str).unwrap_or(serde_json::json!({}));
             Ok(SpanRecord {
                 trace_id: row.get(0)?,
                 span_id: row.get(1)?,
                 parent_span_id: row.get(2)?,
                 span_name: row.get(3)?,
-                span_type: SpanType::from_str(&row.get::<_, String>(4)?),
-                source: TraceSource::from_str(&row.get::<_, String>(5)?),
+                span_type: SpanType::parse(&row.get::<_, String>(4)?),
+                source: TraceSource::parse(&row.get::<_, String>(5)?),
                 start_time: micros_to_datetime(row.get::<_, i64>(6)?),
                 end_time: micros_to_datetime(row.get::<_, i64>(7)?),
                 duration_ms: row.get(8)?,
@@ -561,14 +573,15 @@ impl TraceStore {
         let mut rows = stmt.query(params![span_id])?;
         if let Some(row) = rows.next()? {
             let attrs_str: String = row.get(9)?;
-            let attributes: serde_json::Value = serde_json::from_str(&attrs_str).unwrap_or(serde_json::json!({}));
+            let attributes: serde_json::Value =
+                serde_json::from_str(&attrs_str).unwrap_or(serde_json::json!({}));
             Ok(Some(SpanRecord {
                 trace_id: row.get(0)?,
                 span_id: row.get(1)?,
                 parent_span_id: row.get(2)?,
                 span_name: row.get(3)?,
-                span_type: SpanType::from_str(&row.get::<_, String>(4)?),
-                source: TraceSource::from_str(&row.get::<_, String>(5)?),
+                span_type: SpanType::parse(&row.get::<_, String>(4)?),
+                source: TraceSource::parse(&row.get::<_, String>(5)?),
                 start_time: micros_to_datetime(row.get::<_, i64>(6)?),
                 end_time: micros_to_datetime(row.get::<_, i64>(7)?),
                 duration_ms: row.get(8)?,
@@ -676,7 +689,11 @@ mod tests {
                 format!("span_{}", i),
                 None::<String>,
                 if i % 2 == 0 { "agent_loop" } else { "llm_call" },
-                if i % 2 == 0 { SpanType::Agent } else { SpanType::Generation },
+                if i % 2 == 0 {
+                    SpanType::Agent
+                } else {
+                    SpanType::Generation
+                },
             )
             .with_start_time(now - Duration::minutes(i as i64))
             .with_end_time(now - Duration::minutes(i as i64) + Duration::seconds(1))

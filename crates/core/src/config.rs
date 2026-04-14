@@ -51,6 +51,9 @@ pub struct NodeConfig {
     /// External SQL-over-HTTP catalogs (Spark Thrift, Flink SQL Gateway, Presto/Trino).
     #[serde(default)]
     pub external_sql: Vec<SqlEndpointCatalog>,
+    /// Agent trace emission configuration.
+    #[serde(default)]
+    pub trace: TraceSettings,
 }
 
 /// A DuckDB HTTP server to expose as a searchable catalog.
@@ -128,6 +131,19 @@ impl Default for PaymentConfig {
     }
 }
 
+impl Default for TraceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            db_path: default_trace_db_path(),
+            buffer_size: default_trace_buffer_size(),
+            flush_interval_secs: default_trace_flush_interval(),
+            sample_rate: default_trace_sample_rate(),
+            auto_export_path: None,
+        }
+    }
+}
+
 fn default_epsilon() -> f64 {
     1.0
 }
@@ -144,6 +160,45 @@ fn default_disabled_adapters() -> Vec<String> {
 
 fn default_catalog_sync_interval_secs() -> u64 {
     3600
+}
+
+/// Trace emission configuration (disabled by default).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceSettings {
+    /// Enable active trace emission (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the DuckDB trace database.
+    #[serde(default = "default_trace_db_path")]
+    pub db_path: String,
+    /// Flush when buffer reaches this size.
+    #[serde(default = "default_trace_buffer_size")]
+    pub buffer_size: usize,
+    /// Flush interval in seconds.
+    #[serde(default = "default_trace_flush_interval")]
+    pub flush_interval_secs: u64,
+    /// Sampling rate (0.0 to 1.0).
+    #[serde(default = "default_trace_sample_rate")]
+    pub sample_rate: f64,
+    /// Auto-export path for JSONL traces (optional).
+    #[serde(default)]
+    pub auto_export_path: Option<String>,
+}
+
+fn default_trace_db_path() -> String {
+    "traces.duckdb".into()
+}
+
+fn default_trace_buffer_size() -> usize {
+    100
+}
+
+fn default_trace_flush_interval() -> u64 {
+    30
+}
+
+fn default_trace_sample_rate() -> f64 {
+    1.0
 }
 
 /// Privacy protection level for metadata publication.
@@ -211,6 +266,7 @@ impl Default for NodeConfig {
             external_duckdb: vec![],
             external_postgresql: vec![],
             external_sql: vec![],
+            trace: TraceSettings::default(),
         }
     }
 }
