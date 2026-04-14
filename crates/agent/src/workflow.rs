@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 
 use data_core::agent::contracts::{
     DelegatedDataTask, JobEvent, JobEventType, JobId, JobResult, JobState, WorkerTask,
@@ -19,6 +20,8 @@ use data_storage::memory_store::MemoryStore;
 use data_storage::metadata_store::MetadataStore;
 use serde_json::json;
 use tokio::task::JoinSet;
+
+use data_storage::trace_manager::{AgentTraceManager, SpanBuilder, SpanType};
 
 use crate::planner::{
     ExecutionStrategy, PlannedOperation, PlannedSkillTask, Planner, SkillExecutionPlan,
@@ -112,15 +115,36 @@ fn load_memory_with_fallback(store: &MemoryStore, task: &DelegatedDataTask) -> A
 
 pub struct WorkflowService {
     state: WorkflowState,
+    trace_manager: Option<Arc<RwLock<AgentTraceManager>>>,
 }
 
 impl WorkflowService {
     pub fn new(state: WorkflowState) -> Self {
-        Self { state }
+        Self {
+            state,
+            trace_manager: None,
+        }
+    }
+
+    pub fn with_trace_manager(mut self, tm: Arc<RwLock<AgentTraceManager>>) -> Self {
+        self.trace_manager = Some(tm);
+        self
     }
 
     pub async fn run(&self, task: DelegatedDataTask) -> anyhow::Result<JobResult> {
         let job_id = task.job_id.clone();
+
+        // Start trace span if tracing is enabled
+        let (trace_id, span_id) = if let Some(tm) = &self.trace_manager {
+            let tm = tm.read().await;
+            tm.start_trace("workflow.run", SpanType::Agent)
+                .await
+                .unwrap_or_else(|| (String::new(), String::new()))
+        } else {
+            (String::new(), String::new())
+        };
+        let trace_id_clone = trace_id.clone();
+        let span_id_clone = span_id.clone();
 
         // 1. Load memory
         let mut memory = load_memory_with_fallback(&self.state.memory_store, &task);
@@ -145,6 +169,26 @@ impl WorkflowService {
 
         // 3. Execute
         let result = self.execute_workflow(&task, &plan).await;
+
+        // End trace span
+        if let (Some(tm), true) = (&self.trace_manager, !trace_id_clone.is_empty()) {
+            let tm = tm.write().await;
+            let builder = SpanBuilder::new(
+                &trace_id_clone,
+                &span_id_clone,
+                None,
+                "workflow.run",
+                SpanType::Agent,
+            )
+            .with_attribute("job_id", serde_json::json!(job_id.to_string()))
+            .with_attribute("goal", serde_json::json!(task.task.goal));
+            let builder = if result.is_err() {
+                builder.with_error(result.as_ref().err().unwrap().to_string().as_str())
+            } else {
+                builder
+            };
+            tm.end_span(builder).await;
+        }
 
         // 4. Write memory + finalize
         match result {

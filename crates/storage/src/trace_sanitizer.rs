@@ -47,24 +47,18 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 /// Sanitization level — controls how aggressively PII/sensitive data is redacted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SanitizationLevel {
     /// No sanitization — export raw data. Only for trusted local use.
     Off,
     /// Standard sanitization — redact identifiers and content fields.
     /// Safe for general sharing with colleagues or in bug reports.
+    #[default]
     Standard,
     /// Strict sanitization — remove all semantic content, keep only timing/counts.
     /// Safe for public open-source examples and talks.
     Strict,
-}
-
-impl Default for SanitizationLevel {
-    fn default() -> Self {
-        // Safe default: standard is the recommended sharing level
-        SanitizationLevel::Standard
-    }
 }
 
 /// Statistics about a sanitization run.

@@ -5,9 +5,17 @@ use anyhow::Result;
 use data_core::agent::contracts::DelegatedDataTaskInput;
 use serde_json::Value;
 
+use super::trace_hooks::with_trace;
 use crate::state::AppState;
 
 pub async fn handle(args: Value, state: &AppState) -> Result<String> {
+    with_trace(&state.trace_manager, "mcp.delegate", None, async {
+        inner_handle(args, state).await
+    })
+    .await
+}
+
+async fn inner_handle(args: Value, state: &AppState) -> Result<String> {
     let input: DelegatedDataTaskInput = serde_json::from_value(args)?;
     let task = input.into_task();
     let job_id = task.job_id.clone();

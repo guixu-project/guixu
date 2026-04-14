@@ -62,7 +62,7 @@ impl Default for ImporterConfig {
 }
 
 /// Import report summarizing what was imported and what errors occurred.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImportReport {
     /// Number of spans successfully imported.
     pub spans_imported: usize,
@@ -72,17 +72,6 @@ pub struct ImportReport {
     pub spans_skipped: usize,
     /// Errors encountered during import.
     pub errors: Vec<ImportError>,
-}
-
-impl Default for ImportReport {
-    fn default() -> Self {
-        Self {
-            spans_imported: 0,
-            traces_processed: 0,
-            spans_skipped: 0,
-            errors: Vec::new(),
-        }
-    }
 }
 
 /// A single import error with location context.
@@ -200,13 +189,13 @@ impl OpenAiImporter {
         let start_time = obj
             .get("start_time")
             .or_else(|| obj.get("created_at"))
-            .and_then(|v| parse_timestamp(v))
+            .and_then(parse_timestamp)
             .unwrap_or_else(Utc::now);
 
         let end_time = obj
             .get("end_time")
             .or_else(|| obj.get("completed_at"))
-            .and_then(|v| parse_timestamp(v))
+            .and_then(parse_timestamp)
             .unwrap_or_else(Utc::now);
 
         // Token usage
@@ -498,13 +487,13 @@ impl ClaudeImporter {
         // Timestamps
         let start_time = obj
             .get("start_time")
-            .and_then(|v| parse_timestamp(v))
-            .or_else(|| obj.get("timestamp").and_then(|v| parse_timestamp(v)))
+            .and_then(parse_timestamp)
+            .or_else(|| obj.get("timestamp").and_then(parse_timestamp))
             .unwrap_or_else(Utc::now);
 
         let end_time = obj
             .get("end_time")
-            .and_then(|v| parse_timestamp(v))
+            .and_then(parse_timestamp)
             .unwrap_or_else(Utc::now);
 
         // Token usage — Claude uses `usage` object or top-level

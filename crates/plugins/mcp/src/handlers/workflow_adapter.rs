@@ -27,6 +27,11 @@ impl AppState {
     }
 
     pub fn workflow_service_with_job_store(&self, job_store: JobStore) -> WorkflowService {
-        WorkflowService::new(self.workflow_state_with_job_store(job_store))
+        let service = WorkflowService::new(self.workflow_state_with_job_store(job_store));
+        if let Some(ref tm) = self.trace_manager {
+            service.with_trace_manager(tm.clone())
+        } else {
+            service
+        }
     }
 }

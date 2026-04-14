@@ -32,6 +32,9 @@ pub struct AppState {
     pub search_engine: Arc<SearchEngine>,
     pub payment_router: PaymentRouter,
     pub torrent_engine: Option<TorrentEngine>,
+    /// Agent trace manager (None if tracing is disabled).
+    pub trace_manager:
+        Option<Arc<tokio::sync::RwLock<data_storage::trace_manager::AgentTraceManager>>>,
 }
 
 impl AppState {
@@ -179,6 +182,7 @@ impl AppState {
             search_engine: Arc::new(search_engine),
             payment_router: PaymentRouter::new(wallet, payment.testnet),
             torrent_engine,
+            trace_manager: None,
         }
     }
 }

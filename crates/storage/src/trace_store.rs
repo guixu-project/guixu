@@ -70,7 +70,7 @@ impl SpanType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "agent" => SpanType::Agent,
             "generation" => SpanType::Generation,
@@ -102,7 +102,7 @@ impl TraceSource {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "guixu" => TraceSource::Guixu,
             "openai" => TraceSource::OpenAi,
@@ -245,6 +245,7 @@ pub struct TraceSummary {
 /// DuckDB-backed trace store for AI agent traces
 #[derive(Clone)]
 pub struct TraceStore {
+    #[allow(clippy::arc_with_non_send_sync)]
     conn: Arc<Connection>,
 }
 
@@ -265,6 +266,7 @@ impl TraceStore {
     /// Open or create a trace database at the given path
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
+        #[allow(clippy::arc_with_non_send_sync)]
         let store = Self {
             conn: Arc::new(conn),
         };
@@ -275,6 +277,7 @@ impl TraceStore {
     /// Open an in-memory database (for testing or temporary use)
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        #[allow(clippy::arc_with_non_send_sync)]
         let store = Self {
             conn: Arc::new(conn),
         };
@@ -427,7 +430,7 @@ impl TraceStore {
             Ok(TraceSummary {
                 trace_id: row.get(0)?,
                 trace_name: row.get(1)?,
-                source: TraceSource::from_str(&row.get::<_, String>(2)?),
+                source: TraceSource::parse(&row.get::<_, String>(2)?),
                 first_span_time: micros_to_datetime(row.get::<_, i64>(3)?),
                 last_span_time: micros_to_datetime(row.get::<_, i64>(4)?),
                 total_duration_ms: row.get(5)?,
@@ -462,8 +465,8 @@ impl TraceStore {
                 span_id: row.get(1)?,
                 parent_span_id: row.get(2)?,
                 span_name: row.get(3)?,
-                span_type: SpanType::from_str(&row.get::<_, String>(4)?),
-                source: TraceSource::from_str(&row.get::<_, String>(5)?),
+                span_type: SpanType::parse(&row.get::<_, String>(4)?),
+                source: TraceSource::parse(&row.get::<_, String>(5)?),
                 start_time: micros_to_datetime(row.get::<_, i64>(6)?),
                 end_time: micros_to_datetime(row.get::<_, i64>(7)?),
                 duration_ms: row.get(8)?,
@@ -540,8 +543,8 @@ impl TraceStore {
                 span_id: row.get(1)?,
                 parent_span_id: row.get(2)?,
                 span_name: row.get(3)?,
-                span_type: SpanType::from_str(&row.get::<_, String>(4)?),
-                source: TraceSource::from_str(&row.get::<_, String>(5)?),
+                span_type: SpanType::parse(&row.get::<_, String>(4)?),
+                source: TraceSource::parse(&row.get::<_, String>(5)?),
                 start_time: micros_to_datetime(row.get::<_, i64>(6)?),
                 end_time: micros_to_datetime(row.get::<_, i64>(7)?),
                 duration_ms: row.get(8)?,
@@ -577,8 +580,8 @@ impl TraceStore {
                 span_id: row.get(1)?,
                 parent_span_id: row.get(2)?,
                 span_name: row.get(3)?,
-                span_type: SpanType::from_str(&row.get::<_, String>(4)?),
-                source: TraceSource::from_str(&row.get::<_, String>(5)?),
+                span_type: SpanType::parse(&row.get::<_, String>(4)?),
+                source: TraceSource::parse(&row.get::<_, String>(5)?),
                 start_time: micros_to_datetime(row.get::<_, i64>(6)?),
                 end_time: micros_to_datetime(row.get::<_, i64>(7)?),
                 duration_ms: row.get(8)?,

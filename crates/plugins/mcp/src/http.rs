@@ -265,8 +265,16 @@ async fn http_rpc_handler(
     Json(req): Json<McpRequest>,
 ) -> impl IntoResponse {
     let session_id = http_session_id(&headers);
+
+    // Extract trace context from incoming traceparent header and store in manager
+    if let Some(ctx) = crate::trace_context::extract_trace_context(&headers) {
+        if let Some(tm) = &server.state().trace_manager {
+            (*tm).blocking_read().set_current_context_sync(ctx);
+        }
+    }
+
     match handle_request(req, &server, &session_id).await {
-        Some(response) => Json(response).into_response(),
+        Some(r) => Json(r).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
     }
 }

@@ -246,10 +246,10 @@ fn cmd_trace(action: TraceAction) -> Result<()> {
                 println!("\n=== {} traces (source={}) ===", traces.len(), s);
                 for t in traces {
                     println!(
-                        "  {}  spans={}  duration={}ms  tokens={}/{}  {}",
+                        "  {}  spans={}  duration={:.2}ms  tokens={}/{}  {}",
                         t.trace_id,
                         t.span_count,
-                        format!("{:.2}", t.total_duration_ms),
+                        t.total_duration_ms,
                         t.total_input_tokens,
                         t.total_output_tokens,
                         t.last_span_time.format("%Y-%m-%d %H:%M")

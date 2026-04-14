@@ -10,6 +10,7 @@ use data_core::types::{DatasetCid, SkillCapability, SourceFamily};
 use data_search::engine::SearchFilters;
 use data_search::intent::QueryProfile;
 
+use super::trace_hooks::with_trace;
 use crate::server::AppState;
 
 fn parse_string_array(
@@ -55,6 +56,13 @@ where
 }
 
 pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String> {
+    with_trace(&state.trace_manager, "mcp.search", None, async {
+        inner_handle(args, state).await
+    })
+    .await
+}
+
+async fn inner_handle(args: serde_json::Value, state: &AppState) -> Result<String> {
     let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
     let task_type = args
         .get("task_type")

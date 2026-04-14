@@ -5,7 +5,9 @@ pub mod feedback_store;
 pub mod job_store;
 pub mod memory_store;
 pub mod metadata_store;
+pub mod trace_export;
 pub mod trace_import;
+pub mod trace_manager;
 pub mod trace_sanitizer;
 pub mod trace_store;
 
