@@ -240,6 +240,7 @@ impl TraceSanitizer {
             trace_id,
             span_id,
             parent_span_id,
+            session_id: span.session_id.clone(),
             span_name: span.span_name.clone(),
             span_type: span.span_type,
             source: span.source,
@@ -482,7 +483,7 @@ struct RedactionReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace_store::{TraceSource, TraceStore};
+    use crate::trace_store::{SpanType, TraceSource, TraceStore};
     use chrono::{Duration, Utc};
 
     fn make_test_span() -> SpanRecord {

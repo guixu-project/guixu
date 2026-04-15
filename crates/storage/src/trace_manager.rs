@@ -20,6 +20,7 @@
 //! let manager = AgentTraceManager::new(config);
 //! ```
 
+use crate::otel_export::{OtelExportConfig, OtelExportHandle};
 pub use crate::trace_store::SpanType;
 use crate::trace_store::{SpanRecord, TraceSource, TraceStore};
 use anyhow::Result;
@@ -47,6 +48,14 @@ pub struct TraceConfig {
     pub sample_rate: f64,
     /// Auto-export path for JSONL traces (optional).
     pub auto_export_path: Option<String>,
+    /// Enable OTLP export of spans using OTel GenAI semantic conventions.
+    pub otel_enabled: bool,
+    /// OTLP endpoint (e.g. `http://localhost:4318`).
+    pub otel_endpoint: String,
+    /// Service name for OTel resource attribute.
+    pub otel_service_name: String,
+    /// Optional auth header for OTLP endpoint.
+    pub otel_auth_header: Option<String>,
 }
 
 impl Default for TraceConfig {
@@ -58,6 +67,10 @@ impl Default for TraceConfig {
             flush_interval_secs: 30,
             sample_rate: 1.0,
             auto_export_path: None,
+            otel_enabled: false,
+            otel_endpoint: "http://localhost:4318".into(),
+            otel_service_name: "guixu".into(),
+            otel_auth_header: None,
         }
     }
 }
@@ -169,6 +182,7 @@ pub struct SpanBuilder {
     trace_id: String,
     span_id: String,
     parent_span_id: Option<String>,
+    session_id: Option<String>,
     span_name: String,
     span_type: SpanType,
     start_time: DateTime<Utc>,
@@ -192,6 +206,7 @@ impl SpanBuilder {
             trace_id: trace_id.to_string(),
             span_id: span_id.to_string(),
             parent_span_id: parent_span_id.map(String::from),
+            session_id: None,
             span_name: span_name.to_string(),
             span_type,
             start_time: Utc::now(),
@@ -233,6 +248,12 @@ impl SpanBuilder {
         self
     }
 
+    /// Set session id.
+    pub fn with_session_id(mut self, session_id: &str) -> Self {
+        self.session_id = Some(session_id.to_string());
+        self
+    }
+
     /// Finish building and return the [`SpanRecord`].
     pub fn finish(self) -> SpanRecord {
         let end_time = Utc::now();
@@ -243,6 +264,7 @@ impl SpanBuilder {
             trace_id: self.trace_id,
             span_id: self.span_id,
             parent_span_id: self.parent_span_id,
+            session_id: self.session_id,
             span_name: self.span_name,
             span_type: self.span_type,
             source: TraceSource::Guixu,
@@ -272,6 +294,7 @@ async fn flush_task(
     mut rx: mpsc::Receiver<FlushCommand>,
     flush_interval: Duration,
     auto_export_path: Option<String>,
+    otel_handle: OtelExportHandle,
 ) {
     let mut interval = tokio::time::interval(flush_interval);
     loop {
@@ -283,6 +306,9 @@ async fn flush_task(
                 match cmd {
                     Some(FlushCommand::Flush(spans)) => {
                         if !spans.is_empty() {
+                            // Export to OTel (async-safe, non-blocking)
+                            otel_handle.export_spans(&spans).await;
+
                             let db_path = db_path.clone();
                             let auto_export = auto_export_path.clone();
                             let spans_for_export = spans.clone();
@@ -305,6 +331,7 @@ async fn flush_task(
                         }
                     }
                     None | Some(FlushCommand::Shutdown) => {
+                        otel_handle.shutdown().await;
                         break;
                     }
                 }
@@ -379,11 +406,23 @@ impl AgentTraceManager {
         let (tx, rx) = mpsc::channel(config.buffer_size * 2);
         let tx_clone = tx.clone();
 
+        let otel_handle = if config.otel_enabled {
+            OtelExportHandle::new(&OtelExportConfig {
+                endpoint: config.otel_endpoint.clone(),
+                service_name: config.otel_service_name.clone(),
+                auth_header: config.otel_auth_header.clone(),
+                timeout_secs: 10,
+            })
+        } else {
+            OtelExportHandle::disabled()
+        };
+
         tokio::spawn(flush_task(
             config.db_path.clone(),
             rx,
             Duration::from_secs(config.flush_interval_secs),
             config.auto_export_path.clone(),
+            otel_handle,
         ));
 
         Self {
@@ -405,6 +444,10 @@ impl AgentTraceManager {
             flush_interval_secs: trace_cfg.flush_interval_secs,
             sample_rate: trace_cfg.sample_rate,
             auto_export_path: trace_cfg.auto_export_path.clone(),
+            otel_enabled: trace_cfg.otel_enabled,
+            otel_endpoint: trace_cfg.otel_endpoint.clone(),
+            otel_service_name: trace_cfg.otel_service_name.clone(),
+            otel_auth_header: trace_cfg.otel_auth_header.clone(),
         };
 
         let db_path = std::path::Path::new(&trace_config.db_path);

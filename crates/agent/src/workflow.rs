@@ -83,8 +83,10 @@ impl WorkflowState {
 
 fn memory_key_for_task(task: &DelegatedDataTask) -> MemoryKey {
     match &task.task.task_type {
-        Some(task_type) => MemoryKey::task_family(&task.workspace.id, task.host.kind, task_type),
-        None => MemoryKey::workspace(&task.workspace.id, task.host.kind),
+        Some(task_type) => {
+            MemoryKey::task_family(&task.workspace.id, task.host.kind.clone(), task_type)
+        }
+        None => MemoryKey::workspace(&task.workspace.id, task.host.kind.clone()),
     }
 }
 
@@ -94,11 +96,11 @@ fn load_memory_with_fallback(store: &MemoryStore, task: &DelegatedDataTask) -> A
     if let Ok(Some(mem)) = store.get(&primary) {
         return mem;
     }
-    let workspace = MemoryKey::workspace(&task.workspace.id, task.host.kind);
+    let workspace = MemoryKey::workspace(&task.workspace.id, task.host.kind.clone());
     if let Ok(Some(mem)) = store.get(&workspace) {
         return mem;
     }
-    let global = MemoryKey::global(task.host.kind);
+    let global = MemoryKey::global(task.host.kind.clone());
     if let Ok(Some(mem)) = store.get(&global) {
         return mem;
     }

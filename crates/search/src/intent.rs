@@ -4,7 +4,6 @@
 #![allow(dead_code)]
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -740,6 +739,26 @@ pub fn extract_salient_terms_for_test(query: &str) -> Vec<String> {
     extract_salient_terms(query)
 }
 
+/// Test-only: retrieve memories that contain at least one named entity from the query.
+#[cfg(test)]
+pub fn retrieve_related_memories_for_test(
+    query: &str,
+    memories: &[&str],
+    _limit: usize,
+) -> Vec<String> {
+    let entities = extract_named_entities(query);
+    memories
+        .iter()
+        .filter(|memory| {
+            let lower = memory.to_lowercase();
+            entities
+                .iter()
+                .any(|entity| lower.contains(&entity.to_lowercase()))
+        })
+        .map(|m| m.to_string())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Public API for external LLM implementations (e.g. MCP sampling)
 // ---------------------------------------------------------------------------
@@ -1098,6 +1117,7 @@ fn detect_linux_default_interface_via_ip_route() -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn read_linux_interface_speed_bytes_per_sec(interface: &str) -> Option<u64> {
+    use std::path::PathBuf;
     let speed_path = PathBuf::from("/sys/class/net")
         .join(interface)
         .join("speed");

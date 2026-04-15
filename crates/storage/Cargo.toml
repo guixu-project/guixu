@@ -19,6 +19,10 @@ rand = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
+hex = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }

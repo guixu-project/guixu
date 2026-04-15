@@ -26,6 +26,7 @@ data-auth = { workspace = true }
 data-mcp-server = { workspace = true }
 data-trading = { workspace = true, optional = true }
 tokio = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

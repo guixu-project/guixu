@@ -207,7 +207,7 @@ impl Default for AgentMemory {
     fn default() -> Self {
         Self {
             scope: MemoryScope::Global,
-            key: MemoryKey::global(HostKind::OpenClaw),
+            key: MemoryKey::global(HostKind::openclaw()),
             profile: MemoryProfile::default(),
             decisions: Vec::new(),
             concerns: Vec::new(),

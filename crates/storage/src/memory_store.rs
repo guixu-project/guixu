@@ -74,20 +74,20 @@ mod tests {
 
     #[test]
     fn test_memory_key_to_storage_key() {
-        let global_key = MemoryKey::global(HostKind::OpenClaw);
+        let global_key = MemoryKey::global(HostKind::openclaw());
         assert_eq!(global_key.to_storage_key(), "mem:global:openclaw");
 
-        let workspace_key = MemoryKey::workspace("repo:abc", HostKind::Codex);
+        let workspace_key = MemoryKey::workspace("repo:abc", HostKind::codex());
         assert_eq!(workspace_key.to_storage_key(), "mem:repo:abc:codex");
 
         let task_family_key =
-            MemoryKey::task_family("repo:abc", HostKind::OpenClaw, "cat-detection");
+            MemoryKey::task_family("repo:abc", HostKind::openclaw(), "cat-detection");
         assert_eq!(
             task_family_key.to_storage_key(),
             "mem:repo:abc:openclaw:tf:cat-detection"
         );
 
-        let job_key = MemoryKey::job("repo:abc", HostKind::OpenClaw, "job_123");
+        let job_key = MemoryKey::job("repo:abc", HostKind::openclaw(), "job_123");
         assert_eq!(
             job_key.to_storage_key(),
             "mem:repo:abc:openclaw:job:job_123"

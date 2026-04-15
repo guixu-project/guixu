@@ -451,7 +451,7 @@ mod tests {
         DelegatedDataTask {
             job_id: JobId::new(),
             host: HostContext {
-                kind: HostKind::OpenClaw,
+                kind: HostKind::openclaw(),
                 session_key: "agent:main:main".into(),
                 run_id: None,
             },

@@ -1,0 +1,57 @@
+# Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+# SPDX-License-Identifier: Apache-2.0
+#
+# Built-in agent definitions for `guixu mcp install`.
+# Users can override or add agents in ~/.data-node/agents.toml.
+
+[agent.codex]
+display_name = "codex"
+config_path = ".codex/config.toml"
+config_format = "toml"
+mcp_key = "mcp_servers"
+aliases = []
+write_agents_md = true
+
+[agent.cursor]
+display_name = "cursor"
+config_path = ".cursor/mcp.json"
+config_format = "json"
+mcp_key = "mcpServers"
+aliases = []
+
+[agent.claudecode]
+display_name = "claude-code"
+config_path = ".claude.json"
+config_format = "json"
+mcp_key = "mcpServers"
+detect_cmd = "claude"
+aliases = ["claude-code", "claude"]
+
+[agent.claudecode.mcp_entry]
+type = "stdio"
+command = "{bin}"
+args = ["mcp"]
+
+[agent.claudecode.hooks]
+pre_install = "claude mcp add --transport stdio --scope user guixu -- $GUIXU_BIN mcp"
+pre_uninstall = "claude mcp remove guixu"
+
+[agent.opencode]
+display_name = "opencode"
+config_path = ".config/opencode/opencode.json"
+config_format = "json"
+mcp_key = "mcp"
+aliases = []
+
+[agent.opencode.mcp_entry]
+type = "local"
+command = ["{bin}", "mcp"]
+enabled = true
+
+[agent.openclaw]
+display_name = "openclaw"
+config_path = ".openclaw/config.json"
+config_format = "json"
+mcp_key = "mcpServers"
+skill_dir = ".openclaw/workspace/skills/guixu"
+aliases = ["open-claw"]

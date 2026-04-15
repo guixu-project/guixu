@@ -140,6 +140,10 @@ impl Default for TraceSettings {
             flush_interval_secs: default_trace_flush_interval(),
             sample_rate: default_trace_sample_rate(),
             auto_export_path: None,
+            otel_enabled: false,
+            otel_endpoint: default_otel_endpoint(),
+            otel_service_name: default_otel_service_name(),
+            otel_auth_header: None,
         }
     }
 }
@@ -183,6 +187,18 @@ pub struct TraceSettings {
     /// Auto-export path for JSONL traces (optional).
     #[serde(default)]
     pub auto_export_path: Option<String>,
+    /// Enable OTLP export using OTel GenAI semantic conventions.
+    #[serde(default)]
+    pub otel_enabled: bool,
+    /// OTLP collector endpoint (e.g. `http://localhost:4318`).
+    #[serde(default = "default_otel_endpoint")]
+    pub otel_endpoint: String,
+    /// Service name for OTel resource attribute.
+    #[serde(default = "default_otel_service_name")]
+    pub otel_service_name: String,
+    /// Optional auth header for OTLP endpoint (e.g. `Bearer <token>`).
+    #[serde(default)]
+    pub otel_auth_header: Option<String>,
 }
 
 fn default_trace_db_path() -> String {
@@ -199,6 +215,14 @@ fn default_trace_flush_interval() -> u64 {
 
 fn default_trace_sample_rate() -> f64 {
     1.0
+}
+
+fn default_otel_endpoint() -> String {
+    "http://localhost:4318".into()
+}
+
+fn default_otel_service_name() -> String {
+    "guixu".into()
 }
 
 /// Privacy protection level for metadata publication.

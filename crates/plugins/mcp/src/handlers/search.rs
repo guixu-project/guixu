@@ -56,7 +56,7 @@ where
 }
 
 pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String> {
-    with_trace(&state.trace_manager, "mcp.search", None, async {
+    with_trace(&state.trace_manager, "mcp.search", None, None, async {
         inner_handle(args, state).await
     })
     .await
