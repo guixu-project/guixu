@@ -37,6 +37,9 @@ pub struct OpenDataSkillSpec {
     #[serde(default)]
     pub governance: SkillGovernance,
     pub provider: SkillProvider,
+    /// Sample download configuration for this skill.
+    #[serde(default)]
+    pub sample: Option<SkillSampleProvider>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -132,6 +135,73 @@ pub enum SkillProvider {
         #[serde(default)]
         nl2sql: Box<Option<sql_catalog::Nl2SqlConfig>>,
     },
+}
+
+/// Sample download provider configuration for a skill.
+///
+/// This allows skills to declare how to download sample data for evaluation,
+/// without requiring per-source code changes.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SkillSampleProvider {
+    /// Base URL for sample downloads. If not specified, uses the provider's base_url.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Endpoint path for downloading samples. Supports `{id}` placeholder.
+    pub endpoint: String,
+    /// HTTP method for download.
+    #[serde(default = "default_sample_method")]
+    pub method: String,
+    /// Query parameter name for the dataset ID.
+    #[serde(default = "default_id_param")]
+    pub id_param: String,
+    /// Use HTTP Range header for partial download.
+    #[serde(default)]
+    pub range_header: bool,
+    /// Default max bytes to request when range_header is true.
+    #[serde(default = "default_sample_max_bytes")]
+    pub max_bytes: usize,
+    /// Authentication configuration.
+    #[serde(default)]
+    pub auth: SkillAuth,
+    /// Parse mode for the downloaded content.
+    #[serde(default = "default_parse_mode")]
+    pub parse_mode: SkillSampleParseMode,
+    /// Optional list of file extensions to prioritize when parsing archives.
+    #[serde(default)]
+    pub prefer_extensions: Vec<String>,
+}
+
+fn default_sample_method() -> String {
+    "GET".to_string()
+}
+
+fn default_id_param() -> String {
+    "id".to_string()
+}
+
+fn default_sample_max_bytes() -> usize {
+    65536
+}
+
+fn default_parse_mode() -> SkillSampleParseMode {
+    SkillSampleParseMode::Blob
+}
+
+/// Parse mode for downloaded sample content.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillSampleParseMode {
+    /// ZIP archive containing multiple files.
+    Archive,
+    /// Single file (auto-detect from extension).
+    #[default]
+    Blob,
+    /// CSV file.
+    Csv,
+    /// JSON array file.
+    Json,
+    /// JSON Lines file.
+    Jsonl,
 }
 
 #[derive(Debug, Clone, Deserialize)]

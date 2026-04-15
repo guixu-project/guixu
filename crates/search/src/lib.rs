@@ -5,6 +5,7 @@ pub mod adapters;
 pub mod engine;
 pub mod intent;
 pub mod sample_eval;
+pub mod skill_sample_downloader;
 pub mod vector_index;
 
 #[cfg(test)]

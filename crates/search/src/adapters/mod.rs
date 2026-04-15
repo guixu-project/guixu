@@ -25,7 +25,7 @@ pub use google_dataset_search::GoogleDatasetSearchAdapter;
 pub use local_file::LocalFileAdapter;
 pub use open_data_skill::{
     execute_skill_operation, load_data_skill_profiles, load_open_data_skills, DataSkillProfile,
-    OpenDataSkillSpec, SkillProvider,
+    OpenDataSkillSpec, SkillAuth, SkillProvider, SkillSampleParseMode, SkillSampleProvider,
 };
 pub use pan_search::PanSearchAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
