@@ -32,7 +32,6 @@ use chrono::{DateTime, TimeZone, Utc};
 use duckdb::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::Arc;
 
 /// Span type classification following OpenTelemetry semantic conventions
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -310,11 +309,17 @@ pub struct TraceScore {
     pub created_at: DateTime<Utc>,
 }
 
-/// DuckDB-backed trace store for AI agent traces
-#[derive(Clone)]
+/// DuckDB-backed trace store for AI agent traces.
+///
+/// **Not `Clone`, not `Sync`** by design. DuckDB `Connection` uses `RefCell`
+/// internally, so concurrent access from multiple threads would panic at
+/// runtime. Each thread/task that needs to query traces should open its own
+/// `TraceStore` instance via [`TraceStore::open`].
+///
+/// For the write path, use [`AgentTraceManager`](crate::trace_manager::AgentTraceManager)
+/// which buffers spans and flushes them through a dedicated blocking task.
 pub struct TraceStore {
-    #[allow(clippy::arc_with_non_send_sync)]
-    conn: Arc<Connection>,
+    conn: Connection,
 }
 
 /// Convert DateTime<Utc> to epoch microseconds for DuckDB storage
@@ -334,10 +339,7 @@ impl TraceStore {
     /// Open or create a trace database at the given path
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        #[allow(clippy::arc_with_non_send_sync)]
-        let store = Self {
-            conn: Arc::new(conn),
-        };
+        let store = Self { conn };
         store.init_schema()?;
         Ok(store)
     }
@@ -345,10 +347,7 @@ impl TraceStore {
     /// Open an in-memory database (for testing or temporary use)
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        #[allow(clippy::arc_with_non_send_sync)]
-        let store = Self {
-            conn: Arc::new(conn),
-        };
+        let store = Self { conn };
         store.init_schema()?;
         Ok(store)
     }
@@ -849,6 +848,23 @@ impl TraceStore {
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    fn _assert_send<T: Send>() {}
+
+    #[test]
+    fn trace_store_is_send_but_not_sync() {
+        // TraceStore is Send (can be moved to spawn_blocking).
+        _assert_send::<TraceStore>();
+        // TraceStore is NOT Sync (cannot be shared via &TraceStore across threads).
+        // This is enforced by DuckDB Connection using RefCell internally.
+        // Uncomment the next line to verify it fails:
+        // fn _assert_sync<T: Sync>() {} _assert_sync::<TraceStore>();
+
+        // Mutex<TraceStore> IS Send+Sync, so it could be put in Arc<AppState>.
+        _assert_send::<std::sync::Mutex<TraceStore>>();
+        fn _assert_sync<T: Sync>() {}
+        _assert_sync::<std::sync::Mutex<TraceStore>>();
+    }
 
     #[test]
     fn test_trace_store_crud() {
