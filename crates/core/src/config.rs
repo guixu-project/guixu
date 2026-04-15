@@ -253,6 +253,15 @@ impl NodeConfig {
         Self::config_dir().join("config.toml")
     }
 
+    /// Load config from the default path, or return defaults if not found.
+    pub fn load_or_default() -> Self {
+        let path = Self::config_path();
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| toml::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
     pub fn identity_path() -> PathBuf {
         Self::config_dir().join("identity.key")
     }

@@ -587,6 +587,26 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["job_id"]
             }),
         },
+        ToolDefinition {
+            name: "memory_history".into(),
+            description: "Query the evolution history of agent memory. Returns a timeline of memory mutations (mappings added, failures recorded, trace feedback) for a given memory key.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "memory_key": {
+                        "type": "string",
+                        "description": "The memory storage key (e.g. 'mem:global:openclaw', 'mem:repo:abc:codex:tf:cat-detection')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of mutations to return (default: 20)",
+                        "default": 20
+                    }
+                },
+                "required": ["memory_key"]
+            }),
+        },
     ]
 }
 
