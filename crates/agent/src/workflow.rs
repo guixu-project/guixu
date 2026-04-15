@@ -299,16 +299,11 @@ impl WorkflowService {
 
     /// Write memory with optional trace emission.
     async fn put_memory_traced(&self, memory: &AgentMemory, mutation: MemoryMutation) {
-        if let Some(tm) = &self.trace_manager {
-            let tm = tm.read().await;
-            let _ = self
-                .state
-                .memory_store
-                .put_traced(memory, mutation, &tm)
-                .await;
-        } else {
-            let _ = self.state.memory_store.put(memory);
-        }
+        let _ = self
+            .state
+            .memory_store
+            .put_traced(memory, mutation, &self.trace_manager)
+            .await;
     }
 
     /// Returns (selected_cid, winning_skill_id, rank_score).

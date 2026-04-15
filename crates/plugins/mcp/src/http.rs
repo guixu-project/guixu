@@ -268,16 +268,21 @@ pub(crate) fn parse_publish_privacy(
 
 // ---------------------------------------------------------------------------
 // Trace API endpoints
+//
+// Each request opens a fresh DuckDB connection via spawn_blocking.
+// DuckDB Connection is not Sync (uses RefCell internally), so it cannot
+// be stored in Arc<AppState>. Opening a file-backed DuckDB is cheap (~1ms),
+// and this avoids all threading hazards documented in AGENTS.md.
 // ---------------------------------------------------------------------------
 
-fn trace_db_path(_server: &McpServer) -> String {
+fn trace_db_path() -> String {
     data_core::config::NodeConfig::load_or_default()
         .trace
         .db_path
 }
 
 async fn api_list_traces(
-    State(server): State<Arc<McpServer>>,
+    State(_): State<Arc<McpServer>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let source = params
@@ -288,7 +293,7 @@ async fn api_list_traces(
         .get("limit")
         .and_then(|s| s.parse().ok())
         .unwrap_or(50);
-    let db_path = trace_db_path(&server);
+    let db_path = trace_db_path();
 
     let result = tokio::task::spawn_blocking(move || {
         let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
@@ -312,7 +317,7 @@ async fn api_list_traces(
 }
 
 async fn api_trace_spans(
-    State(server): State<Arc<McpServer>>,
+    State(_): State<Arc<McpServer>>,
     axum::extract::Path(trace_id): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
@@ -320,7 +325,7 @@ async fn api_trace_spans(
         .get("source")
         .map(|s| s.to_string())
         .unwrap_or_else(|| "guixu".into());
-    let db_path = trace_db_path(&server);
+    let db_path = trace_db_path();
 
     let result = tokio::task::spawn_blocking(move || {
         let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
@@ -344,10 +349,10 @@ async fn api_trace_spans(
 }
 
 async fn api_trace_scores(
-    State(server): State<Arc<McpServer>>,
+    State(_): State<Arc<McpServer>>,
     axum::extract::Path(trace_id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    let db_path = trace_db_path(&server);
+    let db_path = trace_db_path();
 
     let result = tokio::task::spawn_blocking(move || {
         let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
@@ -371,7 +376,7 @@ async fn api_trace_scores(
 }
 
 async fn api_memory_timeline(
-    State(server): State<Arc<McpServer>>,
+    State(_): State<Arc<McpServer>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let memory_key = params.get("memory_key").cloned().unwrap_or_default();
@@ -379,7 +384,7 @@ async fn api_memory_timeline(
         .get("limit")
         .and_then(|s| s.parse().ok())
         .unwrap_or(50);
-    let db_path = trace_db_path(&server);
+    let db_path = trace_db_path();
 
     if memory_key.is_empty() {
         return (

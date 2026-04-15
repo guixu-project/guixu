@@ -376,6 +376,12 @@ pub struct AgentTraceManager {
 }
 
 impl Clone for AgentTraceManager {
+    /// Clone creates a **new, independent** manager that shares only the flush
+    /// channel with the original. The `current_context` and `buffer` are NOT
+    /// shared — the clone starts with empty context and an empty buffer.
+    ///
+    /// If you need shared state across tasks, wrap in `Arc<RwLock<AgentTraceManager>>`
+    /// instead of cloning.
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
@@ -396,7 +402,11 @@ pub struct ShutdownGuard {
 
 impl Drop for ShutdownGuard {
     fn drop(&mut self) {
-        let _ = self.tx.try_send(FlushCommand::Shutdown);
+        if self.tx.try_send(FlushCommand::Shutdown).is_err() {
+            // Channel full or closed — flush task may not receive shutdown signal.
+            // This is best-effort; the flush task will exit when all senders drop.
+            tracing::warn!("trace shutdown signal dropped: channel full or closed");
+        }
     }
 }
 
@@ -566,9 +576,13 @@ impl AgentTraceManager {
     }
 
     /// Set the current trace context synchronously (for use in non-async contexts).
+    ///
+    /// Logs a warning if the lock cannot be acquired (e.g. under high contention).
     pub fn set_current_context_sync(&self, ctx: TraceContext) {
         if let Ok(mut guard) = self.current_context.try_write() {
             *guard = Some(ctx);
+        } else {
+            tracing::warn!("failed to set trace context synchronously: lock contention");
         }
     }
 
