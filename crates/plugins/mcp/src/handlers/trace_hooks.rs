@@ -11,8 +11,8 @@ use tokio::sync::RwLock;
 
 /// Wrapper that creates a span around an MCP handler execution.
 ///
-/// Extracts trace context from the current AppState, creates a child span,
-/// calls the handler, records any error, and ends the span.
+/// Automatically derives `parent_span_id` from the current trace context
+/// so callers don't need to track it manually.
 pub async fn with_trace<F>(
     trace_manager: &Option<Arc<RwLock<data_storage::trace_manager::AgentTraceManager>>>,
     span_name: &str,
@@ -23,7 +23,6 @@ pub async fn with_trace<F>(
 where
     F: std::future::Future<Output = anyhow::Result<String>>,
 {
-    // Collect all needed info from trace manager before calling the future
     let trace_info = {
         let Some(tm) = trace_manager else {
             return f.await;
@@ -32,18 +31,26 @@ where
         if !tm.is_enabled() {
             return f.await;
         }
+        // Derive parent from current context if caller didn't provide one
+        let effective_parent = match parent_span_id {
+            Some(pid) => Some(pid.to_string()),
+            None => tm
+                .current_context()
+                .await
+                .map(|ctx| format!("{:016x}", ctx.span_id)),
+        };
         let span_id = match tm
-            .start_span(parent_span_id, span_name, SpanType::ToolUse)
+            .start_span(effective_parent.as_deref(), span_name, SpanType::ToolUse)
             .await
         {
             Some(id) => id,
             None => return f.await,
         };
         let ctx = tm.current_context().await;
-        ctx.map(|c| (span_id, c.trace_id.to_string()))
+        ctx.map(|c| (span_id, c.trace_id.to_string(), effective_parent))
     };
 
-    let (span_id, trace_id) = match trace_info {
+    let (span_id, trace_id, effective_parent) = match trace_info {
         Some(info) => info,
         None => return f.await,
     };
@@ -56,15 +63,15 @@ where
         let mut builder = SpanBuilder::new(
             &trace_id,
             &span_id,
-            parent_span_id,
+            effective_parent.as_deref(),
             span_name,
             SpanType::ToolUse,
         );
         if let Some(sid) = session_id {
             builder = builder.with_session_id(sid);
         }
-        if result.is_err() {
-            builder = builder.with_error(result.as_ref().err().unwrap().to_string().as_str());
+        if let Err(e) = &result {
+            builder = builder.with_error(&e.to_string());
         }
         tm.end_span(builder).await;
     }

@@ -75,6 +75,7 @@ pub fn operation_name(span_type: SpanType) -> &'static str {
         SpanType::User => OP_CHAT,
         SpanType::System => OP_INVOKE_AGENT,
         SpanType::Other => OP_CHAT,
+        SpanType::MemoryMutation => OP_INVOKE_AGENT,
     }
 }
 

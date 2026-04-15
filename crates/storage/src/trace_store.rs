@@ -32,7 +32,6 @@ use chrono::{DateTime, TimeZone, Utc};
 use duckdb::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::Arc;
 
 /// Span type classification following OpenTelemetry semantic conventions
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,6 +53,8 @@ pub enum SpanType {
     System,
     /// Unknown / other
     Other,
+    /// Memory mutation event
+    MemoryMutation,
 }
 
 impl SpanType {
@@ -67,6 +68,7 @@ impl SpanType {
             SpanType::User => "user",
             SpanType::System => "system",
             SpanType::Other => "other",
+            SpanType::MemoryMutation => "memory_mutation",
         }
     }
 
@@ -79,6 +81,7 @@ impl SpanType {
             "handoff" => SpanType::Handoff,
             "user" => SpanType::User,
             "system" => SpanType::System,
+            "memory_mutation" => SpanType::MemoryMutation,
             _ => SpanType::Other,
         }
     }
@@ -306,11 +309,17 @@ pub struct TraceScore {
     pub created_at: DateTime<Utc>,
 }
 
-/// DuckDB-backed trace store for AI agent traces
-#[derive(Clone)]
+/// DuckDB-backed trace store for AI agent traces.
+///
+/// **Not `Clone`, not `Sync`** by design. DuckDB `Connection` uses `RefCell`
+/// internally, so concurrent access from multiple threads would panic at
+/// runtime. Each thread/task that needs to query traces should open its own
+/// `TraceStore` instance via [`TraceStore::open`].
+///
+/// For the write path, use [`AgentTraceManager`](crate::trace_manager::AgentTraceManager)
+/// which buffers spans and flushes them through a dedicated blocking task.
 pub struct TraceStore {
-    #[allow(clippy::arc_with_non_send_sync)]
-    conn: Arc<Connection>,
+    conn: Connection,
 }
 
 /// Convert DateTime<Utc> to epoch microseconds for DuckDB storage
@@ -330,10 +339,7 @@ impl TraceStore {
     /// Open or create a trace database at the given path
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        #[allow(clippy::arc_with_non_send_sync)]
-        let store = Self {
-            conn: Arc::new(conn),
-        };
+        let store = Self { conn };
         store.init_schema()?;
         Ok(store)
     }
@@ -341,10 +347,7 @@ impl TraceStore {
     /// Open an in-memory database (for testing or temporary use)
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        #[allow(clippy::arc_with_non_send_sync)]
-        let store = Self {
-            conn: Arc::new(conn),
-        };
+        let store = Self { conn };
         store.init_schema()?;
         Ok(store)
     }
@@ -710,6 +713,64 @@ impl TraceStore {
     // Score CRUD
     // -----------------------------------------------------------------------
 
+    /// Query memory mutation history for a given memory key.
+    ///
+    /// Returns all `MemoryMutation` spans whose `memory_key` attribute matches,
+    /// ordered by time descending.
+    pub fn memory_timeline(
+        &self,
+        memory_key: &str,
+        since: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<Vec<SpanRecord>> {
+        let mut sql = String::from(
+            r#"
+            SELECT trace_id, span_id, parent_span_id, session_id, span_name, span_type,
+                   source, start_time_us, end_time_us, duration_ms, attributes,
+                   input_tokens, output_tokens, model, error
+            FROM trace_spans
+            WHERE span_type = 'memory_mutation'
+              AND json_extract_string(attributes, '$.memory_key') = ?
+            "#,
+        );
+        let mut params_vec: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+        params_vec.push(Box::new(memory_key.to_string()));
+
+        if let Some(since_dt) = since {
+            sql.push_str(" AND start_time_us >= ?");
+            params_vec.push(Box::new(datetime_to_micros(since_dt)));
+        }
+        sql.push_str(" ORDER BY start_time_us DESC LIMIT ?");
+        params_vec.push(Box::new(limit));
+
+        let params_refs: Vec<&dyn duckdb::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            let attrs_str: String = row.get(10)?;
+            let attributes: serde_json::Value =
+                serde_json::from_str(&attrs_str).unwrap_or(serde_json::json!({}));
+            Ok(SpanRecord {
+                trace_id: row.get(0)?,
+                span_id: row.get(1)?,
+                parent_span_id: row.get(2)?,
+                session_id: row.get(3)?,
+                span_name: row.get(4)?,
+                span_type: SpanType::parse(&row.get::<_, String>(5)?),
+                source: TraceSource::parse(&row.get::<_, String>(6)?),
+                start_time: micros_to_datetime(row.get::<_, i64>(7)?),
+                end_time: micros_to_datetime(row.get::<_, i64>(8)?),
+                duration_ms: row.get(9)?,
+                attributes,
+                input_tokens: row.get(11)?,
+                output_tokens: row.get(12)?,
+                model: row.get(13)?,
+                error: row.get(14)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Insert a score for a trace or span.
     pub fn insert_score(&self, score: &TraceScore) -> Result<()> {
         self.conn.execute(
@@ -787,6 +848,23 @@ impl TraceStore {
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    fn _assert_send<T: Send>() {}
+
+    #[test]
+    fn trace_store_is_send_but_not_sync() {
+        // TraceStore is Send (can be moved to spawn_blocking).
+        _assert_send::<TraceStore>();
+        // TraceStore is NOT Sync (cannot be shared via &TraceStore across threads).
+        // This is enforced by DuckDB Connection using RefCell internally.
+        // Uncomment the next line to verify it fails:
+        // fn _assert_sync<T: Sync>() {} _assert_sync::<TraceStore>();
+
+        // Mutex<TraceStore> IS Send+Sync, so it could be put in Arc<AppState>.
+        _assert_send::<std::sync::Mutex<TraceStore>>();
+        fn _assert_sync<T: Sync>() {}
+        _assert_sync::<std::sync::Mutex<TraceStore>>();
+    }
 
     #[test]
     fn test_trace_store_crud() {

@@ -17,7 +17,7 @@ RUN if ! curl -s --connect-timeout 3 https://crates.io >/dev/null 2>&1; then \
 RUN apt-get update && apt-get install -y libclang-dev && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
-COPY demo-ui demo-ui
+COPY ui ui
 RUN cargo build --release
 
 FROM ${DEBIAN_IMAGE}

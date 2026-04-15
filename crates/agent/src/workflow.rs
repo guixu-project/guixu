@@ -9,7 +9,7 @@ use data_core::agent::contracts::{
     DelegatedDataTask, JobEvent, JobEventType, JobId, JobResult, JobState, WorkerTask,
     WorkerTaskKind,
 };
-use data_core::agent::memory::{AgentMemory, MemoryKey};
+use data_core::agent::memory::{AgentMemory, MemoryDiff, MemoryKey, MemoryMutation, MutationKind};
 use data_core::feedback::CommunitySignal;
 use data_core::types::{DatasetCid, SkillCapability};
 use data_search::engine::{RankedResult, SearchEngine, SignalFetcher};
@@ -135,6 +135,7 @@ impl WorkflowService {
 
     pub async fn run(&self, task: DelegatedDataTask) -> anyhow::Result<JobResult> {
         let job_id = task.job_id.clone();
+        let start_time = chrono::Utc::now();
 
         // Start trace span if tracing is enabled
         let (trace_id, span_id) = if let Some(tm) = &self.trace_manager {
@@ -203,7 +204,26 @@ impl WorkflowService {
                 );
                 memory.key = memory_key.clone();
                 memory.scope = memory_key.to_scope();
-                let _ = self.state.memory_store.put(&memory);
+
+                // Feed trace metrics back into memory
+                if !trace_id.is_empty() {
+                    feed_trace_to_memory(&mut memory, &trace_id, start_time);
+                }
+
+                // Write memory with traced mutation
+                let mutation = MemoryMutation {
+                    kind: MutationKind::MappingAdded,
+                    diff: MemoryDiff {
+                        field: "successful_mappings".into(),
+                        summary: format!("added mapping: {} -> {}", task.task.goal, selected_cid.0),
+                    },
+                    trigger_span_id: if span_id.is_empty() {
+                        None
+                    } else {
+                        Some(span_id.clone())
+                    },
+                };
+                self.put_memory_traced(&memory, mutation).await;
 
                 let memory_key_str = memory_key.to_storage_key();
                 let job_result = JobResult {
@@ -234,7 +254,26 @@ impl WorkflowService {
                 memory.record_failed_attempt(&job_id.0, &task.task.goal, &e.to_string());
                 memory.key = memory_key.clone();
                 memory.scope = memory_key.to_scope();
-                let _ = self.state.memory_store.put(&memory);
+
+                // Feed trace metrics back into memory
+                if !trace_id.is_empty() {
+                    feed_trace_to_memory(&mut memory, &trace_id, start_time);
+                }
+
+                // Write memory with traced mutation
+                let mutation = MemoryMutation {
+                    kind: MutationKind::FailureRecorded,
+                    diff: MemoryDiff {
+                        field: "failed_attempts".into(),
+                        summary: format!("recorded failure for goal: {}", task.task.goal),
+                    },
+                    trigger_span_id: if span_id.is_empty() {
+                        None
+                    } else {
+                        Some(span_id.clone())
+                    },
+                };
+                self.put_memory_traced(&memory, mutation).await;
 
                 let memory_key_str = memory_key.to_storage_key();
                 let _ = self.state.job_store.update_state(&job_id, JobState::Failed);
@@ -256,6 +295,15 @@ impl WorkflowService {
                 Ok(job_result)
             }
         }
+    }
+
+    /// Write memory with optional trace emission.
+    async fn put_memory_traced(&self, memory: &AgentMemory, mutation: MemoryMutation) {
+        let _ = self
+            .state
+            .memory_store
+            .put_traced(memory, mutation, &self.trace_manager)
+            .await;
     }
 
     /// Returns (selected_cid, winning_skill_id, rank_score).
@@ -674,6 +722,30 @@ impl WorkflowService {
 
         Ok((cid, skill_id, rank_score))
     }
+}
+
+/// Feed trace execution metrics back into agent memory.
+///
+/// Records workflow duration as an evaluation heuristic so the planner
+/// can factor historical cost into future decisions.
+fn feed_trace_to_memory(
+    memory: &mut AgentMemory,
+    trace_id: &str,
+    start_time: chrono::DateTime<chrono::Utc>,
+) {
+    let duration_ms = (chrono::Utc::now() - start_time).num_milliseconds();
+    memory
+        .profile
+        .evaluation_heuristics
+        .retain(|h| !h.starts_with("last_trace_id=") && !h.starts_with("last_duration_ms="));
+    memory
+        .profile
+        .evaluation_heuristics
+        .push(format!("last_trace_id={trace_id}"));
+    memory
+        .profile
+        .evaluation_heuristics
+        .push(format!("last_duration_ms={duration_ms}"));
 }
 
 pub fn create_signal_fetcher(

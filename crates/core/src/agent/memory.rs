@@ -203,6 +203,39 @@ pub enum SegmentType {
     UserFeedback,
 }
 
+/// A single memory mutation event, recorded as a trace span.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryMutation {
+    /// What kind of mutation occurred.
+    pub kind: MutationKind,
+    /// Summary of the change.
+    pub diff: MemoryDiff,
+    /// The span that caused this mutation (if any).
+    pub trigger_span_id: Option<String>,
+}
+
+/// Classification of memory mutation events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationKind {
+    MappingAdded,
+    FailureRecorded,
+    DecisionRecorded,
+    ConcernAdded,
+    ConcernResolved,
+    SegmentAdded,
+    TraceFeedback,
+}
+
+/// A lightweight diff describing what changed in memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryDiff {
+    /// Which field was modified (e.g. "successful_mappings", "concerns").
+    pub field: String,
+    /// Human-readable summary of the change.
+    pub summary: String,
+}
+
 impl Default for AgentMemory {
     fn default() -> Self {
         Self {

@@ -184,6 +184,13 @@ fn job_artifacts_executor<'a>(
     Box::pin(crate::handlers::job_api::artifacts(args, state))
 }
 
+fn memory_history_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::memory_history::handle(args, state))
+}
+
 pub fn build_registry() -> ToolRegistry {
     let mut definitions = collect_definitions();
     let mut registry = ToolRegistry::new();
@@ -275,6 +282,10 @@ pub fn build_registry() -> ToolRegistry {
     registry.register(legacy_json_tool(
         require_definition(&mut definitions, "data_task_artifacts"),
         executor_from_fn(job_artifacts_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "memory_history"),
+        executor_from_fn(memory_history_executor),
     ));
 
     let all_definitions = registry.list_definitions();

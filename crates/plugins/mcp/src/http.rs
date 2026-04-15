@@ -30,8 +30,14 @@ pub async fn run_http(server: Arc<McpServer>, port: u16) -> Result<()> {
         .route("/demo", get(demo_ui::serve_demo))
         .route("/demo/style.css", get(demo_ui::serve_demo_css))
         .route("/demo/{file}", get(demo_ui::serve_demo_js))
+        .route("/trace", get(demo_ui::serve_trace))
+        .route("/trace/{file}", get(demo_ui::serve_trace_asset))
         .route("/api/datasets", get(api_list_datasets))
         .route("/api/publish", post(api_publish))
+        .route("/api/traces", get(api_list_traces))
+        .route("/api/traces/{trace_id}/spans", get(api_trace_spans))
+        .route("/api/traces/{trace_id}/scores", get(api_trace_scores))
+        .route("/api/memory/timeline", get(api_memory_timeline))
         .route("/mcp", post(http_rpc_handler))
         .route("/rpc", post(http_rpc_handler))
         .layer(CorsLayer::permissive())
@@ -40,6 +46,7 @@ pub async fn run_http(server: Arc<McpServer>, port: u16) -> Result<()> {
     let addr = format!("0.0.0.0:{port}");
     info!("Guixu Web UI → http://localhost:{port}");
     info!("Guixu Demo UI → http://localhost:{port}/demo");
+    info!("Guixu Trace UI → http://localhost:{port}/trace");
     info!("MCP HTTP RPC → http://localhost:{port}/mcp");
     info!("Legacy MCP RPC alias → http://localhost:{port}/rpc");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -257,6 +264,155 @@ pub(crate) fn parse_publish_privacy(
         epsilon,
         ..Default::default()
     })
+}
+
+// ---------------------------------------------------------------------------
+// Trace API endpoints
+//
+// Each request opens a fresh DuckDB connection via spawn_blocking.
+// DuckDB Connection is not Sync (uses RefCell internally), so it cannot
+// be stored in Arc<AppState>. Opening a file-backed DuckDB is cheap (~1ms),
+// and this avoids all threading hazards documented in AGENTS.md.
+// ---------------------------------------------------------------------------
+
+fn trace_db_path() -> String {
+    data_core::config::NodeConfig::load_or_default()
+        .trace
+        .db_path
+}
+
+async fn api_list_traces(
+    State(_): State<Arc<McpServer>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let source = params
+        .get("source")
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "guixu".into());
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
+    let db_path = trace_db_path();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+        store.list_traces(&source, limit)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(traces)) => Json(json!(traces)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_trace_spans(
+    State(_): State<Arc<McpServer>>,
+    axum::extract::Path(trace_id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let source = params
+        .get("source")
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "guixu".into());
+    let db_path = trace_db_path();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+        store.get_trace_spans(&trace_id, &source)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(spans)) => Json(json!(spans)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_trace_scores(
+    State(_): State<Arc<McpServer>>,
+    axum::extract::Path(trace_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let db_path = trace_db_path();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+        store.get_scores_for_trace(&trace_id)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(scores)) => Json(json!(scores)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_memory_timeline(
+    State(_): State<Arc<McpServer>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let memory_key = params.get("memory_key").cloned().unwrap_or_default();
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
+    let db_path = trace_db_path();
+
+    if memory_key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "memory_key is required"})),
+        )
+            .into_response();
+    }
+
+    let result = tokio::task::spawn_blocking(move || {
+        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+        store.memory_timeline(&memory_key, None, limit)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(spans)) => Json(json!(spans)).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 async fn http_rpc_handler(

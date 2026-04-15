@@ -9,6 +9,7 @@ pub mod evaluate;
 pub mod feedback;
 pub mod intent;
 pub mod job_api;
+pub mod memory_history;
 pub mod misc;
 pub mod pan_search;
 pub mod purchase;

@@ -2,10 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::Result;
-use data_core::agent::memory::{AgentMemory, MemoryKey};
+use data_core::agent::memory::{AgentMemory, MemoryKey, MemoryMutation};
 use rocksdb::{Options, DB};
 use std::path::Path;
 use std::sync::Arc;
+
+use crate::trace_manager::{AgentTraceManager, SpanBuilder, SpanType};
+
+/// Generate a random u64 for span IDs.
+fn rand_u64() -> u64 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    RandomState::new().build_hasher().finish()
+}
 
 #[derive(Clone)]
 pub struct MemoryStore {
@@ -28,6 +37,44 @@ impl MemoryStore {
         let key = memory.key.to_storage_key();
         let value = serde_json::to_vec(memory)?;
         self.db.put(key.as_bytes(), &value)?;
+        Ok(())
+    }
+
+    /// Write memory to RocksDB and emit a MemoryMutation span into the trace system.
+    ///
+    /// Accepts the same `Option<Arc<RwLock<AgentTraceManager>>>` type used
+    /// throughout the codebase for consistency.
+    pub async fn put_traced(
+        &self,
+        memory: &AgentMemory,
+        mutation: MemoryMutation,
+        trace_manager: &Option<Arc<tokio::sync::RwLock<AgentTraceManager>>>,
+    ) -> Result<()> {
+        self.put(memory)?;
+
+        let Some(tm) = trace_manager else {
+            return Ok(());
+        };
+        let tm = tm.read().await;
+        if !tm.is_enabled() {
+            return Ok(());
+        }
+        let ctx = tm.current_context().await;
+        let (trace_id, parent_span_id) = match &ctx {
+            Some(c) => (c.trace_id.to_string(), Some(format!("{:016x}", c.span_id))),
+            None => return Ok(()),
+        };
+        let builder = SpanBuilder::new(
+            &trace_id,
+            &format!("{:016x}", rand_u64()),
+            parent_span_id.as_deref(),
+            "memory.mutation",
+            SpanType::MemoryMutation,
+        )
+        .with_attribute("memory_key", serde_json::json!(memory.key.to_storage_key()))
+        .with_attribute("mutation_kind", serde_json::json!(mutation.kind))
+        .with_attribute("diff", serde_json::json!(mutation.diff));
+        tm.end_span(builder).await;
         Ok(())
     }
 
