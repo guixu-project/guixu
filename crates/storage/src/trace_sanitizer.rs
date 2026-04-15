@@ -482,7 +482,7 @@ struct RedactionReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace_store::{TraceSource, TraceStore};
+    use crate::trace_store::{SpanType, TraceSource, TraceStore};
     use chrono::{Duration, Utc};
 
     fn make_test_span() -> SpanRecord {
