@@ -4,10 +4,10 @@
 use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
 
-const DEMO_HTML: &str = include_str!("../../../../demo-ui/index.html");
-const DEMO_CSS: &str = include_str!("../../../../demo-ui/style.css");
-const DEMO_ENGINE_JS: &str = include_str!("../../../../demo-ui/engine.js");
-const DEMO_UI_JS: &str = include_str!("../../../../demo-ui/ui.js");
+const DEMO_HTML: &str = include_str!("../../../../ui/index.html");
+const DEMO_CSS: &str = include_str!("../../../../ui/style.css");
+const DEMO_ENGINE_JS: &str = include_str!("../../../../ui/engine.js");
+const DEMO_UI_JS: &str = include_str!("../../../../ui/ui.js");
 
 const NO_CACHE: (header::HeaderName, &str) =
     (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");

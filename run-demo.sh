@@ -152,7 +152,7 @@ install_deps
 # Build
 if [ ! -f target/release/data-node ] \
   || [ "$(find crates -name '*.rs' -newer target/release/data-node -print -quit 2>/dev/null)" ] \
-  || [ "$(find demo-ui -type f -newer target/release/data-node -print -quit 2>/dev/null)" ]; then
+  || [ "$(find ui -type f -newer target/release/data-node -print -quit 2>/dev/null)" ]; then
   echo "Building..."
   cargo_cmd build --release
 fi
