@@ -21,7 +21,7 @@
     "lookup": false,
     "download": false,
     "schema_probe": false,
-    "sample_preview": false,
+    "sample_preview": true,
     "license_lookup": false
   },
   "governance": {
@@ -48,5 +48,13 @@
       "download_count": "downloads",
       "created_at": "lastModified"
     }
+  },
+  "sample": {
+    "endpoint": "https://huggingface.co/api/datasets/{id}/parquet",
+    "id_param": "id",
+    "range_header": false,
+    "max_bytes": 65536,
+    "auth": { "kind": "bearer_env", "env": "HF_TOKEN" },
+    "parse_mode": "json"
   }
 }

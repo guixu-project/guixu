@@ -17,14 +17,16 @@ use data_search::engine::{
     ProxyUtilityApplyMode, SampleEvaluationOutcome, SampleEvaluator, SearchFilters, SearchOutput,
     ON_CHAIN_COARSE_ADJUST_WEIGHT, ON_CHAIN_SCORE_NEUTRAL,
 };
+use data_search::adapters::{load_open_data_skills, SkillProvider};
 use data_search::intent::QueryProfile;
 use data_search::sample_eval::{
-    DownloadedSample,
-    GuixuHubSampleDownloader, LlmSampleJudge, LocalHeuristicProxyScorer, ProxyScreeningReport,
-    ProxyLabelPropagationEvaluator, ProxyLabelPropagationConfig, SampleJudgeReport,
-    SampleRequirements, SampleRequirementsPlanner, SeedRecordJudge, SeedRecordJudgeReport,
-    StagedSampleEvaluator, StagedSampleEvaluatorConfig,
+    ChainedSampleDownloader, DownloadedSample, GuixuHubSampleDownloader, LlmSampleJudge,
+    LocalHeuristicProxyScorer, ProxyLabelPropagationConfig, ProxyLabelPropagationEvaluator,
+    ProxyScreeningReport, SampleDownloader, SampleJudgeReport, SampleRequirements,
+    SampleRequirementsPlanner, SeedRecordJudge, SeedRecordJudgeReport, StagedSampleEvaluator,
+    StagedSampleEvaluatorConfig,
 };
+use data_search::skill_sample_downloader::{SkillSampleConfig, SkillSampleDownloader};
 
 use crate::server::AppState;
 use crate::state::ToolProfile;
@@ -472,13 +474,37 @@ fn extract_percentage(value: &Value) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn build_runtime_sample_downloader() -> GuixuHubSampleDownloader {
-    GuixuHubSampleDownloader::default().with_record_limit(12)
+fn build_runtime_sample_downloader() -> Box<dyn SampleDownloader> {
+    let hub_downloader = GuixuHubSampleDownloader::default().with_record_limit(12);
+
+    // Load skill-based sample configs from JSON skill files.
+    let skill_configs: Vec<SkillSampleConfig> = load_open_data_skills()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|spec| {
+            let sample = spec.sample?;
+            let provider_base_url = match &spec.provider {
+                SkillProvider::HttpSearch { base_url, .. } => Some(base_url.as_str()),
+                _ => None,
+            };
+            Some(SkillSampleConfig::from_provider(&sample, provider_base_url))
+        })
+        .collect();
+
+    if skill_configs.is_empty() {
+        Box::new(hub_downloader)
+    } else {
+        let skill_downloader = SkillSampleDownloader::new(skill_configs);
+        Box::new(ChainedSampleDownloader::new(vec![
+            Box::new(skill_downloader),
+            Box::new(hub_downloader),
+        ]))
+    }
 }
 
 fn build_runtime_staged_evaluator() -> StagedSampleEvaluator {
     StagedSampleEvaluator::with_config(
-        Box::new(build_runtime_sample_downloader()),
+        build_runtime_sample_downloader(),
         Box::new(HeuristicSampleRequirementsPlanner),
         Box::new(LocalHeuristicProxyScorer),
         Box::new(ScreeningSimilarityJudge),
@@ -489,7 +515,7 @@ fn build_runtime_staged_evaluator() -> StagedSampleEvaluator {
 fn build_runtime_sample_evaluator() -> RuntimeSampleEvaluator {
     RuntimeSampleEvaluator::Hybrid {
         image_seed: ProxyLabelPropagationEvaluator::with_config(
-            Box::new(build_runtime_sample_downloader()),
+            build_runtime_sample_downloader(),
             Box::new(RuntimeSeedJudge),
             ProxyLabelPropagationConfig {
                 seed_record_count: 4,
