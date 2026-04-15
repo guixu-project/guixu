@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod demo_ui;
 pub mod handlers;
 pub mod http;
+pub mod prism_ui;
 pub mod protocol;
 pub mod registry;
 pub mod rpc;

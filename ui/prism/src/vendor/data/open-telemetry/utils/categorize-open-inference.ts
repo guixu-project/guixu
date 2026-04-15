@@ -1,0 +1,30 @@
+/*
+ * Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import {
+  OPENINFERENCE_ATTRIBUTES,
+  OPENINFERENCE_MAPPINGS,
+  type OpenTelemetrySpan,
+  type TraceSpanCategory,
+} from "@evilmartians/agent-prism-types";
+
+import { getOpenTelemetryAttributeValue } from "./get-open-telemetry-attribute-value.js";
+
+export function categorizeOpenInference(
+  span: OpenTelemetrySpan,
+): TraceSpanCategory {
+  const spanKind = getOpenTelemetryAttributeValue(
+    span,
+    OPENINFERENCE_ATTRIBUTES.SPAN_KIND,
+  );
+
+  if (typeof spanKind === "string") {
+    const category = OPENINFERENCE_MAPPINGS[spanKind];
+
+    if (category) return category;
+  }
+
+  return "unknown";
+}

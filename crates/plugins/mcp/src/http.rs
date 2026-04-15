@@ -18,6 +18,7 @@ use data_auth::privacy::{PrivacyConfig, PrivacyLevel};
 use data_core::types::AccessMode;
 
 use crate::demo_ui;
+use crate::prism_ui;
 use crate::protocol::McpRequest;
 use crate::rpc::handle_request;
 use crate::server::McpServer;
@@ -32,6 +33,9 @@ pub async fn run_http(server: Arc<McpServer>, port: u16) -> Result<()> {
         .route("/demo/{file}", get(demo_ui::serve_demo_js))
         .route("/trace", get(demo_ui::serve_trace))
         .route("/trace/{file}", get(demo_ui::serve_trace_asset))
+        .route("/prism", get(prism_ui::serve_prism))
+        .route("/prism/", get(prism_ui::serve_prism))
+        .route("/prism/assets/{file}", get(prism_ui::serve_prism_asset))
         .route("/api/datasets", get(api_list_datasets))
         .route("/api/publish", post(api_publish))
         .route("/api/traces", get(api_list_traces))
@@ -47,6 +51,7 @@ pub async fn run_http(server: Arc<McpServer>, port: u16) -> Result<()> {
     info!("Guixu Web UI → http://localhost:{port}");
     info!("Guixu Demo UI → http://localhost:{port}/demo");
     info!("Guixu Trace UI → http://localhost:{port}/trace");
+    info!("Guixu Prism UI → http://localhost:{port}/prism");
     info!("MCP HTTP RPC → http://localhost:{port}/mcp");
     info!("Legacy MCP RPC alias → http://localhost:{port}/rpc");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
