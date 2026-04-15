@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -58,12 +58,13 @@ enum Commands {
 enum McpAction {
     /// Register Guixu MCP with an AI client.
     Install {
-        /// Target client: codex, cursor, claude-code, opencode, openclaw
+        /// Target agent name (e.g. codex, cursor, claude-code, opencode, openclaw).
+        /// Custom agents can be defined in ~/.data-node/agents.toml.
         client: Option<String>,
     },
     /// Remove Guixu MCP from an AI client.
     Uninstall {
-        /// Target client: codex, cursor, claude-code, opencode, openclaw
+        /// Target agent name
         client: String,
     },
 }
@@ -499,12 +500,7 @@ async fn cmd_start() -> Result<()> {
 
 fn cmd_mcp_install(client: Option<String>) -> Result<()> {
     match client {
-        Some(name) => {
-            let c = mcp_install::Client::parse(&name).context(format!(
-                "unknown client '{name}'. Use: claude, cursor, windsurf, kiro, codex, openclaw"
-            ))?;
-            mcp_install::install(c)
-        }
+        Some(name) => mcp_install::install(&name),
         None => {
             mcp_install::list_detected();
             Ok(())
@@ -513,10 +509,7 @@ fn cmd_mcp_install(client: Option<String>) -> Result<()> {
 }
 
 fn cmd_mcp_uninstall(client: &str) -> Result<()> {
-    let c = mcp_install::Client::parse(client).context(format!(
-        "unknown client '{client}'. Use: claude, cursor, windsurf, kiro, codex, openclaw"
-    ))?;
-    mcp_install::uninstall(c)
+    mcp_install::uninstall(client)
 }
 
 async fn cmd_mcp(mode: String) -> Result<()> {

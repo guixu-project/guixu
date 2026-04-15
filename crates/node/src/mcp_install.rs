@@ -1,12 +1,26 @@
 // Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fmt;
+//! Config-driven agent adapter for `guixu mcp install/uninstall`.
+//!
+//! Agent definitions live in TOML (built-in defaults + optional user overrides).
+//! External developers can add new agents or override existing ones without
+//! touching Rust code. UDF hooks allow running external scripts for deep
+//! agent-specific integration (e.g. `claude mcp add`).
+
+use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+// ── Built-in agent definitions ───────────────────────────────────────────────
+
+const BUILTIN_AGENTS_TOML: &str = include_str!("agents_builtin.toml");
+
+// ── Skill / AGENTS.md content ────────────────────────────────────────────────
 
 const AGENTS_BEGIN: &str = "<!-- BEGIN GUIXU MCP -->";
 const AGENTS_END: &str = "<!-- END GUIXU MCP -->";
@@ -34,68 +48,129 @@ When relevant, use these tools in order:
 
 Do not use Guixu MCP when the task is purely about local code changes, refactoring, formatting, UI polish, or debugging unrelated to data selection or data procurement, unless the user explicitly asks to use MCP."#;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Client {
-    Codex,
-    Cursor,
-    ClaudeCode,
-    OpenCode,
-    OpenClaw,
+// ── Config types ─────────────────────────────────────────────────────────────
+
+/// Top-level agents config file.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct AgentsConfig {
+    #[serde(default)]
+    agent: HashMap<String, AgentDef>,
 }
 
-impl Client {
-    pub const ALL: &[Client] = &[
-        Client::Codex,
-        Client::Cursor,
-        Client::ClaudeCode,
-        Client::OpenCode,
-        Client::OpenClaw,
-    ];
+/// A single agent definition.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct AgentDef {
+    /// Display name.
+    #[serde(default)]
+    display_name: Option<String>,
+    /// Config file path relative to $HOME (e.g. ".codex/config.toml").
+    config_path: String,
+    /// Config format: "json" or "toml".
+    #[serde(default = "default_json")]
+    config_format: String,
+    /// JSON key path for MCP servers (e.g. "mcpServers" or "mcp").
+    #[serde(default = "default_mcp_key")]
+    mcp_key: String,
+    /// MCP entry template. Supports `{bin}` placeholder.
+    #[serde(default)]
+    mcp_entry: Option<toml::Value>,
+    /// Skill install directory relative to $HOME (None = no skill support).
+    #[serde(default)]
+    skill_dir: Option<String>,
+    /// Command to detect if agent is installed (e.g. "claude").
+    #[serde(default)]
+    detect_cmd: Option<String>,
+    /// Alternative names for parsing (e.g. ["claude", "claude-code"]).
+    #[serde(default)]
+    aliases: Vec<String>,
+    /// Write AGENTS.md in project root (for agents that read it).
+    #[serde(default)]
+    write_agents_md: bool,
+    /// UDF hooks: external scripts to run at lifecycle points.
+    #[serde(default)]
+    hooks: AgentHooks,
+}
 
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().replace(['-', '_'], "").as_str() {
-            "codex" => Some(Self::Codex),
-            "cursor" => Some(Self::Cursor),
-            "claudecode" | "claude" => Some(Self::ClaudeCode),
-            "opencode" => Some(Self::OpenCode),
-            "openclaw" => Some(Self::OpenClaw),
-            _ => None,
+/// UDF hooks for deep agent integration.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct AgentHooks {
+    /// Script/command to run before install (receives bin path as $1).
+    /// If it succeeds, skip the default install logic.
+    #[serde(default)]
+    pre_install: Option<String>,
+    /// Script/command to run after install.
+    #[serde(default)]
+    post_install: Option<String>,
+    /// Script/command to run before uninstall.
+    /// If it succeeds, skip the default uninstall logic.
+    #[serde(default)]
+    pre_uninstall: Option<String>,
+    /// Script/command to run after uninstall.
+    #[serde(default)]
+    post_uninstall: Option<String>,
+}
+
+fn default_json() -> String {
+    "json".into()
+}
+fn default_mcp_key() -> String {
+    "mcpServers".into()
+}
+
+// ── Registry ─────────────────────────────────────────────────────────────────
+
+/// Load agent definitions: built-in defaults merged with optional user overrides.
+fn load_agents() -> Result<HashMap<String, AgentDef>> {
+    let builtin: AgentsConfig =
+        toml::from_str(BUILTIN_AGENTS_TOML).context("failed to parse built-in agents config")?;
+    let mut agents = builtin.agent;
+
+    // User overrides from ~/.data-node/agents.toml
+    let user_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".data-node/agents.toml");
+    if user_path.exists() {
+        let user_str = fs::read_to_string(&user_path)
+            .with_context(|| format!("failed to read {}", user_path.display()))?;
+        let user: AgentsConfig = toml::from_str(&user_str)
+            .with_context(|| format!("failed to parse {}", user_path.display()))?;
+        // User definitions override built-in ones by name.
+        for (name, def) in user.agent {
+            agents.insert(name, def);
         }
     }
 
-    fn config_path(&self) -> Option<PathBuf> {
-        let home = dirs::home_dir()?;
-        Some(match self {
-            Self::Codex => home.join(".codex/config.toml"),
-            Self::Cursor => home.join(".cursor/mcp.json"),
-            Self::ClaudeCode => home.join(".claude.json"),
-            Self::OpenCode => home.join(".config/opencode/opencode.json"),
-            Self::OpenClaw => home.join(".openclaw/config.json"),
-        })
-    }
-
-    pub fn is_detected(&self) -> bool {
-        match self {
-            Self::ClaudeCode => which("claude").is_some(),
-            _ => self
-                .config_path()
-                .and_then(|p| p.parent().map(|d| d.exists()))
-                .unwrap_or(false),
-        }
-    }
+    Ok(agents)
 }
 
-impl fmt::Display for Client {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Codex => write!(f, "codex"),
-            Self::Cursor => write!(f, "cursor"),
-            Self::ClaudeCode => write!(f, "claude-code"),
-            Self::OpenCode => write!(f, "opencode"),
-            Self::OpenClaw => write!(f, "openclaw"),
+/// Resolve an agent name (including aliases) to its canonical name + definition.
+fn resolve_agent(name: &str) -> Result<(String, AgentDef)> {
+    let agents = load_agents()?;
+    let normalized = name.to_lowercase().replace(['-', '_'], "");
+
+    // Direct match
+    if let Some(def) = agents.get(&normalized) {
+        return Ok((normalized, def.clone()));
+    }
+
+    // Alias match
+    for (canonical, def) in &agents {
+        for alias in &def.aliases {
+            if alias.to_lowercase().replace(['-', '_'], "") == normalized {
+                return Ok((canonical.clone(), def.clone()));
+            }
         }
     }
+
+    let known: Vec<&str> = agents.keys().map(|s| s.as_str()).collect();
+    anyhow::bail!(
+        "unknown agent '{name}'. Known agents: {}.\n\
+         Add custom agents in ~/.data-node/agents.toml",
+        known.join(", ")
+    )
 }
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn guixu_bin() -> Result<String> {
     std::env::current_exe()?
@@ -113,390 +188,84 @@ fn which(cmd: &str) -> Option<PathBuf> {
     })
 }
 
-fn upsert_json_mcp_server(
+fn home_dir() -> Result<PathBuf> {
+    dirs::home_dir().context("cannot determine home directory")
+}
+
+fn expand_home(relative: &str) -> Result<PathBuf> {
+    Ok(home_dir()?.join(relative))
+}
+
+/// Run a UDF hook command. Returns true if the command succeeded.
+fn run_hook(hook: &str, bin: &str) -> bool {
+    let result = if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .args(["/C", hook])
+            .env("GUIXU_BIN", bin)
+            .status()
+    } else {
+        Command::new("sh")
+            .args(["-c", hook])
+            .env("GUIXU_BIN", bin)
+            .status()
+    };
+    matches!(result, Ok(s) if s.success())
+}
+
+// ── JSON config helpers ──────────────────────────────────────────────────────
+
+fn read_json(path: &Path) -> Result<serde_json::Value> {
+    if path.exists() {
+        let raw = fs::read_to_string(path)?;
+        serde_json::from_str(&raw).with_context(|| format!("{} is not valid JSON", path.display()))
+    } else {
+        Ok(serde_json::json!({}))
+    }
+}
+
+fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(value)? + "\n")?;
+    Ok(())
+}
+
+fn mcp_entry_json(def: &AgentDef, bin: &str) -> serde_json::Value {
+    if let Some(template) = &def.mcp_entry {
+        // Convert TOML template to JSON, replacing {bin} placeholders.
+        let json_str = serde_json::to_string(&template)
+            .unwrap_or_default()
+            .replace("{bin}", bin);
+        serde_json::from_str(&json_str)
+            .unwrap_or_else(|_| serde_json::json!({ "command": bin, "args": ["mcp"] }))
+    } else {
+        serde_json::json!({ "command": bin, "args": ["mcp"] })
+    }
+}
+
+fn upsert_json_mcp(
     root: &mut serde_json::Value,
-    name: &str,
+    mcp_key: &str,
     entry: serde_json::Value,
 ) -> Result<()> {
     root.as_object_mut()
         .context("config is not a JSON object")?
-        .entry("mcpServers")
+        .entry(mcp_key)
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
-        .context("mcpServers not object")?
-        .insert(name.into(), entry);
+        .with_context(|| format!("{mcp_key} is not an object"))?
+        .insert("guixu".into(), entry);
     Ok(())
 }
 
-fn remove_json_mcp_server(root: &mut serde_json::Value, name: &str) {
-    if let Some(servers) = root.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-        servers.remove(name);
+fn remove_json_mcp(root: &mut serde_json::Value, mcp_key: &str) {
+    if let Some(servers) = root.get_mut(mcp_key).and_then(|v| v.as_object_mut()) {
+        servers.remove("guixu");
     }
 }
 
-const OPENCLAW_SKILL_TRIGGERS: &str = r#"## When to Use Guixu
-
-Invoke Guixu when the task involves:
-- Finding training data, test data, or benchmark datasets
-- Building or evaluating a model, classifier, detector, segmenter, ranker, or retriever
-- Acquiring labeled examples, curated corpora, or domain-specific data
-- Comparing dataset quality, coverage, or licensing before use
-
-Do NOT invoke Guixu for local code changes, refactoring, formatting, bug fixes, or debugging unrelated to data procurement."#;
-
-const OPENCLAW_SKILL_WORKFLOW: &str = r#"## Two Integration Paths
-
-### Option A: Manual Tool Chaining (immediate)
-Use low-level tools directly for full control:
-
-1. **intent_parse** — Parse the natural-language request into a structured profile.
-   Extract task type, content keywords, data modality, and budget.
-
-2. **dataset_search** — Search across DeFi, RWA, Kaggle, HuggingFace, IPFS,
-   BitTorrent, academic indices, and the P2P network. Filter by source, price,
-   license, and quality.
-
-3. **dataset_evaluate** — Score candidate datasets by Task-Conditioned Value (TCV).
-   Inputs: CID, task description, required columns, budget.
-
-4. **dataset_purchase** — Acquire a paid dataset via smart contract payment
-   (x402 / Machine Payment Protocol). For free datasets, skip to download.
-
-5. **dataset_feedback** — Record on-chain attestation after use to help
-   future agents evaluate this dataset.
-
-### Option B: Delegated Workflow (recommended)
-Let Guixu Agent handle the full pipeline:
-
-```
-data_task_delegate(host_kind="openclaw", session_key="...", workspace_id="...",
-                   goal="train a cat detector", task_type="detection",
-                   desired_outputs=["selected_dataset", "evaluation_report"])
-→ returns { job_id, status, task_goal }
-```
-
-Then poll `data_task_status(job_id=job_id) to check progress.
-
-## Fallback Rules
-
-- If `dataset_search` returns no results, try relaxing filters (remove price cap,
-  set `free_only: true`, or broaden keywords).
-- If `dataset_evaluate` returns a negative score, treat the dataset as harmful
-  and skip it.
-- If `dataset_purchase` fails due to insufficient balance, fall back to
-  free alternatives from `dataset_search` with `free_only: true`."#;
-
-const OPENCLAW_SKILL_EXAMPLES: &str = r#"## Minimal Examples
-
-### Find cat image datasets for object detection
-```
-intent_parse(query="Find cat images for training an object detector",
-             task_type="detection",
-             keywords=["cat", "image"],
-             sample_unit="image")
-→ returns { task_type, keywords, sample_unit }
-
-dataset_search(query="cat object detection dataset",
-               task_type="detection",
-               filters={ "free_only": true })
-→ returns [ { cid, source, price, license, schema } ]
-
-dataset_evaluate(cid="ipfs:Qm...",
-                 task_description="train cat detector",
-                 task_type="detection",
-                 required_columns=["image_path", "bbox"])
-→ returns { score: 0-100 }
-
-dataset_purchase(cid="ipfs:Qm...", max_price=5)
-dataset_feedback(cid="ipfs:Qm...", relevance_score=0.9,
-                 quality_rating=5, task_success=true,
-                 value_assessment="positive")
-```
-
-### Acquire stock price data for time-series forecasting
-```
-intent_parse(query="historical US stock prices for forecasting",
-             task_type="forecasting",
-             keywords=["stock", "price"],
-             sample_unit="tabular")
-→ returns { ... }
-
-dataset_search(query="stock OHLCV dataset",
-               filters={ "chain": "ethereum", "category": "defi" })
-→ returns [ { cid, source, price, license } ]
-
-dataset_evaluate(cid="kaggle:org/project",
-                 task_description="train LSTM price forecaster",
-                 task_type="forecasting",
-                 required_columns=["open","high","low","close","volume"])
-→ returns { score: 0-100 }
-```
-
-### Delegated Workflow Example
-```
-data_task_delegate(host_kind="openclaw",
-                   session_key="agent:main:main",
-                   workspace_id="project-123",
-                   goal="find cat image dataset for training a detector",
-                   task_type="detection",
-                   required_modalities=["image"],
-                   desired_outputs=["selected_dataset", "evaluation_report"])
-→ returns { job_id: "job_abc123", status: "queued", task_goal: "find cat image dataset..." }
-
-data_task_status(job_id="job_abc123")
-→ returns { job_id: "job_abc123", status: "completed", selected_dataset: {...} }
-```"#;
-
-fn openclaw_skill_markdown() -> String {
-    format!(
-        "---\n\
-         name: guixu\n\
-         description: Unified data discovery and market for AI agents. Search, value, and acquire datasets on-chain.\n\
-         version: 0.1.0\n\
-         metadata:\n\
-         \x20 openclaw:\n\
-         \x20   requires:\n\
-         \x20     bins:\n\
-         \x20       - guixu\n\
-         \x20   triggers:\n\
-         \x20     - dataset\n\
-         \x20     - train\n\
-         \x20     - model\n\
-         \x20     - data acquisition\n\
-         \x20     - benchmark\n\
-         \x20     - dataset search\n\
-         \x20   emoji: \"🌊\"\n\
-         ---\n\n\
-         # Guixu — Data Discovery & Market for AI Agents\n\n\
-         {AGENTS_BLOCK}\n\n\
-         {OPENCLAW_SKILL_TRIGGERS}\n\n\
-         {OPENCLAW_SKILL_WORKFLOW}\n\n\
-         {OPENCLAW_SKILL_EXAMPLES}\n",
-    )
-}
-
-// ── Install ──────────────────────────────────────────────────────────────────
-
-pub fn install(client: Client) -> Result<()> {
-    let bin = guixu_bin()?;
-    match client {
-        Client::Codex => install_codex(&bin),
-        Client::Cursor => install_json_mcp_servers(client, &bin),
-        Client::ClaudeCode => install_claude_code(&bin),
-        Client::OpenCode => install_opencode(client, &bin),
-        Client::OpenClaw => install_openclaw(&bin),
-    }
-}
-
-/// Cursor: standard `{ "mcpServers": { "guixu": { "command", "args" } } }`
-fn install_json_mcp_servers(client: Client, bin: &str) -> Result<()> {
-    let path = client.config_path().context("cannot determine home dir")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut root: serde_json::Value = if path.exists() {
-        serde_json::from_str(&fs::read_to_string(&path)?)?
-    } else {
-        serde_json::json!({})
-    };
-
-    upsert_json_mcp_server(
-        &mut root,
-        "guixu",
-        serde_json::json!({ "command": bin, "args": ["mcp"] }),
-    )?;
-
-    fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
-    println!("✅ {client} configured");
-    println!("   Config: {}", path.display());
-    Ok(())
-}
-
-/// Codex: TOML `[mcp_servers.guixu]` in `~/.codex/config.toml`
-fn install_codex(bin: &str) -> Result<()> {
-    let path = Client::Codex
-        .config_path()
-        .context("cannot determine home dir")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut content = if path.exists() {
-        fs::read_to_string(&path)?
-    } else {
-        String::new()
-    };
-
-    content = remove_toml_section(&content, "mcp_servers.guixu");
-
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
-    }
-    let escaped = bin.replace('\\', "\\\\").replace('"', "\\\"");
-    content.push_str(&format!(
-        "\n[mcp_servers.guixu]\ncommand = \"{escaped}\"\nargs = [\"mcp\", \"--mode\", \"codex\"]\n"
-    ));
-
-    fs::write(&path, &content)?;
-    write_agents_md()?;
-
-    println!("✅ codex configured");
-    println!("   Config: {}", path.display());
-    Ok(())
-}
-
-/// Claude Code: prefer `claude mcp add` CLI, fall back to editing `~/.claude.json`
-fn install_claude_code(bin: &str) -> Result<()> {
-    if let Some(claude) = which("claude") {
-        let status = Command::new(claude)
-            .args([
-                "mcp",
-                "add",
-                "--transport",
-                "stdio",
-                "--scope",
-                "user",
-                "guixu",
-                "--",
-                bin,
-                "mcp",
-            ])
-            .status();
-        if let Ok(s) = status {
-            if s.success() {
-                println!("✅ claude-code configured (via `claude mcp add`)");
-                return Ok(());
-            }
-        }
-    }
-
-    // Fallback: edit ~/.claude.json directly
-    let path = Client::ClaudeCode
-        .config_path()
-        .context("cannot determine home dir")?;
-
-    let mut root: serde_json::Value = if path.exists() {
-        serde_json::from_str(&fs::read_to_string(&path)?)?
-    } else {
-        serde_json::json!({})
-    };
-
-    root.as_object_mut()
-        .context("config is not a JSON object")?
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .context("mcpServers not object")?
-        .insert(
-            "guixu".into(),
-            serde_json::json!({ "type": "stdio", "command": bin, "args": ["mcp"] }),
-        );
-
-    fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
-    println!("✅ claude-code configured");
-    println!("   Config: {}", path.display());
-    Ok(())
-}
-
-/// OpenCode: `{ "mcp": { "guixu": { "type": "local", "command": [...], "enabled": true } } }`
-fn install_opencode(client: Client, bin: &str) -> Result<()> {
-    let path = client.config_path().context("cannot determine home dir")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let mut root: serde_json::Value = if path.exists() {
-        serde_json::from_str(&fs::read_to_string(&path)?)?
-    } else {
-        serde_json::json!({})
-    };
-
-    root.as_object_mut()
-        .context("config is not a JSON object")?
-        .entry("mcp")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .context("mcp not object")?
-        .insert(
-            "guixu".into(),
-            serde_json::json!({
-                "type": "local",
-                "command": [bin, "mcp"],
-                "enabled": true
-            }),
-        );
-
-    fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
-    println!("✅ {client} configured");
-    println!("   Config: {}", path.display());
-    Ok(())
-}
-
-/// OpenClaw: MCP entry in `~/.openclaw/config.json` + skill in `~/.openclaw/workspace/skills/guixu/`
-fn install_openclaw(bin: &str) -> Result<()> {
-    let home = dirs::home_dir().context("cannot determine home dir")?;
-    let config_path = home.join(".openclaw/config.json");
-    let skill_dir = home.join(".openclaw/workspace/skills/guixu");
-
-    // 1. Register MCP server in config.json
-    {
-        let parent = config_path.parent().expect("config.json has no parent");
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-
-        let raw = if config_path.exists() {
-            fs::read_to_string(&config_path).context("failed to read openclaw config")?
-        } else {
-            String::new()
-        };
-
-        let mut root: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(e) => {
-                anyhow::bail!(
-                    "openclaw config is not valid JSON — {}: {}\n\
-                     File: {}\n\
-                     Fix: back up the file and remove it, then re-run install.",
-                    config_path.display(),
-                    e,
-                    raw
-                );
-            }
-        };
-
-        upsert_json_mcp_server(
-            &mut root,
-            "guixu",
-            serde_json::json!({ "command": bin, "args": ["mcp"] }),
-        )?;
-
-        fs::write(&config_path, serde_json::to_string_pretty(&root)? + "\n")
-            .context("failed to write openclaw config")?;
-    }
-
-    // 2. Install skill
-    fs::create_dir_all(&skill_dir)
-        .with_context(|| format!("failed to create skill directory {}", skill_dir.display()))?;
-    let skill_md = openclaw_skill_markdown();
-    fs::write(skill_dir.join("SKILL.md"), &skill_md).with_context(|| {
-        format!(
-            "failed to write skill file at {}",
-            skill_dir.join("SKILL.md").display()
-        )
-    })?;
-
-    println!("✅ openclaw configured");
-    println!("   Config: {}", config_path.display());
-    println!("   Skill:  {}", skill_dir.join("SKILL.md").display());
-    println!();
-    println!("To verify:");
-    println!("  1. Open openclaw and run: intent_parse(query=\"find cat images\", task_type=\"detection\", keywords=[\"cat\"], sample_unit=\"image\")");
-    println!("  2. Check that MCP server 'guixu' is listed in openclaw's active servers");
-    println!("  3. If not detected, restart openclaw or check ~/.openclaw/config.json");
-
-    Ok(())
-}
+// ── TOML config helpers ──────────────────────────────────────────────────────
 
 fn remove_toml_section(content: &str, section: &str) -> String {
     let header = format!("[{section}]");
@@ -520,6 +289,39 @@ fn remove_toml_section(content: &str, section: &str) -> String {
     }
     out
 }
+
+// ── Skill generation ─────────────────────────────────────────────────────────
+
+fn skill_markdown() -> String {
+    format!(
+        "---\n\
+         name: guixu-data-discovery\n\
+         description: >-\n\
+         \x20 Autonomous data discovery, evaluation, and acquisition for AI workflows.\n\
+         \x20 Searches across DeFi, academic, government, and P2P data sources.\n\
+         version: 0.1.0\n\
+         author: guixu-project\n\
+         license: Apache-2.0\n\
+         triggers:\n\
+         \x20 - need training data\n\
+         \x20 - find dataset\n\
+         \x20 - data acquisition\n\
+         \x20 - benchmark data\n\
+         \x20 - labeled examples\n\
+         tools:\n\
+         \x20 - intent_parse\n\
+         \x20 - dataset_search\n\
+         \x20 - dataset_evaluate\n\
+         \x20 - dataset_purchase\n\
+         \x20 - dataset_feedback\n\
+         \x20 - data_task_delegate\n\
+         ---\n\n\
+         # Guixu — Data Discovery & Market for AI Agents\n\n\
+         {AGENTS_BLOCK}\n"
+    )
+}
+
+// ── AGENTS.md ────────────────────────────────────────────────────────────────
 
 fn write_agents_md() -> Result<()> {
     let cwd = std::env::current_dir()?;
@@ -566,305 +368,227 @@ fn strip_between(content: &str, begin: &str, end: &str) -> String {
     out
 }
 
-// ── Uninstall ────────────────────────────────────────────────────────────────
+// ── Install ──────────────────────────────────────────────────────────────────
 
-pub fn uninstall(client: Client) -> Result<()> {
-    match client {
-        Client::Codex => uninstall_codex(),
-        Client::ClaudeCode => uninstall_claude_code(),
-        Client::OpenCode => uninstall_opencode_entry(client),
-        Client::Cursor => uninstall_json_mcp_servers(client),
-        Client::OpenClaw => uninstall_openclaw(),
-    }
-}
+pub fn install(name: &str) -> Result<()> {
+    let (canonical, def) = resolve_agent(name)?;
+    let bin = guixu_bin()?;
 
-fn uninstall_json_mcp_servers(client: Client) -> Result<()> {
-    let path = client.config_path().context("cannot determine home dir")?;
-    if !path.exists() {
-        println!("Nothing to remove — {} does not exist.", path.display());
-        return Ok(());
+    // UDF pre_install hook — if it succeeds, skip default logic.
+    if let Some(hook) = &def.hooks.pre_install {
+        if run_hook(hook, &bin) {
+            println!("✅ {canonical} configured (via pre_install hook)");
+            if let Some(hook) = &def.hooks.post_install {
+                run_hook(hook, &bin);
+            }
+            return Ok(());
+        }
     }
-    let mut root: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
-    remove_json_mcp_server(&mut root, "guixu");
-    fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
-    println!("✅ {client} — guixu MCP removed");
+
+    let config_path = expand_home(&def.config_path)?;
+
+    match def.config_format.as_str() {
+        "toml" => install_toml(&canonical, &def, &config_path, &bin)?,
+        _ => install_json(&canonical, &def, &config_path, &bin)?,
+    }
+
+    // Install skill if supported.
+    if let Some(skill_rel) = &def.skill_dir {
+        let skill_dir = expand_home(skill_rel)?;
+        fs::create_dir_all(&skill_dir)?;
+        fs::write(skill_dir.join("SKILL.md"), skill_markdown())?;
+        println!("   Skill:  {}", skill_dir.join("SKILL.md").display());
+    }
+
+    // Write AGENTS.md if configured.
+    if def.write_agents_md {
+        write_agents_md()?;
+    }
+
+    // UDF post_install hook.
+    if let Some(hook) = &def.hooks.post_install {
+        run_hook(hook, &bin);
+    }
+
     Ok(())
 }
 
-fn uninstall_codex() -> Result<()> {
-    let path = Client::Codex
-        .config_path()
-        .context("cannot determine home dir")?;
-    if !path.exists() {
+fn install_json(canonical: &str, def: &AgentDef, config_path: &Path, bin: &str) -> Result<()> {
+    let mut root = read_json(config_path)?;
+    let entry = mcp_entry_json(def, bin);
+    upsert_json_mcp(&mut root, &def.mcp_key, entry)?;
+    write_json(config_path, &root)?;
+    println!("✅ {canonical} configured");
+    println!("   Config: {}", config_path.display());
+    Ok(())
+}
+
+fn install_toml(canonical: &str, def: &AgentDef, config_path: &Path, bin: &str) -> Result<()> {
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut content = if config_path.exists() {
+        fs::read_to_string(config_path)?
+    } else {
+        String::new()
+    };
+
+    // The TOML section name is derived from mcp_key (e.g. "mcp_servers.guixu").
+    let section = format!("{}.guixu", def.mcp_key);
+    content = remove_toml_section(&content, &section);
+
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    let escaped = bin.replace('\\', "\\\\").replace('"', "\\\"");
+    content.push_str(&format!(
+        "\n[{section}]\ncommand = \"{escaped}\"\nargs = [\"mcp\", \"--mode\", \"codex\"]\n"
+    ));
+
+    fs::write(config_path, &content)?;
+    println!("✅ {canonical} configured");
+    println!("   Config: {}", config_path.display());
+    Ok(())
+}
+
+// ── Uninstall ────────────────────────────────────────────────────────────────
+
+pub fn uninstall(name: &str) -> Result<()> {
+    let (canonical, def) = resolve_agent(name)?;
+    let bin = guixu_bin().unwrap_or_default();
+
+    // UDF pre_uninstall hook.
+    if let Some(hook) = &def.hooks.pre_uninstall {
+        if run_hook(hook, &bin) {
+            println!("✅ {canonical} — guixu MCP removed (via pre_uninstall hook)");
+            if let Some(hook) = &def.hooks.post_uninstall {
+                run_hook(hook, &bin);
+            }
+            return Ok(());
+        }
+    }
+
+    let config_path = expand_home(&def.config_path)?;
+
+    match def.config_format.as_str() {
+        "toml" => uninstall_toml(&canonical, &def, &config_path)?,
+        _ => uninstall_json(&canonical, &def, &config_path)?,
+    }
+
+    // Remove skill directory if it exists.
+    if let Some(skill_rel) = &def.skill_dir {
+        let skill_dir = expand_home(skill_rel)?;
+        if skill_dir.exists() {
+            fs::remove_dir_all(&skill_dir)?;
+            println!("✅ {canonical} — skill removed at {}", skill_dir.display());
+        }
+    }
+
+    // UDF post_uninstall hook.
+    if let Some(hook) = &def.hooks.post_uninstall {
+        run_hook(hook, &bin);
+    }
+
+    Ok(())
+}
+
+fn uninstall_json(canonical: &str, def: &AgentDef, config_path: &Path) -> Result<()> {
+    if !config_path.exists() {
+        println!(
+            "Nothing to remove — {} does not exist.",
+            config_path.display()
+        );
+        return Ok(());
+    }
+    let mut root = read_json(config_path)?;
+    remove_json_mcp(&mut root, &def.mcp_key);
+    write_json(config_path, &root)?;
+    println!("✅ {canonical} — guixu MCP removed");
+    Ok(())
+}
+
+fn uninstall_toml(canonical: &str, _def: &AgentDef, config_path: &Path) -> Result<()> {
+    if !config_path.exists() {
         println!("Nothing to remove.");
         return Ok(());
     }
-    let content = fs::read_to_string(&path)?;
-    fs::write(&path, remove_toml_section(&content, "mcp_servers.guixu"))?;
-    println!("✅ codex — guixu MCP removed");
-    Ok(())
-}
-
-fn uninstall_claude_code() -> Result<()> {
-    if let Some(claude) = which("claude") {
-        let status = Command::new(claude)
-            .args(["mcp", "remove", "guixu"])
-            .status();
-        if let Ok(s) = status {
-            if s.success() {
-                println!("✅ claude-code — guixu MCP removed (via `claude mcp remove`)");
-                return Ok(());
-            }
-        }
-    }
-    // Fallback
-    uninstall_json_mcp_servers(Client::ClaudeCode)
-}
-
-fn uninstall_opencode_entry(client: Client) -> Result<()> {
-    let path = client.config_path().context("cannot determine home dir")?;
-    if !path.exists() {
-        println!("Nothing to remove — {} does not exist.", path.display());
-        return Ok(());
-    }
-    let mut root: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path)?)?;
-    if let Some(mcp) = root.get_mut("mcp").and_then(|v| v.as_object_mut()) {
-        mcp.remove("guixu");
-    }
-    fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
-    println!("✅ {client} — guixu MCP removed");
-    Ok(())
-}
-
-fn uninstall_openclaw() -> Result<()> {
-    let home = dirs::home_dir().context("cannot determine home dir")?;
-    let config_path = home.join(".openclaw/config.json");
-    let skill_dir = home.join(".openclaw/workspace/skills/guixu");
-
-    let mut changed_config = false;
-
-    if config_path.exists() {
-        let raw = fs::read_to_string(&config_path).context("failed to read openclaw config")?;
-        let mut root: serde_json::Value =
-            serde_json::from_str(&raw).context("openclaw config is not valid JSON")?;
-        let had_guixu = root
-            .get("mcpServers")
-            .and_then(|v| v.get("guixu"))
-            .is_some();
-        remove_json_mcp_server(&mut root, "guixu");
-        fs::write(&config_path, serde_json::to_string_pretty(&root)? + "\n")
-            .context("failed to write openclaw config")?;
-        if had_guixu {
-            changed_config = true;
-            println!("✅ openclaw — guixu MCP entry removed");
-        }
-    }
-
-    if skill_dir.exists() {
-        fs::remove_dir_all(&skill_dir)
-            .with_context(|| format!("failed to remove skill directory {}", skill_dir.display()))?;
-        println!("✅ openclaw — skill removed at {}", skill_dir.display());
-    }
-
-    if !changed_config && !skill_dir.exists() {
-        println!("openclaw — nothing to remove (guixu was not installed)");
-    }
-
+    let content = fs::read_to_string(config_path)?;
+    fs::write(
+        config_path,
+        remove_toml_section(&content, "mcp_servers.guixu"),
+    )?;
+    println!("✅ {canonical} — guixu MCP removed");
     Ok(())
 }
 
 // ── List ─────────────────────────────────────────────────────────────────────
 
 pub fn list_detected() {
-    println!("Supported clients:");
-    for c in Client::ALL {
-        let tag = if c.is_detected() { "detected" } else { "—" };
-        println!("  {c:<14} {tag}");
+    let agents = match load_agents() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("Failed to load agent config: {e}");
+            return;
+        }
+    };
+
+    println!("Supported agents:");
+    let mut names: Vec<_> = agents.keys().collect();
+    names.sort();
+    for name in names {
+        let def = &agents[name];
+        let detected = is_detected(def);
+        let tag = if detected { "detected" } else { "—" };
+        let display = def.display_name.as_deref().unwrap_or(name);
+        println!("  {display:<14} {tag}");
     }
+    println!();
+    println!("Add custom agents in ~/.data-node/agents.toml");
 }
+
+fn is_detected(def: &AgentDef) -> bool {
+    if let Some(cmd) = &def.detect_cmd {
+        return which(cmd).is_some();
+    }
+    expand_home(&def.config_path)
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.exists()))
+        .unwrap_or(false)
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_dir() -> PathBuf {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("guixu_mcp_test_{}_{n}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    #[test]
+    fn builtin_agents_parse() {
+        let agents = load_agents().unwrap();
+        assert!(agents.contains_key("codex"));
+        assert!(agents.contains_key("cursor"));
+        assert!(agents.contains_key("claudecode"));
+        assert!(agents.contains_key("opencode"));
+        assert!(agents.contains_key("openclaw"));
     }
 
     #[test]
-    fn parse_openclaw_variant() {
-        assert_eq!(Client::parse("openclaw"), Some(Client::OpenClaw));
-        assert_eq!(Client::parse("OpenClaw"), Some(Client::OpenClaw));
-        assert_eq!(Client::parse("open_claw"), Some(Client::OpenClaw));
-        assert_eq!(Client::parse("open-claw"), Some(Client::OpenClaw));
+    fn resolve_by_alias() {
+        let (name, _) = resolve_agent("claude-code").unwrap();
+        assert_eq!(name, "claudecode");
+
+        let (name, _) = resolve_agent("claude").unwrap();
+        assert_eq!(name, "claudecode");
     }
 
     #[test]
-    fn parse_existing_clients_unchanged() {
-        assert_eq!(Client::parse("codex"), Some(Client::Codex));
-        assert_eq!(Client::parse("cursor"), Some(Client::Cursor));
-        assert_eq!(Client::parse("claude-code"), Some(Client::ClaudeCode));
-        assert_eq!(Client::parse("opencode"), Some(Client::OpenCode));
+    fn resolve_unknown_fails() {
+        assert!(resolve_agent("nonexistent").is_err());
     }
 
     #[test]
-    fn parse_unknown_returns_none() {
-        assert_eq!(Client::parse("vscode"), None);
-    }
-
-    #[test]
-    fn display_openclaw() {
-        assert_eq!(Client::OpenClaw.to_string(), "openclaw");
-    }
-
-    #[test]
-    fn openclaw_config_path_ends_with_expected_suffix() {
-        if let Some(path) = Client::OpenClaw.config_path() {
-            assert!(path.ends_with(".openclaw/config.json"));
-        }
-    }
-
-    #[test]
-    fn all_clients_includes_openclaw() {
-        assert!(Client::ALL.contains(&Client::OpenClaw));
-    }
-
-    #[test]
-    fn openclaw_install_creates_mcp_config_entry() {
-        let dir = temp_dir();
-        let path = dir.join("config.json");
-
-        // Simulate the same JSON logic as install_json_mcp_servers
-        let mut root = serde_json::json!({});
-        root.as_object_mut()
-            .unwrap()
-            .entry("mcpServers")
-            .or_insert_with(|| serde_json::json!({}))
-            .as_object_mut()
-            .unwrap()
-            .insert(
-                "guixu".into(),
-                serde_json::json!({ "command": "/usr/local/bin/guixu", "args": ["mcp"] }),
-            );
-        fs::write(&path, serde_json::to_string_pretty(&root).unwrap()).unwrap();
-
-        let content: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            content["mcpServers"]["guixu"]["command"],
-            "/usr/local/bin/guixu"
-        );
-        assert_eq!(content["mcpServers"]["guixu"]["args"][0], "mcp");
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn openclaw_install_preserves_existing_mcp_entries() {
-        let dir = temp_dir();
-        let path = dir.join("config.json");
-
-        let existing = serde_json::json!({
-            "mcpServers": { "other-tool": { "command": "other", "args": [] } }
-        });
-        fs::write(&path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
-
-        let mut root: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        root.as_object_mut()
-            .unwrap()
-            .entry("mcpServers")
-            .or_insert_with(|| serde_json::json!({}))
-            .as_object_mut()
-            .unwrap()
-            .insert(
-                "guixu".into(),
-                serde_json::json!({ "command": "guixu", "args": ["mcp"] }),
-            );
-        fs::write(&path, serde_json::to_string_pretty(&root).unwrap()).unwrap();
-
-        let content: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(content["mcpServers"]["other-tool"].is_object());
-        assert!(content["mcpServers"]["guixu"].is_object());
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn openclaw_skill_md_contains_expected_content() {
-        let dir = temp_dir();
-        let skill_dir = dir.join("skills/guixu");
-        fs::create_dir_all(&skill_dir).unwrap();
-
-        let skill_md = openclaw_skill_markdown();
-        fs::write(skill_dir.join("SKILL.md"), &skill_md).unwrap();
-
-        let content = fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
-        assert!(content.contains("name: guixu"));
-        assert!(content.contains("emoji:"));
-        assert!(content.contains("intent_parse"));
-        assert!(content.contains("dataset_search"));
-        assert!(content.contains("dataset_evaluate"));
-        assert!(content.contains("dataset_purchase"));
-        assert!(content.contains("dataset_feedback"));
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn openclaw_uninstall_removes_guixu_entry() {
-        let dir = temp_dir();
-        let path = dir.join("config.json");
-
-        let existing = serde_json::json!({
-            "mcpServers": {
-                "guixu": { "command": "guixu", "args": ["mcp"] },
-                "other": { "command": "other", "args": [] }
-            }
-        });
-        fs::write(&path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
-
-        let mut root: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        root.get_mut("mcpServers")
-            .unwrap()
-            .as_object_mut()
-            .unwrap()
-            .remove("guixu");
-        fs::write(&path, serde_json::to_string_pretty(&root).unwrap()).unwrap();
-
-        let content: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(content["mcpServers"]["guixu"].is_null());
-        assert!(content["mcpServers"]["other"].is_object());
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn openclaw_uninstall_removes_skill_directory() {
-        let dir = temp_dir();
-        let skill_dir = dir.join("skills/guixu");
-        fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(skill_dir.join("SKILL.md"), "test").unwrap();
-        assert!(skill_dir.exists());
-
-        fs::remove_dir_all(&skill_dir).unwrap();
-        assert!(!skill_dir.exists());
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn upsert_json_mcp_server_is_idempotent() {
+    fn upsert_json_mcp_is_idempotent() {
         let mut root = serde_json::json!({
             "mcpServers": {
                 "guixu": { "command": "old", "args": ["mcp"] },
@@ -872,9 +596,9 @@ mod tests {
             }
         });
 
-        upsert_json_mcp_server(
+        upsert_json_mcp(
             &mut root,
-            "guixu",
+            "mcpServers",
             serde_json::json!({ "command": "guixu", "args": ["mcp"] }),
         )
         .unwrap();
@@ -882,58 +606,70 @@ mod tests {
         let servers = root["mcpServers"].as_object().unwrap();
         assert_eq!(servers.len(), 2);
         assert_eq!(root["mcpServers"]["guixu"]["command"], "guixu");
-        assert_eq!(root["mcpServers"]["other"]["command"], "other");
     }
 
     #[test]
-    fn upsert_json_mcp_server_rejects_non_object_root() {
-        let mut root = serde_json::json!([]);
-        let err = upsert_json_mcp_server(
-            &mut root,
-            "guixu",
-            serde_json::json!({ "command": "guixu", "args": ["mcp"] }),
-        )
-        .unwrap_err();
-
-        assert!(err.to_string().contains("config is not a JSON object"));
-    }
-
-    #[test]
-    fn upsert_json_mcp_server_rejects_non_object_mcp_servers() {
-        let mut root = serde_json::json!({ "mcpServers": [] });
-        let err = upsert_json_mcp_server(
-            &mut root,
-            "guixu",
-            serde_json::json!({ "command": "guixu", "args": ["mcp"] }),
-        )
-        .unwrap_err();
-
-        assert!(err.to_string().contains("mcpServers not object"));
-    }
-
-    #[test]
-    fn remove_json_mcp_server_is_safe_when_entry_missing() {
+    fn remove_json_mcp_safe_when_missing() {
         let mut root = serde_json::json!({
-            "mcpServers": {
-                "other": { "command": "other", "args": [] }
-            }
+            "mcpServers": { "other": { "command": "other" } }
         });
-
-        remove_json_mcp_server(&mut root, "guixu");
-
+        remove_json_mcp(&mut root, "mcpServers");
         assert!(root["mcpServers"]["guixu"].is_null());
-        assert_eq!(root["mcpServers"]["other"]["command"], "other");
+        assert!(root["mcpServers"]["other"].is_object());
     }
 
     #[test]
-    fn openclaw_skill_markdown_includes_openclaw_metadata_and_workflow() {
-        let skill_md = openclaw_skill_markdown();
+    fn skill_markdown_contains_expected_fields() {
+        let md = skill_markdown();
+        assert!(md.contains("name: guixu-data-discovery"));
+        assert!(md.contains("intent_parse"));
+        assert!(md.contains("dataset_search"));
+        assert!(md.contains("data_task_delegate"));
+    }
 
-        assert!(skill_md.contains("metadata:"));
-        assert!(skill_md.contains("openclaw:"));
-        assert!(skill_md.contains("bins:"));
-        assert!(skill_md.contains("- guixu"));
-        assert!(skill_md.contains("intent_parse"));
-        assert!(skill_md.contains("dataset_search"));
+    #[test]
+    fn mcp_entry_default() {
+        let def = AgentDef {
+            display_name: None,
+            config_path: ".test/config.json".into(),
+            config_format: "json".into(),
+            mcp_key: "mcpServers".into(),
+            mcp_entry: None,
+            skill_dir: None,
+            detect_cmd: None,
+            aliases: vec![],
+            write_agents_md: false,
+            hooks: AgentHooks::default(),
+        };
+        let entry = mcp_entry_json(&def, "/usr/bin/guixu");
+        assert_eq!(entry["command"], "/usr/bin/guixu");
+        assert_eq!(entry["args"][0], "mcp");
+    }
+
+    #[test]
+    fn mcp_entry_with_template() {
+        let template: toml::Value = toml::from_str(
+            r#"type = "local"
+command = ["{bin}", "mcp"]
+enabled = true"#,
+        )
+        .unwrap();
+
+        let def = AgentDef {
+            display_name: None,
+            config_path: ".test/config.json".into(),
+            config_format: "json".into(),
+            mcp_key: "mcp".into(),
+            mcp_entry: Some(template),
+            skill_dir: None,
+            detect_cmd: None,
+            aliases: vec![],
+            write_agents_md: false,
+            hooks: AgentHooks::default(),
+        };
+        let entry = mcp_entry_json(&def, "/usr/bin/guixu");
+        assert_eq!(entry["type"], "local");
+        assert_eq!(entry["command"][0], "/usr/bin/guixu");
+        assert_eq!(entry["enabled"], true);
     }
 }

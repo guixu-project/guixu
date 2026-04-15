@@ -25,21 +25,39 @@ pub struct HostContext {
     pub run_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum HostKind {
-    OpenClaw,
-    Codex,
-    OpenCode,
-}
+/// Extensible host agent identifier.
+///
+/// String-based so new agents can be added via config without code changes.
+/// Well-known constants are provided for common agents.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct HostKind(pub String);
 
 impl HostKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            HostKind::OpenClaw => "openclaw",
-            HostKind::Codex => "codex",
-            HostKind::OpenCode => "opencode",
-        }
+    pub fn new(name: &str) -> Self {
+        Self(name.to_lowercase())
+    }
+
+    pub fn openclaw() -> Self {
+        Self("openclaw".into())
+    }
+
+    pub fn codex() -> Self {
+        Self("codex".into())
+    }
+
+    pub fn opencode() -> Self {
+        Self("opencode".into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for HostKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -338,7 +356,7 @@ mod tests {
     #[test]
     fn test_delegated_data_task_input_into_task() {
         let input = DelegatedDataTaskInput {
-            host_kind: HostKind::OpenClaw,
+            host_kind: HostKind::openclaw(),
             session_key: "agent:main:main".into(),
             run_id: Some("run_123".into()),
             workspace_id: "repo:guixu-demo".into(),
@@ -358,7 +376,7 @@ mod tests {
         };
 
         let task = input.into_task();
-        assert_eq!(task.host.kind, HostKind::OpenClaw);
+        assert_eq!(task.host.kind, HostKind::openclaw());
         assert_eq!(task.workspace.id, "repo:guixu-demo");
         assert_eq!(task.task.goal, "train a safety helmet detector");
         assert!(task.policy.allow_purchase == false);
