@@ -9,7 +9,7 @@ use super::trace_hooks::with_trace;
 use crate::state::AppState;
 
 pub async fn handle(args: Value, state: &AppState) -> Result<String> {
-    with_trace(&state.trace_manager, "mcp.delegate", None, async {
+    with_trace(&state.trace_manager, "mcp.delegate", None, None, async {
         inner_handle(args, state).await
     })
     .await

@@ -182,6 +182,7 @@ pub struct SpanBuilder {
     trace_id: String,
     span_id: String,
     parent_span_id: Option<String>,
+    session_id: Option<String>,
     span_name: String,
     span_type: SpanType,
     start_time: DateTime<Utc>,
@@ -205,6 +206,7 @@ impl SpanBuilder {
             trace_id: trace_id.to_string(),
             span_id: span_id.to_string(),
             parent_span_id: parent_span_id.map(String::from),
+            session_id: None,
             span_name: span_name.to_string(),
             span_type,
             start_time: Utc::now(),
@@ -246,6 +248,12 @@ impl SpanBuilder {
         self
     }
 
+    /// Set session id.
+    pub fn with_session_id(mut self, session_id: &str) -> Self {
+        self.session_id = Some(session_id.to_string());
+        self
+    }
+
     /// Finish building and return the [`SpanRecord`].
     pub fn finish(self) -> SpanRecord {
         let end_time = Utc::now();
@@ -256,6 +264,7 @@ impl SpanBuilder {
             trace_id: self.trace_id,
             span_id: self.span_id,
             parent_span_id: self.parent_span_id,
+            session_id: self.session_id,
             span_name: self.span_name,
             span_type: self.span_type,
             source: TraceSource::Guixu,

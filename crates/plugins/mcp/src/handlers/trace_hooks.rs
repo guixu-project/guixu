@@ -17,6 +17,7 @@ pub async fn with_trace<F>(
     trace_manager: &Option<Arc<RwLock<data_storage::trace_manager::AgentTraceManager>>>,
     span_name: &str,
     parent_span_id: Option<&str>,
+    session_id: Option<&str>,
     f: F,
 ) -> anyhow::Result<String>
 where
@@ -52,18 +53,19 @@ where
     // End span after handler completes
     if let Some(tm) = trace_manager {
         let tm = tm.read().await;
-        let builder = SpanBuilder::new(
+        let mut builder = SpanBuilder::new(
             &trace_id,
             &span_id,
             parent_span_id,
             span_name,
             SpanType::ToolUse,
         );
-        let builder = if result.is_err() {
-            builder.with_error(result.as_ref().err().unwrap().to_string().as_str())
-        } else {
-            builder
-        };
+        if let Some(sid) = session_id {
+            builder = builder.with_session_id(sid);
+        }
+        if result.is_err() {
+            builder = builder.with_error(result.as_ref().err().unwrap().to_string().as_str());
+        }
         tm.end_span(builder).await;
     }
 

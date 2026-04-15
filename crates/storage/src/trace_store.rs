@@ -121,6 +121,8 @@ pub struct SpanRecord {
     pub span_id: String,
     /// Parent span id for hierarchy (None for root span)
     pub parent_span_id: Option<String>,
+    /// Session id for grouping related traces (e.g., multi-turn conversation)
+    pub session_id: Option<String>,
     /// Human-readable span name
     pub span_name: String,
     /// Span type classification
@@ -159,6 +161,7 @@ impl SpanRecord {
             trace_id: trace_id.into(),
             span_id: span_id.into(),
             parent_span_id: parent_span_id.map(Into::into),
+            session_id: None,
             span_name: span_name.into(),
             span_type,
             source: TraceSource::Guixu,
@@ -226,6 +229,12 @@ impl SpanRecord {
         }
         self
     }
+
+    /// Set session id for grouping related traces
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
 }
 
 /// A trace summary (for listing traces)
@@ -233,6 +242,7 @@ impl SpanRecord {
 pub struct TraceSummary {
     pub trace_id: String,
     pub trace_name: Option<String>,
+    pub session_id: Option<String>,
     pub source: TraceSource,
     pub first_span_time: DateTime<Utc>,
     pub last_span_time: DateTime<Utc>,
@@ -240,6 +250,60 @@ pub struct TraceSummary {
     pub span_count: i64,
     pub total_input_tokens: i64,
     pub total_output_tokens: i64,
+}
+
+/// Score source — how the score was produced.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScoreSource {
+    /// Automated LLM-as-a-Judge evaluation
+    LlmJudge,
+    /// Human annotation
+    Human,
+    /// Programmatic SDK scoring
+    Sdk,
+}
+
+impl ScoreSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ScoreSource::LlmJudge => "llm_judge",
+            ScoreSource::Human => "human",
+            ScoreSource::Sdk => "sdk",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "llm_judge" => ScoreSource::LlmJudge,
+            "human" => ScoreSource::Human,
+            "sdk" => ScoreSource::Sdk,
+            _ => ScoreSource::Sdk,
+        }
+    }
+}
+
+/// A score attached to a trace or span for evaluation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceScore {
+    /// Unique score identifier
+    pub score_id: String,
+    /// Trace this score belongs to
+    pub trace_id: String,
+    /// Optional span within the trace (None = trace-level score)
+    pub span_id: Option<String>,
+    /// Score dimension name (e.g. "relevance", "hallucination", "quality")
+    pub name: String,
+    /// Numeric score value (e.g. 0.0–1.0)
+    pub value: Option<f64>,
+    /// Categorical label (e.g. "good", "bad", "neutral")
+    pub label: Option<String>,
+    /// Free-text comment explaining the score
+    pub comment: Option<String>,
+    /// How this score was produced
+    pub source: ScoreSource,
+    /// When the score was created
+    pub created_at: DateTime<Utc>,
 }
 
 /// DuckDB-backed trace store for AI agent traces
@@ -301,6 +365,7 @@ impl TraceStore {
             CREATE TABLE IF NOT EXISTS traces (
                 trace_id              VARCHAR NOT NULL,
                 trace_name            VARCHAR,
+                session_id            VARCHAR,
                 source                VARCHAR NOT NULL DEFAULT 'guixu',
                 first_span_time_us    BIGINT NOT NULL,  -- microseconds since epoch
                 last_span_time_us     BIGINT NOT NULL,
@@ -316,6 +381,7 @@ impl TraceStore {
                 trace_id          VARCHAR NOT NULL,
                 span_id           VARCHAR NOT NULL,
                 parent_span_id    VARCHAR,
+                session_id        VARCHAR,
                 span_name         VARCHAR NOT NULL,
                 span_type         VARCHAR NOT NULL DEFAULT 'other',
                 source            VARCHAR NOT NULL DEFAULT 'guixu',
@@ -330,6 +396,19 @@ impl TraceStore {
                 PRIMARY KEY (source, trace_id, span_id)
             );
 
+            CREATE TABLE IF NOT EXISTS trace_scores (
+                score_id      VARCHAR NOT NULL,
+                trace_id      VARCHAR NOT NULL,
+                span_id       VARCHAR,
+                name          VARCHAR NOT NULL,
+                value         DOUBLE PRECISION,
+                label         VARCHAR,
+                comment       VARCHAR,
+                source        VARCHAR NOT NULL DEFAULT 'sdk',
+                created_at_us BIGINT NOT NULL,
+                PRIMARY KEY (score_id)
+            );
+
             -- Indexes for common query patterns
             CREATE INDEX IF NOT EXISTS idx_spans_trace_id
                 ON trace_spans(trace_id, source);
@@ -337,6 +416,14 @@ impl TraceStore {
                 ON trace_spans(source, start_time_us DESC);
             CREATE INDEX IF NOT EXISTS idx_spans_span_type
                 ON trace_spans(span_type);
+            CREATE INDEX IF NOT EXISTS idx_spans_session_id
+                ON trace_spans(session_id);
+            CREATE INDEX IF NOT EXISTS idx_traces_session_id
+                ON traces(session_id);
+            CREATE INDEX IF NOT EXISTS idx_scores_trace_id
+                ON trace_scores(trace_id);
+            CREATE INDEX IF NOT EXISTS idx_scores_span_id
+                ON trace_scores(span_id);
             "#,
         )?;
         Ok(())
@@ -347,15 +434,16 @@ impl TraceStore {
         self.conn.execute(
             r#"
             INSERT INTO trace_spans (
-                trace_id, span_id, parent_span_id, span_name, span_type,
+                trace_id, span_id, parent_span_id, session_id, span_name, span_type,
                 source, start_time_us, end_time_us, duration_ms, attributes,
                 input_tokens, output_tokens, model, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
             params![
                 span.trace_id,
                 span.span_id,
                 span.parent_span_id,
+                span.session_id,
                 span.span_name,
                 span.span_type.as_str(),
                 span.source.as_str(),
@@ -379,10 +467,11 @@ impl TraceStore {
     fn upsert_trace_summary(&self, span: &SpanRecord) -> Result<()> {
         self.conn.execute(
             r#"
-            INSERT INTO traces (trace_id, trace_name, source, first_span_time_us, last_span_time_us,
+            INSERT INTO traces (trace_id, trace_name, session_id, source, first_span_time_us, last_span_time_us,
                                total_duration_ms, span_count, total_input_tokens, total_output_tokens)
-            VALUES (?, NULL, ?, ?, ?, ?, 1, ?, ?)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, 1, ?, ?)
             ON CONFLICT (trace_id, source) DO UPDATE SET
+                session_id          = COALESCE(EXCLUDED.session_id, traces.session_id),
                 first_span_time_us  = CASE WHEN traces.first_span_time_us > EXCLUDED.first_span_time_us
                                          THEN traces.first_span_time_us ELSE EXCLUDED.first_span_time_us END,
                 last_span_time_us   = CASE WHEN traces.last_span_time_us < EXCLUDED.last_span_time_us
@@ -394,6 +483,7 @@ impl TraceStore {
             "#,
             params![
                 span.trace_id,
+                span.session_id,
                 span.source.as_str(),
                 datetime_to_micros(span.start_time),
                 datetime_to_micros(span.end_time),
@@ -417,7 +507,7 @@ impl TraceStore {
     pub fn list_traces(&self, source: &str, limit: i64) -> Result<Vec<TraceSummary>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT trace_id, trace_name, source, first_span_time_us, last_span_time_us,
+            SELECT trace_id, trace_name, session_id, source, first_span_time_us, last_span_time_us,
                    total_duration_ms, span_count, total_input_tokens, total_output_tokens
             FROM traces
             WHERE source = ?
@@ -430,13 +520,14 @@ impl TraceStore {
             Ok(TraceSummary {
                 trace_id: row.get(0)?,
                 trace_name: row.get(1)?,
-                source: TraceSource::parse(&row.get::<_, String>(2)?),
-                first_span_time: micros_to_datetime(row.get::<_, i64>(3)?),
-                last_span_time: micros_to_datetime(row.get::<_, i64>(4)?),
-                total_duration_ms: row.get(5)?,
-                span_count: row.get(6)?,
-                total_input_tokens: row.get(7)?,
-                total_output_tokens: row.get(8)?,
+                session_id: row.get(2)?,
+                source: TraceSource::parse(&row.get::<_, String>(3)?),
+                first_span_time: micros_to_datetime(row.get::<_, i64>(4)?),
+                last_span_time: micros_to_datetime(row.get::<_, i64>(5)?),
+                total_duration_ms: row.get(6)?,
+                span_count: row.get(7)?,
+                total_input_tokens: row.get(8)?,
+                total_output_tokens: row.get(9)?,
             })
         })?;
 
@@ -447,7 +538,7 @@ impl TraceStore {
     pub fn get_trace_spans(&self, trace_id: &str, source: &str) -> Result<Vec<SpanRecord>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT trace_id, span_id, parent_span_id, span_name, span_type,
+            SELECT trace_id, span_id, parent_span_id, session_id, span_name, span_type,
                    source, start_time_us, end_time_us, duration_ms, attributes,
                    input_tokens, output_tokens, model, error
             FROM trace_spans
@@ -457,24 +548,25 @@ impl TraceStore {
         )?;
 
         let rows = stmt.query_map(params![trace_id, source], |row| {
-            let attrs_str: String = row.get(9)?;
+            let attrs_str: String = row.get(10)?;
             let attributes: serde_json::Value =
                 serde_json::from_str(&attrs_str).unwrap_or(serde_json::json!({}));
             Ok(SpanRecord {
                 trace_id: row.get(0)?,
                 span_id: row.get(1)?,
                 parent_span_id: row.get(2)?,
-                span_name: row.get(3)?,
-                span_type: SpanType::parse(&row.get::<_, String>(4)?),
-                source: TraceSource::parse(&row.get::<_, String>(5)?),
-                start_time: micros_to_datetime(row.get::<_, i64>(6)?),
-                end_time: micros_to_datetime(row.get::<_, i64>(7)?),
-                duration_ms: row.get(8)?,
+                session_id: row.get(3)?,
+                span_name: row.get(4)?,
+                span_type: SpanType::parse(&row.get::<_, String>(5)?),
+                source: TraceSource::parse(&row.get::<_, String>(6)?),
+                start_time: micros_to_datetime(row.get::<_, i64>(7)?),
+                end_time: micros_to_datetime(row.get::<_, i64>(8)?),
+                duration_ms: row.get(9)?,
                 attributes,
-                input_tokens: row.get(10)?,
-                output_tokens: row.get(11)?,
-                model: row.get(12)?,
-                error: row.get(13)?,
+                input_tokens: row.get(11)?,
+                output_tokens: row.get(12)?,
+                model: row.get(13)?,
+                error: row.get(14)?,
             })
         })?;
 
@@ -505,7 +597,7 @@ impl TraceStore {
     ) -> Result<Vec<SpanRecord>> {
         let mut sql = String::from(
             r#"
-            SELECT trace_id, span_id, parent_span_id, span_name, span_type,
+            SELECT trace_id, span_id, parent_span_id, session_id, span_name, span_type,
                    source, start_time_us, end_time_us, duration_ms, attributes,
                    input_tokens, output_tokens, model, error
             FROM trace_spans WHERE 1=1
@@ -535,24 +627,25 @@ impl TraceStore {
         let params_refs: Vec<&dyn duckdb::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
-            let attrs_str: String = row.get(9)?;
+            let attrs_str: String = row.get(10)?;
             let attributes: serde_json::Value =
                 serde_json::from_str(&attrs_str).unwrap_or(serde_json::json!({}));
             Ok(SpanRecord {
                 trace_id: row.get(0)?,
                 span_id: row.get(1)?,
                 parent_span_id: row.get(2)?,
-                span_name: row.get(3)?,
-                span_type: SpanType::parse(&row.get::<_, String>(4)?),
-                source: TraceSource::parse(&row.get::<_, String>(5)?),
-                start_time: micros_to_datetime(row.get::<_, i64>(6)?),
-                end_time: micros_to_datetime(row.get::<_, i64>(7)?),
-                duration_ms: row.get(8)?,
+                session_id: row.get(3)?,
+                span_name: row.get(4)?,
+                span_type: SpanType::parse(&row.get::<_, String>(5)?),
+                source: TraceSource::parse(&row.get::<_, String>(6)?),
+                start_time: micros_to_datetime(row.get::<_, i64>(7)?),
+                end_time: micros_to_datetime(row.get::<_, i64>(8)?),
+                duration_ms: row.get(9)?,
                 attributes,
-                input_tokens: row.get(10)?,
-                output_tokens: row.get(11)?,
-                model: row.get(12)?,
-                error: row.get(13)?,
+                input_tokens: row.get(11)?,
+                output_tokens: row.get(12)?,
+                model: row.get(13)?,
+                error: row.get(14)?,
             })
         })?;
 
@@ -563,7 +656,7 @@ impl TraceStore {
     pub fn get_span(&self, span_id: &str) -> Result<Option<SpanRecord>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT trace_id, span_id, parent_span_id, span_name, span_type,
+            SELECT trace_id, span_id, parent_span_id, session_id, span_name, span_type,
                    source, start_time_us, end_time_us, duration_ms, attributes,
                    input_tokens, output_tokens, model, error
             FROM trace_spans WHERE span_id = ?
@@ -572,24 +665,25 @@ impl TraceStore {
 
         let mut rows = stmt.query(params![span_id])?;
         if let Some(row) = rows.next()? {
-            let attrs_str: String = row.get(9)?;
+            let attrs_str: String = row.get(10)?;
             let attributes: serde_json::Value =
                 serde_json::from_str(&attrs_str).unwrap_or(serde_json::json!({}));
             Ok(Some(SpanRecord {
                 trace_id: row.get(0)?,
                 span_id: row.get(1)?,
                 parent_span_id: row.get(2)?,
-                span_name: row.get(3)?,
-                span_type: SpanType::parse(&row.get::<_, String>(4)?),
-                source: TraceSource::parse(&row.get::<_, String>(5)?),
-                start_time: micros_to_datetime(row.get::<_, i64>(6)?),
-                end_time: micros_to_datetime(row.get::<_, i64>(7)?),
-                duration_ms: row.get(8)?,
+                session_id: row.get(3)?,
+                span_name: row.get(4)?,
+                span_type: SpanType::parse(&row.get::<_, String>(5)?),
+                source: TraceSource::parse(&row.get::<_, String>(6)?),
+                start_time: micros_to_datetime(row.get::<_, i64>(7)?),
+                end_time: micros_to_datetime(row.get::<_, i64>(8)?),
+                duration_ms: row.get(9)?,
                 attributes,
-                input_tokens: row.get(10)?,
-                output_tokens: row.get(11)?,
-                model: row.get(12)?,
-                error: row.get(13)?,
+                input_tokens: row.get(11)?,
+                output_tokens: row.get(12)?,
+                model: row.get(13)?,
+                error: row.get(14)?,
             }))
         } else {
             Ok(None)
@@ -610,6 +704,82 @@ impl TraceStore {
             stmt.query_row([], |r| r.get(0))?
         };
         Ok(count)
+    }
+
+    // -----------------------------------------------------------------------
+    // Score CRUD
+    // -----------------------------------------------------------------------
+
+    /// Insert a score for a trace or span.
+    pub fn insert_score(&self, score: &TraceScore) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO trace_scores (
+                score_id, trace_id, span_id, name, value, label, comment, source, created_at_us
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+            params![
+                score.score_id,
+                score.trace_id,
+                score.span_id,
+                score.name,
+                score.value,
+                score.label,
+                score.comment,
+                score.source.as_str(),
+                datetime_to_micros(score.created_at),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get all scores for a trace.
+    pub fn get_scores_for_trace(&self, trace_id: &str) -> Result<Vec<TraceScore>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT score_id, trace_id, span_id, name, value, label, comment, source, created_at_us
+            FROM trace_scores WHERE trace_id = ?
+            ORDER BY created_at_us DESC
+            "#,
+        )?;
+        let rows = stmt.query_map(params![trace_id], Self::parse_score_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get all scores for a specific span.
+    pub fn get_scores_for_span(&self, span_id: &str) -> Result<Vec<TraceScore>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT score_id, trace_id, span_id, name, value, label, comment, source, created_at_us
+            FROM trace_scores WHERE span_id = ?
+            ORDER BY created_at_us DESC
+            "#,
+        )?;
+        let rows = stmt.query_map(params![span_id], Self::parse_score_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Delete a score by id.
+    pub fn delete_score(&self, score_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM trace_scores WHERE score_id = ?",
+            params![score_id],
+        )?;
+        Ok(())
+    }
+
+    fn parse_score_row(row: &duckdb::Row<'_>) -> duckdb::Result<TraceScore> {
+        Ok(TraceScore {
+            score_id: row.get(0)?,
+            trace_id: row.get(1)?,
+            span_id: row.get(2)?,
+            name: row.get(3)?,
+            value: row.get(4)?,
+            label: row.get(5)?,
+            comment: row.get(6)?,
+            source: ScoreSource::parse(&row.get::<_, String>(7)?),
+            created_at: micros_to_datetime(row.get::<_, i64>(8)?),
+        })
     }
 }
 
@@ -743,5 +913,69 @@ mod tests {
         assert_eq!(s.span_count, 2);
         assert_eq!(s.total_input_tokens, 20);
         assert_eq!(s.total_output_tokens, 40);
+    }
+
+    #[test]
+    fn test_session_id_propagation() {
+        let store = TraceStore::open_in_memory().unwrap();
+        let span = SpanRecord::new("t1", "s1", None::<String>, "root", SpanType::Agent)
+            .with_session_id("session_abc");
+        store.insert_span(&span).unwrap();
+
+        let loaded = store.get_span("s1").unwrap().unwrap();
+        assert_eq!(loaded.session_id.as_deref(), Some("session_abc"));
+
+        let traces = store.list_traces("guixu", 10).unwrap();
+        assert_eq!(traces[0].session_id.as_deref(), Some("session_abc"));
+    }
+
+    #[test]
+    fn test_score_crud() {
+        let store = TraceStore::open_in_memory().unwrap();
+
+        // Insert a trace first
+        let span = SpanRecord::new("t1", "s1", None::<String>, "root", SpanType::Agent);
+        store.insert_span(&span).unwrap();
+
+        // Insert scores
+        let score1 = TraceScore {
+            score_id: "sc1".into(),
+            trace_id: "t1".into(),
+            span_id: None,
+            name: "relevance".into(),
+            value: Some(0.85),
+            label: Some("good".into()),
+            comment: None,
+            source: ScoreSource::LlmJudge,
+            created_at: Utc::now(),
+        };
+        let score2 = TraceScore {
+            score_id: "sc2".into(),
+            trace_id: "t1".into(),
+            span_id: Some("s1".into()),
+            name: "hallucination".into(),
+            value: Some(0.1),
+            label: None,
+            comment: Some("low hallucination".into()),
+            source: ScoreSource::Sdk,
+            created_at: Utc::now(),
+        };
+        store.insert_score(&score1).unwrap();
+        store.insert_score(&score2).unwrap();
+
+        // Query by trace
+        let scores = store.get_scores_for_trace("t1").unwrap();
+        assert_eq!(scores.len(), 2);
+
+        // Query by span
+        let span_scores = store.get_scores_for_span("s1").unwrap();
+        assert_eq!(span_scores.len(), 1);
+        assert_eq!(span_scores[0].name, "hallucination");
+        assert_eq!(span_scores[0].source, ScoreSource::Sdk);
+
+        // Delete
+        store.delete_score("sc1").unwrap();
+        let scores = store.get_scores_for_trace("t1").unwrap();
+        assert_eq!(scores.len(), 1);
     }
 }

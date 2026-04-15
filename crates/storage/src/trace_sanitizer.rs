@@ -240,6 +240,7 @@ impl TraceSanitizer {
             trace_id,
             span_id,
             parent_span_id,
+            session_id: span.session_id.clone(),
             span_name: span.span_name.clone(),
             span_type: span.span_type,
             source: span.source,
