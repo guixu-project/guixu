@@ -80,6 +80,52 @@ impl FeedbackStore {
             .insert(cid.0.clone(), signal.clone());
         Ok(signal)
     }
+
+    /// Compute a provider-level reputation score by aggregating CommunitySignals
+    /// across all datasets published by the given provider DID.
+    /// Returns (score 0-100, total_reviews, avg_quality).
+    pub fn compute_provider_reputation(
+        &self,
+        _provider_did: &str,
+        dataset_cids: &[DatasetCid],
+    ) -> (f64, u64, f64) {
+        let mut total_reviews = 0u64;
+        let mut weighted_relevance = 0.0;
+        let mut weighted_quality = 0.0;
+        let mut total_positive = 0u64;
+        let mut total_negative = 0u64;
+
+        for cid in dataset_cids {
+            if let Ok(signal) = self.compute_signal(cid) {
+                let n = signal.total_reviews;
+                if n == 0 {
+                    continue;
+                }
+                total_reviews += n;
+                weighted_relevance += signal.avg_relevance * n as f64;
+                weighted_quality += signal.avg_quality * n as f64;
+                total_positive += (signal.positive_rate * n as f64) as u64;
+                total_negative += (signal.negative_rate * n as f64) as u64;
+            }
+        }
+
+        if total_reviews == 0 {
+            return (50.0, 0, 0.0);
+        }
+
+        let avg_relevance = weighted_relevance / total_reviews as f64;
+        let avg_quality = weighted_quality / total_reviews as f64;
+        let positive_rate = total_positive as f64 / total_reviews as f64;
+        let negative_rate = total_negative as f64 / total_reviews as f64;
+
+        // Score: blend relevance, quality, and sentiment
+        let relevance_score = (avg_relevance + 1.0) * 50.0; // -1..1 → 0..100
+        let quality_score = avg_quality * 20.0; // 1..5 → 20..100
+        let sentiment_score = (positive_rate - negative_rate + 1.0) * 50.0; // -1..1 → 0..100
+
+        let score = relevance_score * 0.4 + quality_score * 0.3 + sentiment_score * 0.3;
+        (score.clamp(0.0, 100.0), total_reviews, avg_quality)
+    }
 }
 
 fn load_feedback_cache(db: &DB) -> Result<HashMap<String, Vec<DatasetFeedback>>> {

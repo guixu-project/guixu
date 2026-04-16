@@ -88,7 +88,7 @@ pub async fn publish_file_with_privacy(
 
     let metadata = DatasetMetadata {
         cid: cid.clone(),
-        info_hash,
+        info_hash: info_hash.clone(),
         title: file_name.clone(),
         description: None,
         tags,
@@ -123,6 +123,20 @@ pub async fn publish_file_with_privacy(
     // 9. Store original locally (for owner's reference), publish sanitized
     store.put(&metadata)?;
     store.put_file_path(&cid, path)?;
+
+    // 9b. Persist seed record for restart recovery
+    if let Some(ref hash) = info_hash {
+        let seed_record = SeedRecord {
+            info_hash: hash.clone(),
+            cid: cid.clone(),
+            file_path: path.to_path_buf(),
+            access,
+            title: file_name.clone(),
+            size_bytes: data.len() as u64,
+            created_at: now,
+        };
+        let _ = store.put_seed(&seed_record);
+    }
 
     // 10. DHT PUT (sanitized)
     dht.put_metadata(&published).await?;

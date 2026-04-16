@@ -1,0 +1,37 @@
+{
+  "spec_version": "2.0",
+  "id": "guixu_p2p",
+  "name": "Guixu P2P Network",
+  "description": "Search, preview, and download datasets from the Guixu decentralized P2P data network. Datasets are published by individual nodes and discovered via DHT/GossipSub.",
+  "source": "guixu_p2p",
+  "tags": [
+    "p2p",
+    "decentralized",
+    "tabular",
+    "user-published"
+  ],
+  "routing_hints": [
+    "p2p data",
+    "decentralized datasets",
+    "user-published data",
+    "peer-to-peer"
+  ],
+  "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": true,
+    "download": true,
+    "schema_probe": true,
+    "sample_preview": true,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "community",
+    "provenance_hint": "User-published datasets on the Guixu P2P network. Quality varies by provider reputation.",
+    "compliance_hint": "Respect dataset-specific licenses. Paid datasets require x402/ERC-8183 payment."
+  },
+  "provider": {
+    "kind": "native",
+    "native_adapter": "guixu_p2p"
+  }
+}

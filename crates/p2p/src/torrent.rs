@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::Result;
-use data_core::types::AccessMode;
+use data_core::types::{AccessMode, SeedRecord};
 use librqbit::{AddTorrent, AddTorrentOptions, CreateTorrentOptions, Session, SessionOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -200,6 +200,28 @@ impl TorrentEngine {
         buf.truncate(total);
         info!(info_hash, bytes = total, "preview downloaded");
         Ok(buf)
+    }
+
+    /// Restore seeding for all persisted seed records (called on startup).
+    /// Skips records whose files no longer exist.
+    pub async fn restore_seeds(&self, seeds: &[SeedRecord]) -> Vec<String> {
+        let mut restored = Vec::new();
+        for seed in seeds {
+            if !seed.file_path.exists() {
+                warn!(info_hash = %seed.info_hash, path = %seed.file_path.display(), "seed file missing, skipping");
+                continue;
+            }
+            match self.create_torrent(&seed.file_path).await {
+                Ok(hash) => {
+                    info!(info_hash = %hash, title = %seed.title, "restored seed");
+                    restored.push(hash);
+                }
+                Err(e) => {
+                    warn!(info_hash = %seed.info_hash, error = %e, "failed to restore seed");
+                }
+            }
+        }
+        restored
     }
 
     async fn ensure_handle(&self, info_hash: &str) -> Result<Arc<librqbit::ManagedTorrent>> {

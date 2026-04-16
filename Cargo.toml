@@ -74,6 +74,10 @@ libp2p = { version = "0.54", features = [
     "mdns",
     "identify",
     "macros",
+    "relay",
+    "autonat",
+    "dcutr",
+    "request-response",
 ] }
 
 # Storage
@@ -120,3 +124,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 # BitTorrent
 librqbit = { version = "8", default-features = false, features = ["rust-tls"] }
+
+# System
+sysinfo = "0.33"
+fs2 = "0.4"

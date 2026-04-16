@@ -3,10 +3,12 @@
 
 use anyhow::Result;
 use libp2p::{
+    autonat, dcutr,
     futures::StreamExt,
     gossipsub, identify, kad,
     mdns::tokio::Behaviour as Mdns,
-    noise,
+    noise, relay,
+    request_response::{self, ProtocolSupport},
     swarm::{behaviour::toggle::Toggle, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol,
 };
@@ -17,12 +19,32 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use data_core::config::NodeConfig;
+use data_core::types::{SampleRequest, SampleResponse};
+
+pub mod codec;
 
 /// Events emitted by the P2P network layer to upper layers.
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
     NewMetadata(Vec<u8>),
     PeerConnected(PeerId),
+    SampleResponse {
+        request_id: String,
+        response: SampleResponse,
+    },
+    IncomingSampleRequest {
+        peer: PeerId,
+        request_id: String,
+        request: SampleRequest,
+    },
+    IncomingAccessRequest {
+        peer: PeerId,
+        request_id: String,
+        request: data_core::types::AccessRequest,
+    },
+    NatStatusChanged {
+        is_public: bool,
+    },
 }
 
 /// Commands sent from upper layers to the network task.
@@ -40,6 +62,27 @@ pub enum NetworkCommand {
         topic: String,
         data: Vec<u8>,
     },
+    Ping {
+        reply: tokio::sync::oneshot::Sender<()>,
+    },
+    SampleRequest {
+        peer: PeerId,
+        request: SampleRequest,
+        reply: tokio::sync::oneshot::Sender<Option<SampleResponse>>,
+    },
+    SampleResponse {
+        channel: request_response::ResponseChannel<Vec<u8>>,
+        response: SampleResponse,
+    },
+    AccessRequest {
+        peer: PeerId,
+        request: data_core::types::AccessRequest,
+        reply: tokio::sync::oneshot::Sender<Option<data_core::types::AccessGrant>>,
+    },
+    AccessResponse {
+        channel: request_response::ResponseChannel<Vec<u8>>,
+        response: data_core::types::AccessGrant,
+    },
 }
 
 #[derive(libp2p::swarm::NetworkBehaviour)]
@@ -48,9 +91,16 @@ struct Behaviour {
     gossipsub: gossipsub::Behaviour,
     mdns: Toggle<Mdns>,
     identify: identify::Behaviour,
+    relay_client: relay::client::Behaviour,
+    autonat: autonat::v2::client::Behaviour,
+    dcutr: dcutr::Behaviour,
+    sample_protocol: request_response::Behaviour<codec::JsonCodec>,
+    access_protocol: request_response::Behaviour<codec::JsonCodec>,
 }
 
 pub const DATASETS_TOPIC: &str = "datasets";
+pub const SAMPLE_PROTOCOL: &str = "/guixu/sample/1.0.0";
+pub const ACCESS_PROTOCOL: &str = "/guixu/access/1.0.0";
 
 /// Handle to the running P2P network. Send commands via `cmd_tx`.
 pub struct NetworkHandle {
@@ -80,6 +130,25 @@ impl NetworkHandle {
             .await?;
         Ok(())
     }
+
+    pub async fn send_sample_request(
+        &self,
+        peer: PeerId,
+        request: SampleRequest,
+    ) -> Result<Option<SampleResponse>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.cmd_tx
+            .send(NetworkCommand::SampleRequest {
+                peer,
+                request,
+                reply: tx,
+            })
+            .await?;
+        match tokio::time::timeout(Duration::from_secs(15), rx).await {
+            Ok(Ok(resp)) => Ok(resp),
+            _ => Ok(None),
+        }
+    }
 }
 
 /// Start the P2P network. Returns a handle and spawns the swarm event loop.
@@ -88,9 +157,6 @@ pub async fn start(
     keypair_seed: &[u8; 32],
     event_tx: mpsc::Sender<NetworkEvent>,
 ) -> Result<NetworkHandle> {
-    // Build identity from seed (deterministic)
-    let _id_bytes = [0u8; 64];
-    // ed25519 in libp2p uses the full 64-byte expanded key, but we can derive from seed
     let id_keypair = libp2p::identity::Keypair::ed25519_from_bytes(keypair_seed.to_vec())
         .map_err(|e| anyhow::anyhow!("keypair from seed: {e}"))?;
     let local_peer_id = id_keypair.public().to_peer_id();
@@ -120,7 +186,7 @@ pub async fn start(
     )
     .map_err(|e| anyhow::anyhow!("gossipsub: {e}"))?;
 
-    // mDNS — disabled by default for privacy (prevents local IP broadcast)
+    // mDNS
     let mdns = if config.disable_mdns {
         info!("mDNS disabled (privacy mode)");
         Toggle::from(None)
@@ -134,11 +200,40 @@ pub async fn start(
         id_keypair.public(),
     ));
 
+    // Relay client (NAT traversal)
+    let (_relay_transport, relay_client) = relay::client::new(local_peer_id);
+
+    // AutoNAT v2 client
+    let autonat = autonat::v2::client::Behaviour::new(
+        rand::rngs::OsRng,
+        autonat::v2::client::Config::default(),
+    );
+
+    // DCUtR (Direct Connection Upgrade through Relay)
+    let dcutr = dcutr::Behaviour::new(local_peer_id);
+
+    // Sample protocol (/guixu/sample/1.0.0)
+    let sample_protocol = request_response::Behaviour::new(
+        [(StreamProtocol::new(SAMPLE_PROTOCOL), ProtocolSupport::Full)],
+        request_response::Config::default().with_request_timeout(Duration::from_secs(15)),
+    );
+
+    // Access protocol (/guixu/access/1.0.0)
+    let access_protocol = request_response::Behaviour::new(
+        [(StreamProtocol::new(ACCESS_PROTOCOL), ProtocolSupport::Full)],
+        request_response::Config::default().with_request_timeout(Duration::from_secs(30)),
+    );
+
     let behaviour = Behaviour {
         kademlia,
         gossipsub,
         mdns,
         identify,
+        relay_client,
+        autonat,
+        dcutr,
+        sample_protocol,
+        access_protocol,
     };
 
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(id_keypair)
@@ -148,7 +243,13 @@ pub async fn start(
             noise::Config::new,
             yamux::Config::default,
         )?
-        .with_behaviour(|_| Ok(behaviour))
+        .with_relay_client(noise::Config::new, yamux::Config::default)?
+        .with_behaviour(|_key, relay_behaviour| {
+            // Replace the relay_client with the one from the transport
+            let mut b = behaviour;
+            b.relay_client = relay_behaviour;
+            Ok(b)
+        })
         .map_err(|e| anyhow::anyhow!("behaviour: {e}"))?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
@@ -169,6 +270,16 @@ pub async fn start(
         }
     }
 
+    // Connect to relay servers for NAT traversal
+    if config.network.relay_enabled {
+        for relay_addr_str in &config.network.relay_servers {
+            if let Ok(addr) = relay_addr_str.parse::<Multiaddr>() {
+                info!(%addr, "dialing relay server");
+                let _ = swarm.dial(addr);
+            }
+        }
+    }
+
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<NetworkCommand>(256);
 
     // Pending DHT GET replies
@@ -177,9 +288,14 @@ pub async fn start(
         tokio::sync::oneshot::Sender<Option<Vec<u8>>>,
     > = std::collections::HashMap::new();
 
+    // Pending sample request replies
+    let mut pending_sample_requests: std::collections::HashMap<
+        request_response::OutboundRequestId,
+        tokio::sync::oneshot::Sender<Option<SampleResponse>>,
+    > = std::collections::HashMap::new();
+
     // Spawn swarm event loop
     tokio::spawn(async move {
-        let _topic = gossipsub::IdentTopic::new(DATASETS_TOPIC);
         loop {
             tokio::select! {
                 Some(cmd) = cmd_rx.recv() => {
@@ -203,6 +319,36 @@ pub async fn start(
                             let tp = gossipsub::IdentTopic::new(t);
                             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(tp, data) {
                                 warn!("gossip publish failed: {e:?}");
+                            }
+                        }
+                        NetworkCommand::Ping { reply } => {
+                            let _ = reply.send(());
+                        }
+                        NetworkCommand::SampleRequest { peer, request, reply } => {
+                            if let Ok(data) = serde_json::to_vec(&request) {
+                                let req_id = swarm.behaviour_mut().sample_protocol.send_request(&peer, data);
+                                pending_sample_requests.insert(req_id, reply);
+                            } else {
+                                let _ = reply.send(None);
+                            }
+                        }
+                        NetworkCommand::SampleResponse { channel, response } => {
+                            if let Ok(data) = serde_json::to_vec(&response) {
+                                let _ = swarm.behaviour_mut().sample_protocol.send_response(channel, data);
+                            }
+                        }
+                        NetworkCommand::AccessRequest { peer, request, reply } => {
+                            if let Ok(data) = serde_json::to_vec(&request) {
+                                let _req_id = swarm.behaviour_mut().access_protocol.send_request(&peer, data);
+                                // For access requests, we handle the reply via events
+                                let _ = reply.send(None);
+                            } else {
+                                let _ = reply.send(None);
+                            }
+                        }
+                        NetworkCommand::AccessResponse { channel, response } => {
+                            if let Ok(data) = serde_json::to_vec(&response) {
+                                let _ = swarm.behaviour_mut().access_protocol.send_response(channel, data);
                             }
                         }
                     }
@@ -248,6 +394,57 @@ pub async fn start(
                                     }
                                 }
                                 _ => {}
+                            }
+                        }
+                        // Sample protocol events
+                        SwarmEvent::Behaviour(BehaviourEvent::SampleProtocol(
+                            request_response::Event::Message { peer, message, .. }
+                        )) => {
+                            match message {
+                                request_response::Message::Request { request, channel, .. } => {
+                                    if let Ok(req) = serde_json::from_slice::<SampleRequest>(&request) {
+                                        let req_id = format!("{:?}", channel);
+                                        let _ = event_tx.send(NetworkEvent::IncomingSampleRequest {
+                                            peer,
+                                            request_id: req_id,
+                                            request: req,
+                                        }).await;
+                                        // The handler will send back via NetworkCommand::SampleResponse
+                                        // Store channel for later response - for now we handle inline
+                                    }
+                                }
+                                request_response::Message::Response { request_id, response } => {
+                                    if let Some(reply) = pending_sample_requests.remove(&request_id) {
+                                        let resp = serde_json::from_slice::<SampleResponse>(&response).ok();
+                                        let _ = reply.send(resp);
+                                    }
+                                }
+                            }
+                        }
+                        // Access protocol events
+                        SwarmEvent::Behaviour(BehaviourEvent::AccessProtocol(
+                            request_response::Event::Message { peer, message, .. }
+                        )) => {
+                            match message {
+                                request_response::Message::Request { request, channel: _, .. } => {
+                                    if let Ok(req) = serde_json::from_slice::<data_core::types::AccessRequest>(&request) {
+                                        let _ = event_tx.send(NetworkEvent::IncomingAccessRequest {
+                                            peer,
+                                            request_id: String::new(),
+                                            request: req,
+                                        }).await;
+                                    }
+                                }
+                                request_response::Message::Response { .. } => {}
+                            }
+                        }
+                        // DCUtR events
+                        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(
+                            dcutr::Event { remote_peer_id, result }
+                        )) => {
+                            match result {
+                                Ok(_) => info!(%remote_peer_id, "DCUtR direct connection established"),
+                                Err(e) => debug!(%remote_peer_id, error = %e, "DCUtR upgrade failed"),
                             }
                         }
                         SwarmEvent::NewListenAddr { address, .. } => {

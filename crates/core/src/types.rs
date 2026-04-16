@@ -317,3 +317,74 @@ pub struct TransactionReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seller_response: Option<String>,
 }
+
+/// Persistent record of a BitTorrent seed managed by this node.
+/// Stored in RocksDB under `seed:{info_hash}` so seeds survive restarts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedRecord {
+    pub info_hash: String,
+    pub cid: DatasetCid,
+    pub file_path: std::path::PathBuf,
+    pub access: AccessMode,
+    pub title: String,
+    pub size_bytes: u64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Request to access a paid dataset via /guixu/access/1.0.0.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessRequest {
+    pub cid: DatasetCid,
+    pub buyer_did: Did,
+    pub payment_proof: String,
+}
+
+/// Grant returned after successful payment verification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessGrant {
+    pub cid: DatasetCid,
+    pub torrent_info_hash: String,
+    pub access_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark_id: Option<String>,
+    #[serde(default)]
+    pub watermark_status: String,
+    pub granted_at: DateTime<Utc>,
+}
+
+/// Notification sent via GossipSub when async watermarking completes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatermarkReady {
+    pub cid: DatasetCid,
+    pub buyer_did: Did,
+    pub watermarked_info_hash: String,
+}
+
+/// Sample request for /guixu/sample/1.0.0 protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SampleRequest {
+    pub cid: DatasetCid,
+    pub max_bytes: usize,
+    pub format: String,
+    pub rows: usize,
+}
+
+/// Sample response for /guixu/sample/1.0.0 protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SampleResponse {
+    pub cid: DatasetCid,
+    pub schema: DatasetSchema,
+    pub preview_data: String,
+    pub provider_did: Did,
+    pub signature: String,
+}
+
+/// Health report from the internal watchdog.
+#[derive(Debug, Clone, Default)]
+pub struct HealthReport {
+    pub p2p_ok: bool,
+    pub http_ok: bool,
+    pub db_ok: bool,
+    pub disk_ok: bool,
+    pub memory_ok: bool,
+}
