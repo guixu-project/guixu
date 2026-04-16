@@ -4,13 +4,16 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use serde_json::Value;
 use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
 
 use crate::protocol::{McpRequest, McpResponse};
 use crate::rpc::handle_request;
 use crate::server::McpServer;
 
+#[derive(Clone, Copy)]
 enum MessageFormat {
     Framed,
     LineDelimited,
@@ -19,26 +22,100 @@ enum MessageFormat {
 /// MCP Server — reads JSON-RPC from stdin, writes to stdout.
 pub async fn run_stdio(server: Arc<McpServer>) -> Result<()> {
     let mut stdin = BufReader::new(io::stdin());
-    let mut stdout = io::stdout();
     let session_id = format!("stdio-{}", std::process::id());
+    let active_format = Arc::new(RwLock::new(MessageFormat::LineDelimited));
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Value>();
+    let (request_tx, mut request_rx) = mpsc::unbounded_channel::<McpRequest>();
+
+    if let Some(runtime) = server.state().sampling_runtime.as_ref() {
+        runtime.attach_sender(outbound_tx.clone());
+    }
+
+    let writer_format = active_format.clone();
+    let writer_task = tokio::spawn(async move {
+        let mut stdout = io::stdout();
+        while let Some(payload) = outbound_rx.recv().await {
+            let format = *writer_format.read().await;
+            write_message(&mut stdout, &payload, format).await?;
+        }
+        Ok::<(), anyhow::Error>(())
+    });
 
     info!("MCP server started on stdio");
 
+    let worker_server = server.clone();
+    let worker_session_id = session_id.clone();
+    let worker_outbound_tx = outbound_tx.clone();
+    let worker_task = tokio::spawn(async move {
+        while let Some(request) = request_rx.recv().await {
+            let response = handle_request(request, &worker_server, &worker_session_id).await;
+            if let Some(response) = response {
+                worker_outbound_tx
+                    .send(serde_json::to_value(response)?)
+                    .map_err(|_| anyhow::anyhow!("failed to send stdio response"))?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+
     while let Some((payload, format)) = read_message(&mut stdin).await? {
-        let response = match serde_json::from_str::<McpRequest>(&payload) {
-            Ok(req) => handle_request(req, &server, &session_id).await,
-            Err(e) => Some(McpResponse::error(
-                serde_json::Value::Null,
-                -32700,
-                format!("Parse error: {e}"),
-            )),
+        *active_format.write().await = format;
+
+        let value = match serde_json::from_str::<Value>(&payload) {
+            Ok(value) => value,
+            Err(error) => {
+                let response = McpResponse::error(
+                    serde_json::Value::Null,
+                    -32700,
+                    format!("Parse error: {error}"),
+                );
+                let _ = outbound_tx.send(serde_json::to_value(response)?);
+                continue;
+            }
         };
 
-        if let Some(response) = response {
-            write_message(&mut stdout, &response, format).await?;
+        if value.get("method").is_none() {
+            let handled = server
+                .state()
+                .sampling_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.handle_response(&value));
+            if !handled {
+                warn!(payload = %value, "ignoring unexpected JSON-RPC response on stdio");
+            }
+            continue;
         }
+
+        let request = match serde_json::from_value::<McpRequest>(value) {
+            Ok(request) => request,
+            Err(error) => {
+                let response = McpResponse::error(
+                    serde_json::Value::Null,
+                    -32600,
+                    format!("invalid JSON-RPC request: {error}"),
+                );
+                let _ = outbound_tx.send(serde_json::to_value(response)?);
+                continue;
+            }
+        };
+
+        request_tx
+            .send(request)
+            .map_err(|_| anyhow::anyhow!("failed to queue stdio request"))?;
     }
 
+    if let Some(runtime) = server.state().sampling_runtime.as_ref() {
+        runtime.shutdown("MCP stdio input closed");
+    }
+
+    drop(request_tx);
+    worker_task.await??;
+
+    if let Some(runtime) = server.state().sampling_runtime.as_ref() {
+        runtime.detach_sender();
+    }
+    drop(outbound_tx);
+    writer_task.await??;
     Ok(())
 }
 
@@ -106,10 +183,10 @@ fn parse_content_length(line: &str) -> Option<usize> {
 
 async fn write_message(
     stdout: &mut io::Stdout,
-    response: &McpResponse,
+    payload: &Value,
     format: MessageFormat,
 ) -> Result<()> {
-    let body = serde_json::to_vec(response)?;
+    let body = serde_json::to_vec(payload)?;
     match format {
         MessageFormat::Framed => {
             let header = format!("Content-Length: {}\r\n\r\n", body.len());

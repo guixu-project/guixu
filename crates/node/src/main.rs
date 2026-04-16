@@ -12,6 +12,7 @@ use data_core::config::{NodeConfig, NodeMode};
 use data_core::env::load_local_settings;
 use data_core::identity::NodeIdentity;
 use data_core::types::{AccessMode, DatasetCid};
+use data_mcp_server::host_sampling::HostSamplingRuntime;
 use data_mcp_server::server::{AppState, McpServer};
 use data_p2p::dht::DhtIndex;
 use data_storage::feedback_store::FeedbackStore;
@@ -714,8 +715,12 @@ fn cmd_mcp_uninstall(client: &str) -> Result<()> {
 }
 
 async fn cmd_mcp(mode: String) -> Result<()> {
+    let search_workers = resolve_search_workers(&mode);
     if mode == "codex" {
-        let state = Arc::new(McpServer::new(build_codex_state().await?));
+        let sampling_runtime = Arc::new(HostSamplingRuntime::new());
+        let state = Arc::new(McpServer::new(
+            build_codex_state(search_workers, sampling_runtime).await?,
+        ));
         return data_mcp_server::server::run_stdio(state).await;
     }
 
@@ -759,7 +764,7 @@ async fn cmd_mcp(mode: String) -> Result<()> {
     });
 
     let mut mcp_server = McpServer::new(
-        AppState::with_full_config(
+        AppState::with_full_config_with_search_workers(
             NodeIdentity::from_seed(identity.seed()),
             dht,
             store,
@@ -769,6 +774,7 @@ async fn cmd_mcp(mode: String) -> Result<()> {
             &config.external_duckdb,
             &config.external_postgresql,
             &config.external_sql,
+            search_workers,
         )
         .await,
     );
@@ -784,30 +790,76 @@ async fn cmd_mcp(mode: String) -> Result<()> {
     }
 }
 
-async fn build_codex_state() -> Result<AppState> {
-    match try_build_codex_state_from_local_store().await {
+fn resolve_search_workers(mode: &str) -> usize {
+    const SEARCH_WORKERS_ENV: &str = "GUIXU_SEARCH_WORKERS";
+
+    match std::env::var(SEARCH_WORKERS_ENV) {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(
+                    env_var = SEARCH_WORKERS_ENV,
+                    value = %raw,
+                    error = %error,
+                    "invalid search worker configuration; using mode default"
+                );
+                default_search_workers(mode)
+            }
+        },
+        Err(std::env::VarError::NotPresent) => default_search_workers(mode),
+        Err(error) => {
+            tracing::warn!(
+                env_var = SEARCH_WORKERS_ENV,
+                error = %error,
+                "failed to read search worker configuration; using mode default"
+            );
+            default_search_workers(mode)
+        }
+    }
+}
+
+fn default_search_workers(mode: &str) -> usize {
+    if mode == "codex" {
+        4
+    } else {
+        0
+    }
+}
+
+async fn build_codex_state(
+    search_workers: usize,
+    sampling_runtime: Arc<HostSamplingRuntime>,
+) -> Result<AppState> {
+    match try_build_codex_state_from_local_store(search_workers, sampling_runtime.clone()).await {
         Ok(state) => Ok(state),
         Err(e) => {
             tracing::warn!(
                 err = %e,
                 "local node state unavailable for codex MCP, falling back to session state"
             );
-            AppState::for_codex().await
+            AppState::for_codex_with_search_workers(search_workers)
+                .await
+                .map(|state| state.with_sampling_runtime(sampling_runtime))
         }
     }
 }
 
-async fn try_build_codex_state_from_local_store() -> Result<AppState> {
+async fn try_build_codex_state_from_local_store(
+    search_workers: usize,
+    sampling_runtime: Arc<HostSamplingRuntime>,
+) -> Result<AppState> {
     let (config, identity) = load_config_and_identity()?;
     let store = MetadataStore::open(&NodeConfig::db_path())?;
     let feedback_store = FeedbackStore::open(&NodeConfig::config_dir().join("feedback_db"))?;
-    Ok(AppState::for_local_store(
+    Ok(AppState::for_local_store_with_search_workers(
         NodeIdentity::from_seed(identity.seed()),
         store,
         feedback_store,
         &config.payment,
+        search_workers,
     )
-    .await)
+    .await
+    .with_sampling_runtime(sampling_runtime))
 }
 
 fn load_config_and_identity() -> Result<(NodeConfig, NodeIdentity)> {

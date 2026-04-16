@@ -52,6 +52,22 @@ pub async fn handle_request(
                     .map(|id| McpResponse::error(id, -32602, "missing tool name".to_string()));
             }
 
+            if tool_name == "dataset_search" && server.state().search_workers > 0 {
+                if let Some(summary) = server
+                    .sessions()
+                    .duplicate_dataset_search_summary(session_id)
+                    .await
+                {
+                    let raw = summary.to_string();
+                    warn!(
+                        tool = tool_name,
+                        session_id, "mcp.tool.blocked_duplicate_search"
+                    );
+                    return request_id
+                        .map(|id| McpResponse::success(id, serialize_tool_result(&raw, true)));
+                }
+            }
+
             let Some(tool) = server.registry().get(tool_name) else {
                 return request_id.map(|id| {
                     McpResponse::error(id, -32602, format!("unknown tool: {tool_name}"))
@@ -123,8 +139,10 @@ fn initialize_response(
         None => InitializeParams::default(),
     };
 
-    // Detect whether the host supports sampling.
-    let _supports_sampling = initialize_params.capabilities.sampling.is_some();
+    let supports_sampling = initialize_params.capabilities.sampling.is_some();
+    if let Some(runtime) = server.state().sampling_runtime.as_ref() {
+        runtime.set_supports_sampling(supports_sampling);
+    }
 
     let protocol_version = initialize_params
         .protocol_version
