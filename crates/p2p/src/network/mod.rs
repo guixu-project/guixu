@@ -34,12 +34,12 @@ pub enum NetworkEvent {
     },
     IncomingSampleRequest {
         peer: PeerId,
-        request_id: String,
+        channel_id: u64,
         request: SampleRequest,
     },
     IncomingAccessRequest {
         peer: PeerId,
-        request_id: String,
+        channel_id: u64,
         request: data_core::types::AccessRequest,
     },
     NatStatusChanged {
@@ -71,7 +71,7 @@ pub enum NetworkCommand {
         reply: tokio::sync::oneshot::Sender<Option<SampleResponse>>,
     },
     SampleResponse {
-        channel: request_response::ResponseChannel<Vec<u8>>,
+        channel_id: u64,
         response: SampleResponse,
     },
     AccessRequest {
@@ -80,7 +80,7 @@ pub enum NetworkCommand {
         reply: tokio::sync::oneshot::Sender<Option<data_core::types::AccessGrant>>,
     },
     AccessResponse {
-        channel: request_response::ResponseChannel<Vec<u8>>,
+        channel_id: u64,
         response: data_core::types::AccessGrant,
     },
 }
@@ -148,6 +148,34 @@ impl NetworkHandle {
             Ok(Ok(resp)) => Ok(resp),
             _ => Ok(None),
         }
+    }
+
+    pub async fn send_sample_response(
+        &self,
+        channel_id: u64,
+        response: SampleResponse,
+    ) -> Result<()> {
+        self.cmd_tx
+            .send(NetworkCommand::SampleResponse {
+                channel_id,
+                response,
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn send_access_response(
+        &self,
+        channel_id: u64,
+        response: data_core::types::AccessGrant,
+    ) -> Result<()> {
+        self.cmd_tx
+            .send(NetworkCommand::AccessResponse {
+                channel_id,
+                response,
+            })
+            .await?;
+        Ok(())
     }
 }
 
@@ -294,6 +322,23 @@ pub async fn start(
         tokio::sync::oneshot::Sender<Option<SampleResponse>>,
     > = std::collections::HashMap::new();
 
+    // Pending access request replies
+    let mut pending_access_requests: std::collections::HashMap<
+        request_response::OutboundRequestId,
+        tokio::sync::oneshot::Sender<Option<data_core::types::AccessGrant>>,
+    > = std::collections::HashMap::new();
+
+    // Pending inbound response channels (keyed by monotonic ID)
+    let mut next_channel_id: u64 = 0;
+    let mut pending_sample_channels: std::collections::HashMap<
+        u64,
+        request_response::ResponseChannel<Vec<u8>>,
+    > = std::collections::HashMap::new();
+    let mut pending_access_channels: std::collections::HashMap<
+        u64,
+        request_response::ResponseChannel<Vec<u8>>,
+    > = std::collections::HashMap::new();
+
     // Spawn swarm event loop
     tokio::spawn(async move {
         loop {
@@ -332,23 +377,30 @@ pub async fn start(
                                 let _ = reply.send(None);
                             }
                         }
-                        NetworkCommand::SampleResponse { channel, response } => {
-                            if let Ok(data) = serde_json::to_vec(&response) {
-                                let _ = swarm.behaviour_mut().sample_protocol.send_response(channel, data);
+                        NetworkCommand::SampleResponse { channel_id, response } => {
+                            if let Some(channel) = pending_sample_channels.remove(&channel_id) {
+                                if let Ok(data) = serde_json::to_vec(&response) {
+                                    let _ = swarm.behaviour_mut().sample_protocol.send_response(channel, data);
+                                }
+                            } else {
+                                warn!(channel_id, "sample response channel not found");
                             }
                         }
                         NetworkCommand::AccessRequest { peer, request, reply } => {
                             if let Ok(data) = serde_json::to_vec(&request) {
-                                let _req_id = swarm.behaviour_mut().access_protocol.send_request(&peer, data);
-                                // For access requests, we handle the reply via events
-                                let _ = reply.send(None);
+                                let req_id = swarm.behaviour_mut().access_protocol.send_request(&peer, data);
+                                pending_access_requests.insert(req_id, reply);
                             } else {
                                 let _ = reply.send(None);
                             }
                         }
-                        NetworkCommand::AccessResponse { channel, response } => {
-                            if let Ok(data) = serde_json::to_vec(&response) {
-                                let _ = swarm.behaviour_mut().access_protocol.send_response(channel, data);
+                        NetworkCommand::AccessResponse { channel_id, response } => {
+                            if let Some(channel) = pending_access_channels.remove(&channel_id) {
+                                if let Ok(data) = serde_json::to_vec(&response) {
+                                    let _ = swarm.behaviour_mut().access_protocol.send_response(channel, data);
+                                }
+                            } else {
+                                warn!(channel_id, "access response channel not found");
                             }
                         }
                     }
@@ -403,14 +455,14 @@ pub async fn start(
                             match message {
                                 request_response::Message::Request { request, channel, .. } => {
                                     if let Ok(req) = serde_json::from_slice::<SampleRequest>(&request) {
-                                        let req_id = format!("{:?}", channel);
+                                        let ch_id = next_channel_id;
+                                        next_channel_id += 1;
+                                        pending_sample_channels.insert(ch_id, channel);
                                         let _ = event_tx.send(NetworkEvent::IncomingSampleRequest {
                                             peer,
-                                            request_id: req_id,
+                                            channel_id: ch_id,
                                             request: req,
                                         }).await;
-                                        // The handler will send back via NetworkCommand::SampleResponse
-                                        // Store channel for later response - for now we handle inline
                                     }
                                 }
                                 request_response::Message::Response { request_id, response } => {
@@ -426,16 +478,24 @@ pub async fn start(
                             request_response::Event::Message { peer, message, .. }
                         )) => {
                             match message {
-                                request_response::Message::Request { request, channel: _, .. } => {
+                                request_response::Message::Request { request, channel, .. } => {
                                     if let Ok(req) = serde_json::from_slice::<data_core::types::AccessRequest>(&request) {
+                                        let ch_id = next_channel_id;
+                                        next_channel_id += 1;
+                                        pending_access_channels.insert(ch_id, channel);
                                         let _ = event_tx.send(NetworkEvent::IncomingAccessRequest {
                                             peer,
-                                            request_id: String::new(),
+                                            channel_id: ch_id,
                                             request: req,
                                         }).await;
                                     }
                                 }
-                                request_response::Message::Response { .. } => {}
+                                request_response::Message::Response { request_id, response } => {
+                                    if let Some(reply) = pending_access_requests.remove(&request_id) {
+                                        let grant = serde_json::from_slice::<data_core::types::AccessGrant>(&response).ok();
+                                        let _ = reply.send(grant);
+                                    }
+                                }
                             }
                         }
                         // DCUtR events

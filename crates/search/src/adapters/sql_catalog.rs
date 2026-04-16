@@ -5,9 +5,12 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use data_core::types::*;
+use futures::stream::{FuturesUnordered, StreamExt};
 use serde::Deserialize;
 
 use super::ExternalAdapter;
+
+type TableInfo = Vec<(String, String, Vec<(String, String)>)>;
 
 // ---------------------------------------------------------------------------
 // SqlExecutor trait — abstracts over connection protocols
@@ -503,7 +506,7 @@ impl SqlCatalogAdapter {
         &self,
         executor: &dyn SqlExecutor,
         entry: &CatalogEntry,
-    ) -> Result<Vec<(String, String, Vec<(String, String)>)>> {
+    ) -> Result<TableInfo> {
         match self.engine {
             SqlCatalogEngine::Presto | SqlCatalogEngine::Spark | SqlCatalogEngine::Flink => {
                 self.fetch_tables_presto_family(executor, entry).await
@@ -516,28 +519,40 @@ impl SqlCatalogAdapter {
         &self,
         executor: &dyn SqlExecutor,
         entry: &CatalogEntry,
-    ) -> Result<Vec<(String, String, Vec<(String, String)>)>> {
+    ) -> Result<TableInfo> {
         let sql = self.tables_sql(entry);
         let rows = executor.execute(&sql).await?;
-        let mut tables = Vec::new();
 
-        for row in &rows {
-            let schema = row.first().cloned().unwrap_or_default();
-            let table = row.get(1).cloned().unwrap_or_default();
+        // Collect all (schema, table) pairs first
+        let table_pairs: Vec<(String, String)> = rows
+            .iter()
+            .map(|row| {
+                let schema = row.first().cloned().unwrap_or_default();
+                let table = row.get(1).cloned().unwrap_or_default();
+                (schema, table)
+            })
+            .collect();
 
-            let col_sql = self.columns_sql(entry, &schema, &table);
-            let col_rows = executor.execute(&col_sql).await.unwrap_or_default();
-            let columns: Vec<(String, String)> = col_rows
-                .into_iter()
-                .filter_map(|r| {
-                    let mut it = r.into_iter();
-                    Some((it.next()?, it.next().unwrap_or_default()))
-                })
-                .collect();
-
-            tables.push((schema, table, columns));
+        // Fetch columns for all tables in parallel
+        let futures = FuturesUnordered::new();
+        for (schema, table) in &table_pairs {
+            let col_sql = self.columns_sql(entry, schema, table);
+            let schema_clone = schema.clone();
+            let table_clone = table.clone();
+            futures.push(async move {
+                let col_rows = executor.execute(&col_sql).await.unwrap_or_default();
+                let columns: Vec<(String, String)> = col_rows
+                    .into_iter()
+                    .filter_map(|r| {
+                        let mut it = r.into_iter();
+                        Some((it.next()?, it.next().unwrap_or_default()))
+                    })
+                    .collect();
+                (schema_clone, table_clone, columns)
+            });
         }
 
+        let tables: TableInfo = futures.collect().await;
         Ok(tables)
     }
 
@@ -545,7 +560,7 @@ impl SqlCatalogAdapter {
         &self,
         executor: &dyn SqlExecutor,
         entry: &CatalogEntry,
-    ) -> Result<Vec<(String, String, Vec<(String, String)>)>> {
+    ) -> Result<TableInfo> {
         let schemas = if entry.schemas.is_empty() {
             let sql = match (&self.engine, &entry.catalog) {
                 (SqlCatalogEngine::Presto, Some(cat)) => format!("SHOW SCHEMAS FROM {cat}"),
@@ -562,7 +577,8 @@ impl SqlCatalogAdapter {
             entry.schemas.clone()
         };
 
-        let mut tables = Vec::new();
+        // First pass: collect all (schema, table_name) pairs
+        let mut all_table_pairs: Vec<(String, String)> = Vec::new();
         for schema in &schemas {
             let sql = match (&self.engine, &entry.catalog) {
                 (SqlCatalogEngine::Presto, Some(cat)) => {
@@ -578,8 +594,17 @@ impl SqlCatalogAdapter {
                 if table_name.is_empty() {
                     continue;
                 }
+                all_table_pairs.push((schema.clone(), table_name));
+            }
+        }
 
-                let col_sql = self.columns_sql(entry, schema, &table_name);
+        // Second pass: fetch columns for all tables in parallel
+        let futures = FuturesUnordered::new();
+        for (schema, table_name) in &all_table_pairs {
+            let col_sql = self.columns_sql(entry, schema, table_name);
+            let schema_clone = schema.clone();
+            let table_clone = table_name.clone();
+            futures.push(async move {
                 let col_rows = executor.execute(&col_sql).await.unwrap_or_default();
                 let columns: Vec<(String, String)> = col_rows
                     .into_iter()
@@ -588,11 +613,11 @@ impl SqlCatalogAdapter {
                         Some((it.next()?, it.next().unwrap_or_default()))
                     })
                     .collect();
-
-                tables.push((schema.clone(), table_name, columns));
-            }
+                (schema_clone, table_clone, columns)
+            });
         }
 
+        let tables: TableInfo = futures.collect().await;
         Ok(tables)
     }
 }

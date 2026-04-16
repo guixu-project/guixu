@@ -25,7 +25,7 @@ pub async fn handle_request(
         session_id,
         "mcp.request"
     );
-    server.sessions().touch(session_id);
+    server.sessions().touch(session_id).await;
 
     match req.method.as_str() {
         INITIALIZE_METHOD => Some(initialize_response(request_id, req.params, server)),
@@ -74,7 +74,8 @@ pub async fn handle_request(
                     info!(tool = tool_name, elapsed_ms, session_id, "mcp.tool.ok");
                     server
                         .sessions()
-                        .record_tool_call(session_id, tool_name, &args, raw, false);
+                        .record_tool_call(session_id, tool_name, &args, raw, false)
+                        .await;
                     request_id.map(|id| McpResponse::success(id, serialize_tool_result(raw, false)))
                 }
                 Err(error) => {
@@ -88,7 +89,8 @@ pub async fn handle_request(
                     let raw = error.to_string();
                     server
                         .sessions()
-                        .record_tool_call(session_id, tool_name, &args, &raw, true);
+                        .record_tool_call(session_id, tool_name, &args, &raw, true)
+                        .await;
                     request_id.map(|id| McpResponse::success(id, serialize_tool_result(&raw, true)))
                 }
             }

@@ -49,6 +49,7 @@ data-test-utils = { path = "crates/test-utils" }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
+futures = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -126,6 +127,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 # BitTorrent
 librqbit = { version = "8", default-features = false, features = ["rust-tls"] }
+
+# Parallelism
+rayon = "1.10"
 
 # System
 sysinfo = "0.33"

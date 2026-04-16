@@ -502,7 +502,7 @@ fn trace_db_path() -> String {
 }
 
 async fn api_list_traces(
-    State(_): State<Arc<McpServer>>,
+    State(server): State<Arc<McpServer>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let source = params
@@ -513,13 +513,29 @@ async fn api_list_traces(
         .get("limit")
         .and_then(|s| s.parse().ok())
         .unwrap_or(50);
-    let db_path = trace_db_path();
 
-    let result = tokio::task::spawn_blocking(move || {
-        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
-        store.list_traces(&source, limit)
-    })
-    .await;
+    let result = if let Some(pool) = server.trace_pool() {
+        match pool.get().await {
+            Ok(store) => {
+                let pool_tx = pool.sender();
+                tokio::task::spawn_blocking(move || {
+                    let res = store.list_traces(&source, limit);
+                    let _ = pool_tx.try_send(store);
+                    res
+                })
+                .await
+            }
+            Err(e) => Ok(Err(e)),
+        }
+    } else {
+        let db_path = trace_db_path();
+        tokio::task::spawn_blocking(move || {
+            let store =
+                data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+            store.list_traces(&source, limit)
+        })
+        .await
+    };
 
     match result {
         Ok(Ok(traces)) => Json(json!(traces)).into_response(),
@@ -537,7 +553,7 @@ async fn api_list_traces(
 }
 
 async fn api_trace_spans(
-    State(_): State<Arc<McpServer>>,
+    State(server): State<Arc<McpServer>>,
     axum::extract::Path(trace_id): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
@@ -545,13 +561,29 @@ async fn api_trace_spans(
         .get("source")
         .map(|s| s.to_string())
         .unwrap_or_else(|| "guixu".into());
-    let db_path = trace_db_path();
 
-    let result = tokio::task::spawn_blocking(move || {
-        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
-        store.get_trace_spans(&trace_id, &source)
-    })
-    .await;
+    let result = if let Some(pool) = server.trace_pool() {
+        match pool.get().await {
+            Ok(store) => {
+                let pool_tx = pool.sender();
+                tokio::task::spawn_blocking(move || {
+                    let res = store.get_trace_spans(&trace_id, &source);
+                    let _ = pool_tx.try_send(store);
+                    res
+                })
+                .await
+            }
+            Err(e) => Ok(Err(e)),
+        }
+    } else {
+        let db_path = trace_db_path();
+        tokio::task::spawn_blocking(move || {
+            let store =
+                data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+            store.get_trace_spans(&trace_id, &source)
+        })
+        .await
+    };
 
     match result {
         Ok(Ok(spans)) => Json(json!(spans)).into_response(),
@@ -569,16 +601,31 @@ async fn api_trace_spans(
 }
 
 async fn api_trace_scores(
-    State(_): State<Arc<McpServer>>,
+    State(server): State<Arc<McpServer>>,
     axum::extract::Path(trace_id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    let db_path = trace_db_path();
-
-    let result = tokio::task::spawn_blocking(move || {
-        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
-        store.get_scores_for_trace(&trace_id)
-    })
-    .await;
+    let result = if let Some(pool) = server.trace_pool() {
+        match pool.get().await {
+            Ok(store) => {
+                let pool_tx = pool.sender();
+                tokio::task::spawn_blocking(move || {
+                    let res = store.get_scores_for_trace(&trace_id);
+                    let _ = pool_tx.try_send(store);
+                    res
+                })
+                .await
+            }
+            Err(e) => Ok(Err(e)),
+        }
+    } else {
+        let db_path = trace_db_path();
+        tokio::task::spawn_blocking(move || {
+            let store =
+                data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+            store.get_scores_for_trace(&trace_id)
+        })
+        .await
+    };
 
     match result {
         Ok(Ok(scores)) => Json(json!(scores)).into_response(),
@@ -596,7 +643,7 @@ async fn api_trace_scores(
 }
 
 async fn api_memory_timeline(
-    State(_): State<Arc<McpServer>>,
+    State(server): State<Arc<McpServer>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let memory_key = params.get("memory_key").cloned().unwrap_or_default();
@@ -604,7 +651,6 @@ async fn api_memory_timeline(
         .get("limit")
         .and_then(|s| s.parse().ok())
         .unwrap_or(50);
-    let db_path = trace_db_path();
 
     if memory_key.is_empty() {
         return (
@@ -614,11 +660,28 @@ async fn api_memory_timeline(
             .into_response();
     }
 
-    let result = tokio::task::spawn_blocking(move || {
-        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
-        store.memory_timeline(&memory_key, None, limit)
-    })
-    .await;
+    let result = if let Some(pool) = server.trace_pool() {
+        match pool.get().await {
+            Ok(store) => {
+                let pool_tx = pool.sender();
+                tokio::task::spawn_blocking(move || {
+                    let res = store.memory_timeline(&memory_key, None, limit);
+                    let _ = pool_tx.try_send(store);
+                    res
+                })
+                .await
+            }
+            Err(e) => Ok(Err(e)),
+        }
+    } else {
+        let db_path = trace_db_path();
+        tokio::task::spawn_blocking(move || {
+            let store =
+                data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+            store.memory_timeline(&memory_key, None, limit)
+        })
+        .await
+    };
 
     match result {
         Ok(Ok(spans)) => Json(json!(spans)).into_response(),

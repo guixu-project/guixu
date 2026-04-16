@@ -94,6 +94,19 @@ impl ExternalAdapter for GuixuP2PAdapter {
         }
     }
 
+    async fn download(&self, id: &str) -> Result<Vec<serde_json::Value>> {
+        let cid = DatasetCid(id.to_string());
+        let file_path = self
+            .store
+            .get_file_path(&cid)?
+            .ok_or_else(|| anyhow::anyhow!("no local file for CID {id}"))?;
+        Ok(vec![serde_json::json!({
+            "cid": id,
+            "file_path": file_path.to_string_lossy(),
+            "info_hash": self.store.get(&cid)?.and_then(|m| m.info_hash),
+        })])
+    }
+
     async fn schema_probe(&self, id: &str) -> Result<Vec<serde_json::Value>> {
         let cid = DatasetCid(id.to_string());
         match self.store.get(&cid)? {
@@ -233,6 +246,34 @@ mod tests {
         let adapter = GuixuP2PAdapter::new(store);
         let results = adapter.lookup("nonexistent").await.unwrap();
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn download_returns_file_path() {
+        let dir = temp_dir("download-ok");
+        let store = MetadataStore::open(&dir).unwrap();
+        store.put(&make_metadata("c1", "data1", &[])).unwrap();
+        let file = dir.join("data.csv");
+        std::fs::write(&file, "a,b\n1,2\n").unwrap();
+        store
+            .put_file_path(&DatasetCid("c1".into()), &file)
+            .unwrap();
+
+        let adapter = GuixuP2PAdapter::new(store);
+        let results = adapter.download("c1").await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0]["file_path"]
+            .as_str()
+            .unwrap()
+            .contains("data.csv"));
+    }
+
+    #[tokio::test]
+    async fn download_missing_returns_error() {
+        let dir = temp_dir("download-miss");
+        let store = MetadataStore::open(&dir).unwrap();
+        let adapter = GuixuP2PAdapter::new(store);
+        assert!(adapter.download("nonexistent").await.is_err());
     }
 
     #[tokio::test]

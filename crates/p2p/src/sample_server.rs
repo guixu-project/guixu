@@ -40,14 +40,25 @@ pub fn handle_sample_request(
         None => return Ok(None),
     };
 
-    // 4. Read preview data based on access mode
+    // 4. Read preview data based on access mode and format
     let max_rows = request.rows.min(100);
-    let preview_data = match metadata.access {
-        AccessMode::Open => read_preview(&file_path, max_rows, request.max_bytes)?,
-        AccessMode::Paid => {
-            // For paid datasets, return limited preview (schema + first 5 rows)
-            read_preview(&file_path, max_rows.min(5), request.max_bytes.min(4096))?
+    let preview_data = match request.format.as_str() {
+        "schema_only" => {
+            // Return empty preview — schema is already in the response
+            Vec::new()
         }
+        "random_sample" => match metadata.access {
+            AccessMode::Open => read_random_sample(&file_path, max_rows, request.max_bytes)?,
+            AccessMode::Paid => {
+                read_random_sample(&file_path, max_rows.min(5), request.max_bytes.min(4096))?
+            }
+        },
+        _ => match metadata.access {
+            AccessMode::Open => read_preview(&file_path, max_rows, request.max_bytes)?,
+            AccessMode::Paid => {
+                read_preview(&file_path, max_rows.min(5), request.max_bytes.min(4096))?
+            }
+        },
     };
 
     // 5. Build and sign response
@@ -73,6 +84,36 @@ fn read_preview(path: &std::path::Path, max_rows: usize, max_bytes: usize) -> Re
     let lines: Vec<&str> = text.lines().take(max_rows + 1).collect(); // +1 for header
     let preview = lines.join("\n");
     let bytes = preview.as_bytes();
+    let truncated = &bytes[..bytes.len().min(max_bytes)];
+    Ok(truncated.to_vec())
+}
+
+fn read_random_sample(
+    path: &std::path::Path,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    use rand::seq::SliceRandom;
+
+    let content = std::fs::read(path)?;
+    let text = String::from_utf8_lossy(&content);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= 1 {
+        return Ok(text.as_bytes().to_vec());
+    }
+    let header = lines.remove(0);
+    let sample_count = max_rows.min(lines.len());
+    let mut rng = rand::thread_rng();
+    let sampled: Vec<&str> = lines
+        .choose_multiple(&mut rng, sample_count)
+        .copied()
+        .collect();
+    let mut result = String::from(header);
+    for line in sampled {
+        result.push('\n');
+        result.push_str(line);
+    }
+    let bytes = result.as_bytes();
     let truncated = &bytes[..bytes.len().min(max_bytes)];
     Ok(truncated.to_vec())
 }
@@ -286,5 +327,44 @@ mod tests {
         let encoded = base64_encode(data);
         let decoded = base64_decode(&encoded);
         assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn schema_only_returns_empty_preview() {
+        let dir = temp_dir("schema-only");
+        let csv = "a,b,c\n1,2,3\n4,5,6\n";
+        let (store, identity) = setup_store(&dir, "cid-schema", csv);
+
+        let req = SampleRequest {
+            cid: DatasetCid("cid-schema".into()),
+            max_bytes: 65536,
+            format: "schema_only".into(),
+            rows: 20,
+        };
+        let resp = handle_sample_request(&req, &store, &identity)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp.preview_data, "");
+    }
+
+    #[test]
+    fn random_sample_returns_header_and_rows() {
+        let dir = temp_dir("random-sample");
+        let csv = "a,b\n1,2\n3,4\n5,6\n7,8\n9,10\n";
+        let (store, identity) = setup_store(&dir, "cid-rand", csv);
+
+        let req = SampleRequest {
+            cid: DatasetCid("cid-rand".into()),
+            max_bytes: 65536,
+            format: "random_sample".into(),
+            rows: 3,
+        };
+        let resp = handle_sample_request(&req, &store, &identity)
+            .unwrap()
+            .unwrap();
+        let decoded = String::from_utf8(base64_decode(&resp.preview_data)).unwrap();
+        let lines: Vec<&str> = decoded.lines().collect();
+        assert!(lines[0] == "a,b", "first line should be header");
+        assert_eq!(lines.len(), 4, "header + 3 sampled rows");
     }
 }

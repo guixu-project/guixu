@@ -8,6 +8,8 @@ use data_core::metadata::DatasetMetadata;
 use data_core::types::{
     DataSource, DataType, DatasetCid, SearchResult, SkillCapability, SourceFamily,
 };
+use futures::future::join_all;
+use futures::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -618,11 +620,33 @@ impl SearchEngine {
             let batch_end = (batch_start + batch_size).min(candidates.len());
             evaluated_batch_count += 1;
 
-            for candidate in candidates.iter_mut().take(batch_end).skip(batch_start) {
-                let Some(sample_evaluator) = sample_evaluator else {
-                    break;
-                };
-                let Some(metadata) = candidate.metadata.as_ref() else {
+            let Some(sample_evaluator) = sample_evaluator else {
+                // Mark all candidates in this batch as skipped (no evaluator available)
+                for candidate in candidates.iter_mut().take(batch_end).skip(batch_start) {
+                    candidate.valuation.sample_failure_reason =
+                        Some("sample evaluation skipped: evaluator unavailable".into());
+                }
+                continue;
+            };
+
+            // First pass: clone data needed for evaluation and identify candidates to evaluate
+            #[derive(Clone)]
+            struct EvalTask {
+                result: SearchResult,
+                metadata: DatasetMetadata,
+                plan: SamplePlan,
+            }
+
+            let mut eval_tasks: Vec<EvalTask> = Vec::new();
+            let mut candidates_to_evaluate: Vec<usize> = Vec::new();
+
+            for (i, candidate) in candidates
+                .iter_mut()
+                .enumerate()
+                .take(batch_end)
+                .skip(batch_start)
+            {
+                let Some(metadata) = candidate.metadata.clone() else {
                     candidate.valuation.sample_failure_reason =
                         Some("sample evaluation skipped: resolved metadata unavailable".into());
                     errors.push(format!(
@@ -632,7 +656,7 @@ impl SearchEngine {
                     continue;
                 };
 
-                let plan = build_sample_plan(metadata, config);
+                let plan = build_sample_plan(&metadata, config);
                 if plan.sample_fraction == 0.0
                     || (plan.estimated_rows == 0
                         && !supports_sampling_without_shape_estimate(&candidate.valuation.result))
@@ -650,10 +674,46 @@ impl SearchEngine {
                 }
 
                 candidate.valuation.sample_plan = Some(plan.clone());
-                match sample_evaluator
-                    .evaluate_sample(&candidate.valuation.result, metadata, task, &plan)
-                    .await
-                {
+                candidates_to_evaluate.push(i);
+                eval_tasks.push(EvalTask {
+                    result: candidate.valuation.result.clone(),
+                    metadata,
+                    plan,
+                });
+            }
+
+            // Launch all evaluations in parallel using join_all
+            let task_ref = task;
+            let futures: Vec<_> = eval_tasks
+                .into_iter()
+                .map(|eval_task| {
+                    let evaluator = sample_evaluator;
+                    async move {
+                        evaluator
+                            .evaluate_sample(
+                                &eval_task.result,
+                                &eval_task.metadata,
+                                task_ref,
+                                &eval_task.plan,
+                            )
+                            .await
+                    }
+                })
+                .collect();
+
+            let outcomes = join_all(futures).await;
+
+            // Pair results with indices
+            let results: Vec<(usize, Result<SampleEvaluationOutcome>)> = outcomes
+                .into_iter()
+                .zip(candidates_to_evaluate.into_iter())
+                .map(|(outcome, i)| (i, outcome))
+                .collect();
+
+            // Second pass: update candidates with evaluation results
+            for (i, outcome_result) in results {
+                let candidate = &mut candidates[i];
+                match outcome_result {
                     Ok(outcome) => {
                         if let Some(proxy_utility) = outcome.proxy_utility {
                             candidate.valuation.sample_failure_reason = None;
@@ -779,27 +839,47 @@ impl SearchEngine {
         Ok(results)
     }
 
-    /// Search external platforms via adapters.
+    /// Search external platforms via adapters (concurrently).
     async fn search_external(
         &self,
         intent: &ParsedIntent,
         filters: &SearchFilters,
         limit: usize,
     ) -> (Vec<SearchResult>, Vec<String>) {
+        let external_query = build_search_query(intent);
+        let mut futures: FuturesUnordered<_> = self
+            .adapters
+            .iter()
+            .filter(|a| adapter_matches_filters(a.as_ref(), filters))
+            .map(|adapter| {
+                let query = external_query.clone();
+                async move {
+                    (
+                        adapter.name().to_string(),
+                        adapter.search(&query, limit).await,
+                    )
+                }
+            })
+            .collect();
+
         let mut results = vec![];
         let mut errors = vec![];
-        let external_query = build_search_query(intent);
-        for adapter in &self.adapters {
-            if !adapter_matches_filters(adapter.as_ref(), filters) {
-                continue;
-            }
-            match adapter.search(&external_query, limit).await {
-                Ok(r) => results.extend(r.into_iter().map(|result| {
-                    enrich_search_result_with_skill_metadata(result, adapter.as_ref())
-                })),
+        while let Some((name, outcome)) = futures.next().await {
+            match outcome {
+                Ok(r) => {
+                    // Look up the adapter by name for metadata enrichment.
+                    if let Some(adapter) = self.adapters.iter().find(|a| a.name() == name.as_str())
+                    {
+                        results.extend(r.into_iter().map(|result| {
+                            enrich_search_result_with_skill_metadata(result, adapter.as_ref())
+                        }));
+                    } else {
+                        results.extend(r);
+                    }
+                }
                 Err(e) => {
-                    warn!(adapter = adapter.name(), error = %e, "adapter search failed");
-                    errors.push(format!("{}: {e}", adapter.name()));
+                    warn!(adapter = %name, error = %e, "adapter search failed");
+                    errors.push(format!("{name}: {e}"));
                 }
             }
         }
@@ -2904,7 +2984,7 @@ mod selection_tests {
     }
 
     fn test_engine() -> SearchEngine {
-        SearchEngine::new(VectorIndex, IntentParser::default(), vec![])
+        SearchEngine::new(VectorIndex, IntentParser, vec![])
     }
 
     struct StubSampleEvaluator {

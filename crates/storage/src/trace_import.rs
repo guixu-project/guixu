@@ -35,6 +35,7 @@
 use crate::trace_store::{SpanRecord, SpanType, TraceSource, TraceStore};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -274,6 +275,7 @@ impl OpenAiImporter {
         })
     }
 
+    #[allow(dead_code)]
     fn process_line(
         &self,
         line: &str,
@@ -343,53 +345,224 @@ impl TraceImporter for OpenAiImporter {
     fn import_file(&self, path: &Path, store: &TraceStore) -> Result<ImportReport> {
         let file = File::open(path).map_err(|e| anyhow::anyhow!("failed to open file: {}", e))?;
         let reader = BufReader::new(file);
+
+        // Read all lines first to enable parallel processing
+        let lines: Vec<(usize, String)> = reader
+            .lines()
+            .enumerate()
+            .filter_map(|(i, l)| l.ok().map(|s| (i + 1, s)))
+            .collect();
+
         let mut report = ImportReport::default();
-
-        // Count traces (unique trace_ids) while processing
         let mut seen_trace_ids = std::collections::HashSet::new();
+        const BATCH_SIZE: usize = 1000;
 
-        for (line_num, line) in reader.lines().enumerate() {
-            let line =
-                line.map_err(|e| anyhow::anyhow!("failed to read line {}: {}", line_num + 1, e))?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
+        // Process in batches using parallel parsing
+        for batch_start in (0..lines.len()).step_by(BATCH_SIZE) {
+            let batch_end = (batch_start + BATCH_SIZE).min(lines.len());
+            let batch_lines = &lines[batch_start..batch_end];
 
-            // Pre-extract trace_id for counting
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(tid) = value.get("trace_id").and_then(|v| v.as_str()) {
-                    if seen_trace_ids.insert(tid.to_string()) {
-                        report.traces_processed += 1;
+            // First pass: update seen_trace_ids sequentially to avoid race conditions
+            for (_, line) in batch_lines.iter() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(tid) = value.get("trace_id").and_then(|v| v.as_str()) {
+                        if seen_trace_ids.insert(tid.to_string()) {
+                            report.traces_processed += 1;
+                        }
                     }
                 }
             }
 
-            self.process_line(&line, line_num + 1, store, &mut report);
+            // Second pass: parallel JSON parsing and span creation
+            let parse_results: Vec<(Result<SpanRecord, ImportError>, Option<String>)> = batch_lines
+                .par_iter()
+                .map(|(line_num, line)| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        return (
+                            Err(ImportError {
+                                line: *line_num,
+                                trace_id: None,
+                                message: String::new(),
+                            }),
+                            None,
+                        );
+                    }
+
+                    let value = match serde_json::from_str::<serde_json::Value>(trimmed) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return (
+                                Err(ImportError {
+                                    line: *line_num,
+                                    trace_id: None,
+                                    message: format!("JSON parse error: {}", e),
+                                }),
+                                None,
+                            );
+                        }
+                    };
+
+                    let trace_id = value
+                        .get("trace_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+
+                    match self.parse_span(&value, *line_num) {
+                        Ok(span) => (Ok(span), trace_id),
+                        Err(e) => (
+                            Err(ImportError {
+                                line: *line_num,
+                                trace_id,
+                                message: e.to_string(),
+                            }),
+                            None,
+                        ),
+                    }
+                })
+                .collect();
+
+            // Collect spans and errors from parse results
+            let mut batch: Vec<SpanRecord> = Vec::with_capacity(batch_lines.len());
+            for (result, _) in &parse_results {
+                match result {
+                    Ok(span) => batch.push(span.clone()),
+                    Err(e) if !e.message.is_empty() => report.errors.push(e.clone()),
+                    _ => {}
+                }
+            }
+
+            // Flush batch to DB
+            if !batch.is_empty() {
+                match store.insert_spans(&batch) {
+                    Ok(()) => report.spans_imported += batch.len(),
+                    Err(e) => {
+                        report.errors.push(ImportError {
+                            line: 0,
+                            trace_id: None,
+                            message: format!("batch insert error: {}", e),
+                        });
+                        if !self.config.skip_errors {
+                            return Ok(report);
+                        }
+                    }
+                }
+            }
         }
 
         Ok(report)
     }
 
     fn import_str(&self, input: &str, store: &TraceStore) -> Result<ImportReport> {
+        let lines: Vec<(usize, String)> = input
+            .lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.to_string()))
+            .collect();
+
         let mut report = ImportReport::default();
         let mut seen_trace_ids = std::collections::HashSet::new();
+        const BATCH_SIZE: usize = 1000;
 
-        for (line_num, line) in input.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
+        // Process in batches using parallel parsing
+        for batch_start in (0..lines.len()).step_by(BATCH_SIZE) {
+            let batch_end = (batch_start + BATCH_SIZE).min(lines.len());
+            let batch_lines = &lines[batch_start..batch_end];
 
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(tid) = value.get("trace_id").and_then(|v| v.as_str()) {
-                    if seen_trace_ids.insert(tid.to_string()) {
-                        report.traces_processed += 1;
+            // First pass: update seen_trace_ids sequentially to avoid race conditions
+            for (_, line) in batch_lines.iter() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(tid) = value.get("trace_id").and_then(|v| v.as_str()) {
+                        if seen_trace_ids.insert(tid.to_string()) {
+                            report.traces_processed += 1;
+                        }
                     }
                 }
             }
 
-            self.process_line(line, line_num + 1, store, &mut report);
+            // Second pass: parallel JSON parsing and span creation
+            let parse_results: Vec<(Result<SpanRecord, ImportError>, Option<String>)> = batch_lines
+                .par_iter()
+                .map(|(line_num, line)| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        return (
+                            Err(ImportError {
+                                line: *line_num,
+                                trace_id: None,
+                                message: String::new(),
+                            }),
+                            None,
+                        );
+                    }
+
+                    let value = match serde_json::from_str::<serde_json::Value>(trimmed) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return (
+                                Err(ImportError {
+                                    line: *line_num,
+                                    trace_id: None,
+                                    message: format!("JSON parse error: {}", e),
+                                }),
+                                None,
+                            );
+                        }
+                    };
+
+                    let trace_id = value
+                        .get("trace_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+
+                    match self.parse_span(&value, *line_num) {
+                        Ok(span) => (Ok(span), trace_id),
+                        Err(e) => (
+                            Err(ImportError {
+                                line: *line_num,
+                                trace_id,
+                                message: e.to_string(),
+                            }),
+                            None,
+                        ),
+                    }
+                })
+                .collect();
+
+            // Collect spans and errors from parse results
+            let mut batch: Vec<SpanRecord> = Vec::with_capacity(batch_lines.len());
+            for (result, _) in &parse_results {
+                match result {
+                    Ok(span) => batch.push(span.clone()),
+                    Err(e) if !e.message.is_empty() => report.errors.push(e.clone()),
+                    _ => {}
+                }
+            }
+
+            // Flush batch to DB
+            if !batch.is_empty() {
+                match store.insert_spans(&batch) {
+                    Ok(()) => report.spans_imported += batch.len(),
+                    Err(e) => {
+                        report.errors.push(ImportError {
+                            line: 0,
+                            trace_id: None,
+                            message: format!("batch insert error: {}", e),
+                        });
+                        if !self.config.skip_errors {
+                            return Ok(report);
+                        }
+                    }
+                }
+            }
         }
 
         Ok(report)
@@ -571,6 +744,7 @@ impl ClaudeImporter {
         })
     }
 
+    #[allow(dead_code)]
     fn process_line(
         &self,
         line: &str,
@@ -638,50 +812,221 @@ impl TraceImporter for ClaudeImporter {
     fn import_file(&self, path: &Path, store: &TraceStore) -> Result<ImportReport> {
         let file = File::open(path).map_err(|e| anyhow::anyhow!("failed to open file: {}", e))?;
         let reader = BufReader::new(file);
+
+        // Read all lines first to enable parallel processing
+        let lines: Vec<(usize, String)> = reader
+            .lines()
+            .enumerate()
+            .filter_map(|(i, l)| l.ok().map(|s| (i + 1, s)))
+            .collect();
+
         let mut report = ImportReport::default();
         let mut seen_trace_ids = std::collections::HashSet::new();
+        const BATCH_SIZE: usize = 1000;
 
-        for (line_num, line) in reader.lines().enumerate() {
-            let line =
-                line.map_err(|e| anyhow::anyhow!("failed to read line {}: {}", line_num + 1, e))?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
+        // Process in batches using parallel parsing
+        for batch_start in (0..lines.len()).step_by(BATCH_SIZE) {
+            let batch_end = (batch_start + BATCH_SIZE).min(lines.len());
+            let batch_lines = &lines[batch_start..batch_end];
 
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(tid) = value.get("trace_id").and_then(|v| v.as_str()) {
-                    if seen_trace_ids.insert(tid.to_string()) {
-                        report.traces_processed += 1;
+            // First pass: update seen_trace_ids sequentially
+            for (_, line) in batch_lines.iter() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(tid) = value.get("trace_id").and_then(|v| v.as_str()) {
+                        if seen_trace_ids.insert(tid.to_string()) {
+                            report.traces_processed += 1;
+                        }
                     }
                 }
             }
 
-            self.process_line(&line, line_num + 1, store, &mut report);
+            // Second pass: parallel JSON parsing and span creation
+            let parse_results: Vec<(Result<SpanRecord, ImportError>, Option<String>)> = batch_lines
+                .par_iter()
+                .map(|(line_num, line)| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        return (
+                            Err(ImportError {
+                                line: *line_num,
+                                trace_id: None,
+                                message: String::new(),
+                            }),
+                            None,
+                        );
+                    }
+
+                    let value = match serde_json::from_str::<serde_json::Value>(trimmed) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return (
+                                Err(ImportError {
+                                    line: *line_num,
+                                    trace_id: None,
+                                    message: format!("JSON parse error: {}", e),
+                                }),
+                                None,
+                            );
+                        }
+                    };
+
+                    let trace_id = value
+                        .get("trace_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+
+                    match self.parse_span(&value, *line_num) {
+                        Ok(span) => (Ok(span), trace_id),
+                        Err(e) => (
+                            Err(ImportError {
+                                line: *line_num,
+                                trace_id,
+                                message: e.to_string(),
+                            }),
+                            None,
+                        ),
+                    }
+                })
+                .collect();
+
+            // Collect spans and errors
+            let mut batch: Vec<SpanRecord> = Vec::with_capacity(batch_lines.len());
+            for (result, _) in &parse_results {
+                match result {
+                    Ok(span) => batch.push(span.clone()),
+                    Err(e) if !e.message.is_empty() => report.errors.push(e.clone()),
+                    _ => {}
+                }
+            }
+
+            // Flush batch to DB
+            if !batch.is_empty() {
+                match store.insert_spans(&batch) {
+                    Ok(()) => report.spans_imported += batch.len(),
+                    Err(e) => {
+                        report.errors.push(ImportError {
+                            line: 0,
+                            trace_id: None,
+                            message: format!("batch insert error: {}", e),
+                        });
+                    }
+                }
+            }
         }
 
         Ok(report)
     }
 
     fn import_str(&self, input: &str, store: &TraceStore) -> Result<ImportReport> {
+        let lines: Vec<(usize, String)> = input
+            .lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.to_string()))
+            .collect();
+
         let mut report = ImportReport::default();
         let mut seen_trace_ids = std::collections::HashSet::new();
+        const BATCH_SIZE: usize = 1000;
 
-        for (line_num, line) in input.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
+        // Process in batches using parallel parsing
+        for batch_start in (0..lines.len()).step_by(BATCH_SIZE) {
+            let batch_end = (batch_start + BATCH_SIZE).min(lines.len());
+            let batch_lines = &lines[batch_start..batch_end];
 
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(tid) = value.get("trace_id").and_then(|v| v.as_str()) {
-                    if seen_trace_ids.insert(tid.to_string()) {
-                        report.traces_processed += 1;
+            // First pass: update seen_trace_ids sequentially
+            for (_, line) in batch_lines.iter() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(tid) = value.get("trace_id").and_then(|v| v.as_str()) {
+                        if seen_trace_ids.insert(tid.to_string()) {
+                            report.traces_processed += 1;
+                        }
                     }
                 }
             }
 
-            self.process_line(line, line_num + 1, store, &mut report);
+            // Second pass: parallel JSON parsing and span creation
+            let parse_results: Vec<(Result<SpanRecord, ImportError>, Option<String>)> = batch_lines
+                .par_iter()
+                .map(|(line_num, line)| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        return (
+                            Err(ImportError {
+                                line: *line_num,
+                                trace_id: None,
+                                message: String::new(),
+                            }),
+                            None,
+                        );
+                    }
+
+                    let value = match serde_json::from_str::<serde_json::Value>(trimmed) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return (
+                                Err(ImportError {
+                                    line: *line_num,
+                                    trace_id: None,
+                                    message: format!("JSON parse error: {}", e),
+                                }),
+                                None,
+                            );
+                        }
+                    };
+
+                    let trace_id = value
+                        .get("trace_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+
+                    match self.parse_span(&value, *line_num) {
+                        Ok(span) => (Ok(span), trace_id),
+                        Err(e) => (
+                            Err(ImportError {
+                                line: *line_num,
+                                trace_id,
+                                message: e.to_string(),
+                            }),
+                            None,
+                        ),
+                    }
+                })
+                .collect();
+
+            // Collect spans and errors
+            let mut batch: Vec<SpanRecord> = Vec::with_capacity(batch_lines.len());
+            for (result, _) in &parse_results {
+                match result {
+                    Ok(span) => batch.push(span.clone()),
+                    Err(e) if !e.message.is_empty() => report.errors.push(e.clone()),
+                    _ => {}
+                }
+            }
+
+            // Flush batch to DB
+            if !batch.is_empty() {
+                match store.insert_spans(&batch) {
+                    Ok(()) => report.spans_imported += batch.len(),
+                    Err(e) => {
+                        report.errors.push(ImportError {
+                            line: 0,
+                            trace_id: None,
+                            message: format!("batch insert error: {}", e),
+                        });
+                        if !self.config.skip_errors {
+                            return Ok(report);
+                        }
+                    }
+                }
+            }
         }
 
         Ok(report)

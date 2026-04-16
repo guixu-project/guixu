@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(task.host.kind, HostKind::openclaw());
         assert_eq!(task.workspace.id, "repo:guixu-demo");
         assert_eq!(task.task.goal, "train a safety helmet detector");
-        assert!(task.policy.allow_purchase == false);
+        assert!(!task.policy.allow_purchase);
     }
 
     #[test]

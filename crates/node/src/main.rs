@@ -513,6 +513,8 @@ async fn cmd_start() -> Result<()> {
 
     // Handle network events
     let store_bg = store.clone();
+    let identity_seed_bg = *identity.seed();
+    let cmd_tx_bg = dht.handle().cmd_tx.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -524,6 +526,66 @@ async fn cmd_start() -> Result<()> {
                 }
                 data_p2p::network::NetworkEvent::PeerConnected(peer) => {
                     info!(%peer, "peer connected");
+                }
+                data_p2p::network::NetworkEvent::IncomingSampleRequest {
+                    peer,
+                    channel_id,
+                    request,
+                } => {
+                    info!(%peer, cid = %request.cid.0, "incoming sample request");
+                    let store_ref = store_bg.clone();
+                    let seed = identity_seed_bg;
+                    let cmd_ref = cmd_tx_bg.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let id = NodeIdentity::from_seed(&seed);
+                        match data_p2p::sample_server::handle_sample_request(
+                            &request, &store_ref, &id,
+                        ) {
+                            Ok(Some(resp)) => {
+                                let _ = cmd_ref.blocking_send(
+                                    data_p2p::network::NetworkCommand::SampleResponse {
+                                        channel_id,
+                                        response: resp,
+                                    },
+                                );
+                            }
+                            Ok(None) => {
+                                tracing::debug!(channel_id, "sample request: no data");
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "sample request handler failed");
+                            }
+                        }
+                    });
+                }
+                data_p2p::network::NetworkEvent::IncomingAccessRequest {
+                    peer,
+                    channel_id,
+                    request,
+                } => {
+                    info!(%peer, cid = %request.cid.0, "incoming access request");
+                    let store_ref = store_bg.clone();
+                    let cmd_ref = cmd_tx_bg.clone();
+                    tokio::task::spawn_blocking(move || {
+                        match data_p2p::access_control::handle_access_request(
+                            &request, &store_ref, false,
+                        ) {
+                            Ok(Some(grant)) => {
+                                let _ = cmd_ref.blocking_send(
+                                    data_p2p::network::NetworkCommand::AccessResponse {
+                                        channel_id,
+                                        response: grant,
+                                    },
+                                );
+                            }
+                            Ok(None) => {
+                                tracing::debug!(channel_id, "access request: denied");
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "access request handler failed");
+                            }
+                        }
+                    });
                 }
                 _ => {}
             }
@@ -592,7 +654,7 @@ async fn cmd_start() -> Result<()> {
     tokio::spawn(watchdog.run());
 
     // Start embedded Web UI + MCP HTTP server
-    let state = Arc::new(McpServer::new(
+    let mut mcp_server = McpServer::new(
         AppState::with_full_config(
             NodeIdentity::from_seed(identity.seed()),
             DhtIndex::new(data_p2p::network::NetworkHandle {
@@ -608,7 +670,11 @@ async fn cmd_start() -> Result<()> {
             &config.external_sql,
         )
         .await,
-    ));
+    );
+    if let Err(e) = mcp_server.init_trace_pool(4) {
+        tracing::warn!(err = %e, "failed to init trace pool, falling back to per-request connections");
+    }
+    let state = Arc::new(mcp_server);
     let http_port = 3927;
     info!("Web UI → http://localhost:{http_port}");
     tokio::spawn(async move {
@@ -692,7 +758,7 @@ async fn cmd_mcp(mode: String) -> Result<()> {
         }
     });
 
-    let state = Arc::new(McpServer::new(
+    let mut mcp_server = McpServer::new(
         AppState::with_full_config(
             NodeIdentity::from_seed(identity.seed()),
             dht,
@@ -705,7 +771,11 @@ async fn cmd_mcp(mode: String) -> Result<()> {
             &config.external_sql,
         )
         .await,
-    ));
+    );
+    if let Err(e) = mcp_server.init_trace_pool(4) {
+        tracing::warn!(err = %e, "failed to init trace pool, falling back to per-request connections");
+    }
+    let state = Arc::new(mcp_server);
 
     if mode == "http" {
         data_mcp_server::server::run_http(state, 3927).await
@@ -1160,17 +1230,19 @@ async fn sync_external_catalogs(store: &MetadataStore) -> Result<()> {
     }
 
     let defillama = DefiLlamaAdapter::default();
-    for result in defillama
-        .fetch_full_stablecoin_catalog()
-        .await
-        .unwrap_or_default()
-    {
+    let rwa = RwaXyzAdapter::default();
+
+    let (defillama_results, rwa_results) = tokio::join!(
+        defillama.fetch_full_stablecoin_catalog(),
+        rwa.fetch_full_treasury_catalog()
+    );
+
+    for result in defillama_results.unwrap_or_default() {
         let metadata = search_result_to_metadata(&result, DataSource::DefiLlama);
         let _ = store.put(&metadata);
     }
 
-    let rwa = RwaXyzAdapter::default();
-    for result in rwa.fetch_full_treasury_catalog().await.unwrap_or_default() {
+    for result in rwa_results.unwrap_or_default() {
         let metadata = search_result_to_metadata(&result, DataSource::RwaXyz);
         let _ = store.put(&metadata);
     }

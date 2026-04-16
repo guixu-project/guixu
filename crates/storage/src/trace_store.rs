@@ -498,11 +498,16 @@ impl TraceStore {
         Ok(())
     }
 
-    /// Insert multiple spans in a batch.
+    /// Insert multiple spans in a batch (single transaction).
     pub fn insert_spans(&self, spans: &[SpanRecord]) -> Result<()> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
         for span in spans {
-            self.insert_span(span)?;
+            if let Err(e) = self.insert_span(span) {
+                self.conn.execute_batch("ROLLBACK")?;
+                return Err(e);
+            }
         }
+        self.conn.execute_batch("COMMIT")?;
         Ok(())
     }
 

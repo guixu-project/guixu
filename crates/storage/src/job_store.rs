@@ -92,9 +92,10 @@ impl JobStore {
 
     pub fn append_event(&self, event: &JobEvent) -> Result<()> {
         let key = format!(
-            "event:{}:{}",
+            "event:{}:{}:{}",
             event.job_id.0,
-            event.timestamp.timestamp_millis()
+            event.timestamp.timestamp_millis(),
+            event.event_id
         );
         let value = serde_json::to_vec(event)?;
         self.db.put(key.as_bytes(), &value)?;

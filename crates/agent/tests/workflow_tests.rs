@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
-use data_core::agent::contracts::{JobState, SkillCapability};
+use data_core::agent::contracts::JobState;
 use data_core::agent::memory::MemoryKey;
-use data_core::types::{DataSource, DataType, SourceFamily};
+use data_core::types::DataSource;
 use data_search::engine::SearchEngine;
 use data_test_utils::fixtures;
 use data_test_utils::stores::TempStores;

@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use anyhow::{anyhow, Context, Result};
 use data_core::metadata::DatasetMetadata;
@@ -457,20 +457,14 @@ impl StagedSampleEvaluator {
             task.target_entity.clone().unwrap_or_default(),
             task.required_columns.join(",")
         );
-        if let Some(cached) = self
-            .requirement_cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&cache_key)
-            .cloned()
-        {
+        if let Some(cached) = self.requirement_cache.lock().await.get(&cache_key).cloned() {
             return Ok(cached);
         }
 
         let planned = self.planner.plan_requirements(task).await?;
         self.requirement_cache
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .await
             .insert(cache_key, planned.clone());
         Ok(planned)
     }

@@ -1374,6 +1374,11 @@ fn infer_source_family(source: &str) -> SourceFamily {
     }
 }
 
+#[allow(dead_code)]
+fn _is_json_file(path: &Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()) == Some("json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1471,9 +1476,4 @@ mod tests {
             SkillFailureKind::AuthMissing
         );
     }
-}
-
-#[allow(dead_code)]
-fn _is_json_file(path: &Path) -> bool {
-    path.extension().and_then(|ext| ext.to_str()) == Some("json")
 }
