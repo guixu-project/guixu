@@ -3,6 +3,7 @@
 
 pub mod escrow;
 pub mod mpp;
+pub mod payment_verify;
 pub mod protocol;
 pub mod router;
 pub mod wallet;

@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+use futures::stream::{FuturesUnordered, StreamExt};
+
 use data_core::agent::contracts::{
     DelegatedDataTask, JobEvent, JobEventType, JobId, JobResult, JobState, WorkerTask,
     WorkerTaskKind,
@@ -362,44 +364,38 @@ impl WorkflowService {
 
         let mut all_results = Vec::new();
 
-        for stage in &plan.stages {
-            let search_tasks: Vec<_> = stage
-                .tasks
-                .iter()
-                .filter(|t| t.operation == PlannedOperation::Search)
-                .cloned()
-                .collect();
-            if search_tasks.is_empty() {
-                continue;
-            }
+        // Launch all stages concurrently; collect results as they arrive and
+        // stop early once we have enough candidates.
+        let mut stage_futures: FuturesUnordered<_> = plan
+            .stages
+            .iter()
+            .filter_map(|stage| {
+                let search_tasks: Vec<_> = stage
+                    .tasks
+                    .iter()
+                    .filter(|t| t.operation == PlannedOperation::Search)
+                    .cloned()
+                    .collect();
+                if search_tasks.is_empty() {
+                    return None;
+                }
+                Some(async move {
+                    match stage.strategy {
+                        ExecutionStrategy::Parallel => {
+                            self.search_parallel(&search_tasks, task, enough).await
+                        }
+                        ExecutionStrategy::Sequential => {
+                            self.search_sequential(&search_tasks, task, enough).await
+                        }
+                        ExecutionStrategy::Fallback => {
+                            self.search_fallback(&search_tasks, task, enough).await
+                        }
+                    }
+                })
+            })
+            .collect();
 
-            let mut stage_results = match stage.strategy {
-                ExecutionStrategy::Parallel => {
-                    self.search_parallel(
-                        &search_tasks,
-                        task,
-                        enough.saturating_sub(all_results.len()),
-                    )
-                    .await
-                }
-                ExecutionStrategy::Sequential => {
-                    self.search_sequential(
-                        &search_tasks,
-                        task,
-                        enough.saturating_sub(all_results.len()),
-                    )
-                    .await
-                }
-                ExecutionStrategy::Fallback => {
-                    self.search_fallback(
-                        &search_tasks,
-                        task,
-                        enough.saturating_sub(all_results.len()),
-                    )
-                    .await
-                }
-            };
-
+        while let Some(mut stage_results) = stage_futures.next().await {
             all_results.append(&mut stage_results);
             if all_results.len() >= enough {
                 break;

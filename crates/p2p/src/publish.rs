@@ -88,7 +88,7 @@ pub async fn publish_file_with_privacy(
 
     let metadata = DatasetMetadata {
         cid: cid.clone(),
-        info_hash,
+        info_hash: info_hash.clone(),
         title: file_name.clone(),
         description: None,
         tags,
@@ -123,6 +123,20 @@ pub async fn publish_file_with_privacy(
     // 9. Store original locally (for owner's reference), publish sanitized
     store.put(&metadata)?;
     store.put_file_path(&cid, path)?;
+
+    // 9b. Persist seed record for restart recovery
+    if let Some(ref hash) = info_hash {
+        let seed_record = SeedRecord {
+            info_hash: hash.clone(),
+            cid: cid.clone(),
+            file_path: path.to_path_buf(),
+            access,
+            title: file_name.clone(),
+            size_bytes: data.len() as u64,
+            created_at: now,
+        };
+        let _ = store.put_seed(&seed_record);
+    }
 
     // 10. DHT PUT (sanitized)
     dht.put_metadata(&published).await?;
@@ -199,15 +213,53 @@ fn infer_schema(path: &Path, data: &[u8]) -> Result<(DatasetSchema, Vec<String>)
             ))
         }
         "parquet" => {
-            // For M1, just record size; proper Parquet parsing in M2 with Polars
-            Ok((
-                DatasetSchema {
-                    columns: vec![],
-                    row_count: 0,
-                    size_bytes,
-                },
-                vec!["parquet".into()],
-            ))
+            // Use Polars to extract schema and row count from Parquet metadata
+            match polars::prelude::LazyFrame::scan_parquet(path, Default::default()) {
+                Ok(mut lf) => {
+                    let schema = lf.collect_schema().map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let columns: Vec<ColumnDef> = schema
+                        .iter()
+                        .map(|(name, dtype)| ColumnDef {
+                            name: name.to_string(),
+                            dtype: format!("{dtype}"),
+                            nullable: true,
+                            description: None,
+                        })
+                        .collect();
+                    let tags: Vec<String> = columns
+                        .iter()
+                        .map(|c| c.name.to_lowercase().replace(' ', "_"))
+                        .chain(std::iter::once("parquet".into()))
+                        .collect();
+                    let row_count = lf
+                        .clone()
+                        .select([polars::prelude::len()])
+                        .collect()
+                        .ok()
+                        .and_then(|df| {
+                            df.column("len")
+                                .ok()
+                                .and_then(|s| s.u32().ok().and_then(|c| c.get(0)))
+                        })
+                        .unwrap_or(0) as u64;
+                    Ok((
+                        DatasetSchema {
+                            columns,
+                            row_count,
+                            size_bytes,
+                        },
+                        tags,
+                    ))
+                }
+                Err(_) => Ok((
+                    DatasetSchema {
+                        columns: vec![],
+                        row_count: 0,
+                        size_bytes,
+                    },
+                    vec!["parquet".into()],
+                )),
+            }
         }
         "mp4" | "avi" | "mkv" | "mov" | "webm" => Ok((
             DatasetSchema {

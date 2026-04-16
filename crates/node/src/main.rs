@@ -11,14 +11,36 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 use data_core::config::{NodeConfig, NodeMode};
 use data_core::env::load_local_settings;
 use data_core::identity::NodeIdentity;
-use data_core::types::AccessMode;
+use data_core::types::{AccessMode, DatasetCid};
 use data_mcp_server::server::{AppState, McpServer};
 use data_p2p::dht::DhtIndex;
 use data_storage::feedback_store::FeedbackStore;
 use data_storage::job_store::JobStore;
 use data_storage::metadata_store::MetadataStore;
 
+#[cfg(unix)]
+const SIGTERM: libc::c_int = libc::SIGTERM;
+#[cfg(unix)]
+const SIGKILL: libc::c_int = libc::SIGKILL;
+#[cfg(unix)]
+fn kill(pid: u32, sig: libc::c_int) -> std::io::Result<()> {
+    // SAFETY: libc::kill sends a signal to a process. We validate pid != 0 at call sites.
+    unsafe { libc::kill(pid as libc::pid_t, sig) };
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn kill(pid: u32, _sig: i32) -> std::io::Result<()> {
+    std::process::Command::new("kill")
+        .arg("-TERM".to_string())
+        .arg(pid.to_string())
+        .output()?;
+    Ok(())
+}
+
 mod mcp_install;
+mod service_files;
+mod watchdog;
 
 #[derive(Parser)]
 #[command(
@@ -38,7 +60,51 @@ enum Commands {
         data_dir: Option<String>,
     },
     /// Start the full node (P2P + auto-publish + MCP server).
-    Start,
+    Start {
+        /// Run as background daemon.
+        #[arg(short, long)]
+        daemon: bool,
+    },
+    /// Stop a running daemon.
+    Stop,
+    /// Show node status.
+    Status,
+    /// Publish a local file to the P2P network.
+    Publish {
+        /// Path to the file to publish.
+        path: String,
+        /// Price in USDC (0 = free).
+        #[arg(long, default_value = "0")]
+        price: f64,
+        /// SPDX license identifier.
+        #[arg(long, default_value = "CC-BY-4.0")]
+        license: String,
+        /// Comma-separated tags.
+        #[arg(long)]
+        tags: Option<String>,
+    },
+    /// Remove a dataset from the P2P network.
+    Unpublish {
+        /// CID of the dataset to unpublish.
+        cid: String,
+    },
+    /// List published datasets.
+    List {
+        /// Show only datasets published by this node.
+        #[arg(long)]
+        mine: bool,
+        /// Output format.
+        #[arg(long, default_value = "table")]
+        format: String,
+    },
+    /// Preview a dataset (first N rows).
+    Preview {
+        /// CID of the dataset.
+        cid: String,
+        /// Number of rows to preview.
+        #[arg(long, default_value = "20")]
+        rows: usize,
+    },
     /// Run as MCP server only (for Agent integration).
     Mcp {
         #[command(subcommand)]
@@ -149,7 +215,24 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { data_dir } => cmd_init(data_dir)?,
-        Commands::Start => cmd_start().await?,
+        Commands::Start { daemon } => {
+            if daemon {
+                cmd_start_daemon()?;
+            } else {
+                cmd_start().await?;
+            }
+        }
+        Commands::Stop => cmd_stop()?,
+        Commands::Status => cmd_status().await?,
+        Commands::Publish {
+            path,
+            price,
+            license: _license,
+            tags,
+        } => cmd_publish(&path, price, tags).await?,
+        Commands::Unpublish { cid } => cmd_unpublish(&cid).await?,
+        Commands::List { mine, format } => cmd_list(mine, &format)?,
+        Commands::Preview { cid, rows } => cmd_preview(&cid, rows).await?,
         Commands::Mcp { action, mode } => match action {
             Some(McpAction::Install { client }) => cmd_mcp_install(client)?,
             Some(McpAction::Uninstall { client }) => cmd_mcp_uninstall(&client)?,
@@ -374,11 +457,31 @@ async fn cmd_start() -> Result<()> {
     let (config, identity) = load_config_and_identity()?;
     info!(did = %identity.did.0, privacy = ?config.privacy_level, "starting full node");
 
+    // Crash recovery: clean stale PID file
+    let pid_path = NodeConfig::pid_path();
+    if pid_path.exists() {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                if kill(pid, 0).is_err() {
+                    info!("cleaning stale PID file");
+                    std::fs::remove_file(&pid_path).ok();
+                }
+            }
+        }
+    }
+
+    // Write PID file
+    std::fs::write(&pid_path, std::process::id().to_string())?;
+
+    // Generate platform service files (first run)
+    if let Err(e) = service_files::generate_service_files() {
+        tracing::warn!(error = %e, "service file generation failed (non-fatal)");
+    }
+
     let store = MetadataStore::open(&NodeConfig::db_path())?;
     let feedback_store = FeedbackStore::open(&NodeConfig::config_dir().join("feedback_db"))?;
     let job_store = JobStore::open(&NodeConfig::config_dir().join("job_db"))?;
 
-    // Build privacy config from node config
     let privacy_config = data_auth::privacy::PrivacyConfig {
         level: match config.privacy_level {
             data_core::config::PrivacyLevel::Off => data_auth::privacy::PrivacyLevel::Off,
@@ -394,11 +497,24 @@ async fn cmd_start() -> Result<()> {
     let net_handle = data_p2p::network::start(&config, identity.seed(), event_tx).await?;
     let dht = DhtIndex::with_privacy(net_handle, privacy_config.clone());
 
+    // Seed recovery: restore all persisted seeds
+    let seeds = store.list_seeds()?;
+    if !seeds.is_empty() {
+        info!(count = seeds.len(), "restoring seeds from previous session");
+        let download_dir = NodeConfig::config_dir().join("downloads");
+        if let Ok(engine) = data_p2p::torrent::TorrentEngine::new(download_dir).await {
+            let restored = engine.restore_seeds(&seeds).await;
+            info!(restored = restored.len(), "seeds restored");
+        }
+    }
+
     // Start file watcher
     let mut watch_rx = data_p2p::watchdir::watch(&config.data_dir)?;
 
     // Handle network events
     let store_bg = store.clone();
+    let identity_seed_bg = *identity.seed();
+    let cmd_tx_bg = dht.handle().cmd_tx.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -411,6 +527,67 @@ async fn cmd_start() -> Result<()> {
                 data_p2p::network::NetworkEvent::PeerConnected(peer) => {
                     info!(%peer, "peer connected");
                 }
+                data_p2p::network::NetworkEvent::IncomingSampleRequest {
+                    peer,
+                    channel_id,
+                    request,
+                } => {
+                    info!(%peer, cid = %request.cid.0, "incoming sample request");
+                    let store_ref = store_bg.clone();
+                    let seed = identity_seed_bg;
+                    let cmd_ref = cmd_tx_bg.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let id = NodeIdentity::from_seed(&seed);
+                        match data_p2p::sample_server::handle_sample_request(
+                            &request, &store_ref, &id,
+                        ) {
+                            Ok(Some(resp)) => {
+                                let _ = cmd_ref.blocking_send(
+                                    data_p2p::network::NetworkCommand::SampleResponse {
+                                        channel_id,
+                                        response: resp,
+                                    },
+                                );
+                            }
+                            Ok(None) => {
+                                tracing::debug!(channel_id, "sample request: no data");
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "sample request handler failed");
+                            }
+                        }
+                    });
+                }
+                data_p2p::network::NetworkEvent::IncomingAccessRequest {
+                    peer,
+                    channel_id,
+                    request,
+                } => {
+                    info!(%peer, cid = %request.cid.0, "incoming access request");
+                    let store_ref = store_bg.clone();
+                    let cmd_ref = cmd_tx_bg.clone();
+                    tokio::task::spawn_blocking(move || {
+                        match data_p2p::access_control::handle_access_request(
+                            &request, &store_ref, false,
+                        ) {
+                            Ok(Some(grant)) => {
+                                let _ = cmd_ref.blocking_send(
+                                    data_p2p::network::NetworkCommand::AccessResponse {
+                                        channel_id,
+                                        response: grant,
+                                    },
+                                );
+                            }
+                            Ok(None) => {
+                                tracing::debug!(channel_id, "access request: denied");
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "access request handler failed");
+                            }
+                        }
+                    });
+                }
+                _ => {}
             }
         }
     });
@@ -467,8 +644,17 @@ async fn cmd_start() -> Result<()> {
         });
     }
 
+    // Start watchdog
+    let watchdog = watchdog::WatchdogTask::new(
+        dht.handle().cmd_tx.clone(),
+        3927,
+        config.data_dir.clone(),
+        config.daemon.clone(),
+    );
+    tokio::spawn(watchdog.run());
+
     // Start embedded Web UI + MCP HTTP server
-    let state = Arc::new(McpServer::new(
+    let mut mcp_server = McpServer::new(
         AppState::with_full_config(
             NodeIdentity::from_seed(identity.seed()),
             DhtIndex::new(data_p2p::network::NetworkHandle {
@@ -484,7 +670,11 @@ async fn cmd_start() -> Result<()> {
             &config.external_sql,
         )
         .await,
-    ));
+    );
+    if let Err(e) = mcp_server.init_trace_pool(4) {
+        tracing::warn!(err = %e, "failed to init trace pool, falling back to per-request connections");
+    }
+    let state = Arc::new(mcp_server);
     let http_port = 3927;
     info!("Web UI → http://localhost:{http_port}");
     tokio::spawn(async move {
@@ -494,7 +684,18 @@ async fn cmd_start() -> Result<()> {
     });
 
     info!("full node running. Press Ctrl+C to stop.");
+
+    // SIGTERM / Ctrl+C graceful shutdown
     tokio::signal::ctrl_c().await?;
+    info!("shutting down...");
+
+    // 1. Wait briefly for in-flight transfers
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // 2. Clean up PID file
+    std::fs::remove_file(&pid_path).ok();
+
+    info!("shutdown complete");
     Ok(())
 }
 
@@ -557,7 +758,7 @@ async fn cmd_mcp(mode: String) -> Result<()> {
         }
     });
 
-    let state = Arc::new(McpServer::new(
+    let mut mcp_server = McpServer::new(
         AppState::with_full_config(
             NodeIdentity::from_seed(identity.seed()),
             dht,
@@ -570,7 +771,11 @@ async fn cmd_mcp(mode: String) -> Result<()> {
             &config.external_sql,
         )
         .await,
-    ));
+    );
+    if let Err(e) = mcp_server.init_trace_pool(4) {
+        tracing::warn!(err = %e, "failed to init trace pool, falling back to per-request connections");
+    }
+    let state = Arc::new(mcp_server);
 
     if mode == "http" {
         data_mcp_server::server::run_http(state, 3927).await
@@ -637,6 +842,364 @@ fn shellexpand(s: String) -> std::path::PathBuf {
     std::path::PathBuf::from(s)
 }
 
+fn cmd_start_daemon() -> Result<()> {
+    use std::fs::{self, File};
+
+    let pid_path = NodeConfig::pid_path();
+    if pid_path.exists() {
+        if let Ok(pid_str) = fs::read_to_string(&pid_path) {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                if pid != 0 && kill(pid, 0).is_ok() {
+                    anyhow::bail!("Daemon already running with PID {pid}. Use `guixu stop` first.");
+                }
+            }
+        }
+        fs::remove_file(&pid_path).ok();
+    }
+
+    let log_dir = NodeConfig::config_dir().join("logs");
+    fs::create_dir_all(&log_dir)?;
+
+    match daemonize::Daemonize::new()
+        .pid_file(&pid_path)
+        .stdout(File::create(log_dir.join("stdout.log"))?)
+        .stderr(File::create(log_dir.join("stderr.log"))?)
+        .start()
+    {
+        Ok(()) => {
+            // We are now in the child process
+            println!("Daemon started with PID {}", std::process::id());
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("Failed to start daemon: {e}"),
+    }
+}
+
+fn cmd_stop() -> Result<()> {
+    use std::fs;
+
+    let pid_path = NodeConfig::pid_path();
+    if !pid_path.exists() {
+        anyhow::bail!("PID file not found. Is the daemon running?");
+    }
+
+    let pid_str = fs::read_to_string(&pid_path)?;
+    let pid = pid_str.trim().parse::<u32>()?;
+
+    if pid == 0 {
+        anyhow::bail!("Invalid PID");
+    }
+
+    if kill(pid, 0).is_err() {
+        fs::remove_file(&pid_path)?;
+        println!("Daemon was not running (stale PID file removed)");
+        return Ok(());
+    }
+
+    if kill(pid, SIGTERM).is_err() {
+        anyhow::bail!("Failed to send SIGTERM to {pid}");
+    }
+
+    let timeout = std::time::Duration::from_secs(5);
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if kill(pid, 0).is_err() {
+            fs::remove_file(&pid_path)?;
+            println!("Daemon stopped gracefully");
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    println!("Daemon did not stop gracefully, forcing...");
+    kill(pid, SIGKILL).ok();
+    fs::remove_file(&pid_path)?;
+    println!("Daemon killed");
+    Ok(())
+}
+
+async fn cmd_status() -> Result<()> {
+    let pid_path = NodeConfig::pid_path();
+    if !pid_path.exists() {
+        println!("Daemon not running (no PID file)");
+        return Ok(());
+    }
+
+    let pid_str = std::fs::read_to_string(&pid_path)?;
+    let pid = pid_str.trim().parse::<u32>()?;
+
+    if kill(pid, 0).is_err() {
+        println!("Daemon not running (stale PID file)");
+        return Ok(());
+    }
+
+    println!("Daemon running: PID {pid}");
+
+    let (config, identity) = load_config_and_identity()?;
+    let store = MetadataStore::open(&NodeConfig::db_path())?;
+    let seeds = store.list_seeds()?;
+    println!("Published datasets: {}", seeds.len());
+    for seed in &seeds {
+        println!(
+            "  {} - {} ({} bytes)",
+            seed.cid.0, seed.title, seed.size_bytes
+        );
+    }
+
+    let client = reqwest::Client::new();
+    if let Ok(resp) = client
+        .get("http://127.0.0.1:3927/api/node/status")
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+    {
+        if resp.status().is_success() {
+            if let Ok(body) = resp.text().await {
+                println!("HTTP status: {}", body);
+            }
+        }
+    }
+
+    println!("Node DID: {}", identity.did.0);
+    println!("Data dir: {}", config.data_dir.display());
+    Ok(())
+}
+
+async fn cmd_publish(path: &str, price: f64, _tags: Option<String>) -> Result<()> {
+    let (config, identity) = load_config_and_identity()?;
+    let store = MetadataStore::open(&NodeConfig::db_path())?;
+    let privacy_config = data_auth::privacy::PrivacyConfig::default();
+
+    let path = shellexpand(path.into());
+    if !path.exists() {
+        anyhow::bail!("File not found: {}", path.display());
+    }
+
+    // Start temporary P2P session
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(256);
+    let net_handle = data_p2p::network::start(&config, identity.seed(), event_tx).await?;
+    let dht = DhtIndex::with_privacy(net_handle, privacy_config);
+
+    let access = if price > 0.0 {
+        AccessMode::Paid
+    } else {
+        AccessMode::Open
+    };
+
+    let metadata = data_p2p::publish::publish_file_with_privacy(
+        &path,
+        &identity,
+        &dht,
+        &store,
+        access,
+        price,
+        &data_auth::privacy::PrivacyConfig::default(),
+        config.ephemeral_dids,
+    )
+    .await?;
+
+    // Create torrent and start seeding
+    let download_dir = NodeConfig::config_dir().join("downloads");
+    if let Ok(engine) = data_p2p::torrent::TorrentEngine::new(download_dir).await {
+        match engine.create_torrent(&path).await {
+            Ok(info_hash) => {
+                println!("✅ Published: cid={}", metadata.cid.0);
+                println!("   Seeding via BT: info_hash={info_hash}");
+            }
+            Err(e) => {
+                println!("✅ Published: cid={}", metadata.cid.0);
+                println!("   ⚠ Torrent creation failed: {e}");
+            }
+        }
+    } else {
+        println!("✅ Published: cid={}", metadata.cid.0);
+        if let Some(ref hash) = metadata.info_hash {
+            println!("   info_hash={hash}");
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_unpublish(cid: &str) -> Result<()> {
+    let (config, identity) = load_config_and_identity()?;
+    let store = MetadataStore::open(&NodeConfig::db_path())?;
+    let dataset_cid = DatasetCid(cid.to_string());
+
+    let metadata = store
+        .get(&dataset_cid)?
+        .ok_or_else(|| anyhow::anyhow!("Dataset not found: {}", cid))?;
+
+    // 1. Delete SeedRecord and stop BT seeding
+    if let Some(ref info_hash) = metadata.info_hash {
+        store.delete_seed(info_hash)?;
+    }
+
+    // 2. Remove from DHT
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel(256);
+    let net_handle = data_p2p::network::start(&config, identity.seed(), event_tx).await?;
+    let dht = DhtIndex::new(net_handle);
+    // Overwrite DHT record with empty value to effectively delete
+    let key = format!("meta:{}", cid).into_bytes();
+    dht.handle().dht_put(key, vec![]).await?;
+
+    // 3. Mark as unpublished in local store
+    store.mark_unpublished(&dataset_cid)?;
+
+    println!("✅ Unpublished: cid={cid}");
+    Ok(())
+}
+
+fn cmd_list(mine: bool, format: &str) -> Result<()> {
+    let store = MetadataStore::open(&NodeConfig::db_path())?;
+    let (_config, identity) = load_config_and_identity()?;
+
+    let datasets = store.list_all()?;
+    let my_datasets: Vec<_> = if mine {
+        datasets
+            .into_iter()
+            .filter(|m| m.provider.0 == identity.did.0)
+            .collect()
+    } else {
+        datasets
+    };
+
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(&my_datasets)?);
+    } else {
+        println!(
+            "{:12} {:30} {:>10} {:>12} {:>8} {:>8}",
+            "CID", "TITLE", "ROWS", "SIZE", "PRICE", "STATUS"
+        );
+        println!("{}", "-".repeat(90));
+        for m in &my_datasets {
+            let size_str = format_size(m.schema.size_bytes);
+            let price_str = if m.price.is_free() {
+                "free".to_string()
+            } else {
+                format!("${:.2}", m.price.amount)
+            };
+            let status = if m.info_hash.is_some() {
+                "seeding"
+            } else {
+                "local"
+            };
+            println!(
+                "{:12} {:30} {:>10} {:>12} {:>8} {:>8}",
+                &m.cid.0[..12.min(m.cid.0.len())],
+                &m.title[..30.min(m.title.len())],
+                m.schema.row_count,
+                size_str,
+                price_str,
+                status
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_preview(cid: &str, rows: usize) -> Result<()> {
+    let store = MetadataStore::open(&NodeConfig::db_path())?;
+    let dataset_cid = DatasetCid(cid.to_string());
+
+    let metadata = store
+        .get(&dataset_cid)?
+        .ok_or_else(|| anyhow::anyhow!("Dataset not found: {}", cid))?;
+
+    let file_path = store
+        .get_file_path(&dataset_cid)?
+        .ok_or_else(|| anyhow::anyhow!("Local file not found for {}", cid))?;
+
+    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    match ext {
+        "csv" | "tsv" => {
+            let separator = if ext == "tsv" { '\t' } else { ',' };
+            let content = std::fs::read(&file_path)?;
+            let text = String::from_utf8_lossy(&content);
+            let lines: Vec<&str> = text.lines().take(rows + 1).collect();
+
+            if lines.is_empty() {
+                println!("Empty file");
+                return Ok(());
+            }
+
+            // Compute column widths for aligned table output
+            let all_cols: Vec<Vec<&str>> = lines
+                .iter()
+                .map(|line| line.split(separator).collect())
+                .collect();
+            let num_cols = all_cols.first().map(|r| r.len()).unwrap_or(0);
+            let mut widths = vec![0usize; num_cols];
+            for row in &all_cols {
+                for (i, col) in row.iter().enumerate() {
+                    if i < widths.len() {
+                        widths[i] = widths[i].max(col.len()).min(30);
+                    }
+                }
+            }
+
+            // Print header
+            if let Some(header) = all_cols.first() {
+                let h: Vec<String> = header
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| format!("{:w$}", c, w = widths.get(i).copied().unwrap_or(10)))
+                    .collect();
+                println!("{}", h.join("  "));
+                let sep: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
+                println!("{}", sep.join("  "));
+            }
+
+            // Print data rows
+            for row in all_cols.iter().skip(1) {
+                let r: Vec<String> = row
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let w = widths.get(i).copied().unwrap_or(10);
+                        let truncated = if c.len() > w { &c[..w] } else { c };
+                        format!("{:w$}", truncated, w = w)
+                    })
+                    .collect();
+                println!("{}", r.join("  "));
+            }
+        }
+        "json" => {
+            let content = std::fs::read(&file_path)?;
+            let text = String::from_utf8_lossy(&content);
+            let preview: String = text.chars().take(rows * 100).collect();
+            println!("{preview}");
+        }
+        _ => {
+            anyhow::bail!("Preview not supported for {} files", ext);
+        }
+    }
+
+    println!("\n--- Schema ---");
+    for col in &metadata.schema.columns {
+        println!("  {} ({})", col.name, col.dtype);
+    }
+    println!("Columns: {}", metadata.schema.columns.len());
+    println!("Row count: {}", metadata.schema.row_count);
+    println!("Size: {}", format_size(metadata.schema.size_bytes));
+    Ok(())
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1}GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1}MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1}KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
 async fn sync_external_catalogs(store: &MetadataStore) -> Result<()> {
     use data_core::metadata::{DatasetMetadata, Provenance};
     use data_core::types::{AccessMode, DataSource, SearchResult};
@@ -667,17 +1230,19 @@ async fn sync_external_catalogs(store: &MetadataStore) -> Result<()> {
     }
 
     let defillama = DefiLlamaAdapter::default();
-    for result in defillama
-        .fetch_full_stablecoin_catalog()
-        .await
-        .unwrap_or_default()
-    {
+    let rwa = RwaXyzAdapter::default();
+
+    let (defillama_results, rwa_results) = tokio::join!(
+        defillama.fetch_full_stablecoin_catalog(),
+        rwa.fetch_full_treasury_catalog()
+    );
+
+    for result in defillama_results.unwrap_or_default() {
         let metadata = search_result_to_metadata(&result, DataSource::DefiLlama);
         let _ = store.put(&metadata);
     }
 
-    let rwa = RwaXyzAdapter::default();
-    for result in rwa.fetch_full_treasury_catalog().await.unwrap_or_default() {
+    for result in rwa_results.unwrap_or_default() {
         let metadata = search_result_to_metadata(&result, DataSource::RwaXyz);
         let _ = store.put(&metadata);
     }

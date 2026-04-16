@@ -598,16 +598,16 @@ impl AgentTraceManager {
     }
 
     async fn buffer_write(&self, span: SpanRecord) {
-        let should_flush = {
+        let flush_spans = {
             let mut buffer = self.buffer.write().await;
             buffer.push(span);
-            buffer.len() >= self.config.buffer_size
+            if buffer.len() >= self.config.buffer_size {
+                Some(std::mem::take(&mut *buffer))
+            } else {
+                None
+            }
         };
-        if should_flush {
-            let spans = {
-                let mut buffer = self.buffer.write().await;
-                std::mem::take(&mut *buffer)
-            };
+        if let Some(spans) = flush_spans {
             let _ = self.tx.try_send(FlushCommand::Flush(spans));
         }
     }

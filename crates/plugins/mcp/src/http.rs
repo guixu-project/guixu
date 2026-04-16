@@ -36,8 +36,19 @@ pub async fn run_http(server: Arc<McpServer>, port: u16) -> Result<()> {
         .route("/prism", get(prism_ui::serve_prism))
         .route("/prism/", get(prism_ui::serve_prism))
         .route("/prism/assets/{file}", get(prism_ui::serve_prism_asset))
+        .route("/api/node/status", get(api_node_status))
         .route("/api/datasets", get(api_list_datasets))
+        .route("/api/datasets/{cid}", get(api_dataset_detail))
+        .route("/api/datasets/{cid}/preview", get(api_dataset_preview))
+        .route("/api/datasets/{cid}/stats", get(api_dataset_stats))
         .route("/api/publish", post(api_publish))
+        .route("/api/unpublish/{cid}", axum::routing::delete(api_unpublish))
+        .route("/api/network/peers", get(api_network_peers))
+        .route("/api/network/nat", get(api_network_nat))
+        .route("/api/market/search", get(api_market_search))
+        .route("/api/market/{cid}/preview", get(api_market_preview))
+        .route("/api/wallet/balance", get(api_wallet_balance))
+        .route("/api/wallet/transactions", get(api_wallet_transactions))
         .route("/api/traces", get(api_list_traces))
         .route("/api/traces/{trace_id}/spans", get(api_trace_spans))
         .route("/api/traces/{trace_id}/scores", get(api_trace_scores))
@@ -61,6 +72,22 @@ pub async fn run_http(server: Arc<McpServer>, port: u16) -> Result<()> {
 
 async fn serve_ui() -> Html<&'static str> {
     Html(INDEX_HTML)
+}
+
+async fn api_node_status(State(server): State<Arc<McpServer>>) -> impl IntoResponse {
+    let seeds = server.state().store.list_seeds().unwrap_or_default();
+    let uptime = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Json(json!({
+        "status": "running",
+        "did": server.state().identity.did.0,
+        "peer_id": format!("{}", server.state().dht.handle().local_peer_id),
+        "seeding_count": seeds.len(),
+        "uptime": uptime,
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 async fn api_list_datasets(State(server): State<Arc<McpServer>>) -> impl IntoResponse {
@@ -236,6 +263,194 @@ async fn api_publish(
     }
 }
 
+async fn api_dataset_detail(
+    State(server): State<Arc<McpServer>>,
+    axum::extract::Path(cid): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let dataset_cid = data_core::types::DatasetCid(cid);
+    match server.state().store.get(&dataset_cid) {
+        Ok(Some(m)) => Json(json!({
+            "cid": m.cid.0,
+            "title": m.title,
+            "description": m.description,
+            "schema": { "columns": m.schema.columns, "row_count": m.schema.row_count, "size_bytes": m.schema.size_bytes },
+            "price": { "amount": m.price.amount, "currency": m.price.currency },
+            "provider": m.provider.0,
+            "access": m.access,
+            "tags": m.tags,
+            "info_hash": m.info_hash,
+        }))
+        .into_response(),
+        _ => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+    }
+}
+
+async fn api_dataset_preview(
+    State(server): State<Arc<McpServer>>,
+    axum::extract::Path(cid): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let rows: usize = params
+        .get("rows")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
+    let dataset_cid = data_core::types::DatasetCid(cid);
+    let file_path = match server.state().store.get_file_path(&dataset_cid) {
+        Ok(Some(p)) if p.exists() => p,
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "file not found"})),
+            )
+                .into_response()
+        }
+    };
+    match std::fs::read(&file_path) {
+        Ok(content) => {
+            let text = String::from_utf8_lossy(&content);
+            let lines: Vec<&str> = text.lines().take(rows + 1).collect();
+            Json(json!({"rows": lines})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_dataset_stats(
+    State(server): State<Arc<McpServer>>,
+    axum::extract::Path(cid): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let dataset_cid = data_core::types::DatasetCid(cid.clone());
+    match server.state().store.get(&dataset_cid) {
+        Ok(Some(m)) => Json(json!({
+            "cid": cid,
+            "row_count": m.schema.row_count,
+            "size_bytes": m.schema.size_bytes,
+            "columns": m.schema.columns.len(),
+        }))
+        .into_response(),
+        _ => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+    }
+}
+
+async fn api_unpublish(
+    State(server): State<Arc<McpServer>>,
+    axum::extract::Path(cid): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let dataset_cid = data_core::types::DatasetCid(cid.clone());
+    match server.state().store.get(&dataset_cid) {
+        Ok(Some(m)) => {
+            if let Some(ref info_hash) = m.info_hash {
+                let _ = server.state().store.delete_seed(info_hash);
+            }
+            let _ = server.state().store.mark_unpublished(&dataset_cid);
+            Json(json!({"status": "unpublished", "cid": cid})).into_response()
+        }
+        _ => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+    }
+}
+
+async fn api_network_peers(State(server): State<Arc<McpServer>>) -> impl IntoResponse {
+    Json(json!({
+        "local_peer_id": format!("{}", server.state().dht.handle().local_peer_id),
+        "peers": [],
+    }))
+}
+
+async fn api_network_nat(State(_server): State<Arc<McpServer>>) -> impl IntoResponse {
+    Json(json!({
+        "nat_type": "unknown",
+        "relay_enabled": true,
+    }))
+}
+
+async fn api_market_search(
+    State(server): State<Arc<McpServer>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let query = params.get("q").cloned().unwrap_or_default();
+    if query.is_empty() {
+        return Json(json!({"results": []})).into_response();
+    }
+    let local_metadata = server.state().store.list_all().unwrap_or_default();
+    let signal_fetcher: data_search::engine::SignalFetcher =
+        Box::new(|_cid: &str| data_core::feedback::CommunitySignal {
+            dataset_cid: data_core::types::DatasetCid(String::new()),
+            total_reviews: 0,
+            avg_relevance: 0.0,
+            avg_quality: 0.0,
+            positive_rate: 0.0,
+            negative_rate: 0.0,
+            task_signals: vec![],
+        });
+    match server
+        .state()
+        .search_engine
+        .search(
+            &query,
+            &Default::default(),
+            &local_metadata,
+            &signal_fetcher,
+            20,
+        )
+        .await
+    {
+        Ok(output) => {
+            let items: Vec<serde_json::Value> = output
+                .results
+                .iter()
+                .map(|r| {
+                    json!({
+                        "cid": r.result.cid.0,
+                        "title": r.result.title,
+                        "description": r.result.description,
+                        "source": r.result.source,
+                        "price": { "amount": r.result.price.amount },
+                    })
+                })
+                .collect();
+            Json(json!({"results": items})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_market_preview(
+    State(server): State<Arc<McpServer>>,
+    axum::extract::Path(cid): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    // Try local store first, then would use P2P sample protocol
+    let dataset_cid = data_core::types::DatasetCid(cid);
+    match server.state().store.get(&dataset_cid) {
+        Ok(Some(m)) => Json(json!({
+            "cid": m.cid.0,
+            "schema": m.schema,
+            "source": "local",
+        }))
+        .into_response(),
+        _ => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+    }
+}
+
+async fn api_wallet_balance(State(_server): State<Arc<McpServer>>) -> impl IntoResponse {
+    Json(json!({
+        "balance": "0.00",
+        "currency": "USDC",
+        "network": "base-sepolia",
+    }))
+}
+
+async fn api_wallet_transactions(State(_server): State<Arc<McpServer>>) -> impl IntoResponse {
+    Json(json!({"transactions": []}))
+}
+
 pub(crate) fn parse_publish_privacy(
     level: &str,
     epsilon: &str,
@@ -287,7 +502,7 @@ fn trace_db_path() -> String {
 }
 
 async fn api_list_traces(
-    State(_): State<Arc<McpServer>>,
+    State(server): State<Arc<McpServer>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let source = params
@@ -298,13 +513,29 @@ async fn api_list_traces(
         .get("limit")
         .and_then(|s| s.parse().ok())
         .unwrap_or(50);
-    let db_path = trace_db_path();
 
-    let result = tokio::task::spawn_blocking(move || {
-        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
-        store.list_traces(&source, limit)
-    })
-    .await;
+    let result = if let Some(pool) = server.trace_pool() {
+        match pool.get().await {
+            Ok(store) => {
+                let pool_tx = pool.sender();
+                tokio::task::spawn_blocking(move || {
+                    let res = store.list_traces(&source, limit);
+                    let _ = pool_tx.try_send(store);
+                    res
+                })
+                .await
+            }
+            Err(e) => Ok(Err(e)),
+        }
+    } else {
+        let db_path = trace_db_path();
+        tokio::task::spawn_blocking(move || {
+            let store =
+                data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+            store.list_traces(&source, limit)
+        })
+        .await
+    };
 
     match result {
         Ok(Ok(traces)) => Json(json!(traces)).into_response(),
@@ -322,7 +553,7 @@ async fn api_list_traces(
 }
 
 async fn api_trace_spans(
-    State(_): State<Arc<McpServer>>,
+    State(server): State<Arc<McpServer>>,
     axum::extract::Path(trace_id): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
@@ -330,13 +561,29 @@ async fn api_trace_spans(
         .get("source")
         .map(|s| s.to_string())
         .unwrap_or_else(|| "guixu".into());
-    let db_path = trace_db_path();
 
-    let result = tokio::task::spawn_blocking(move || {
-        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
-        store.get_trace_spans(&trace_id, &source)
-    })
-    .await;
+    let result = if let Some(pool) = server.trace_pool() {
+        match pool.get().await {
+            Ok(store) => {
+                let pool_tx = pool.sender();
+                tokio::task::spawn_blocking(move || {
+                    let res = store.get_trace_spans(&trace_id, &source);
+                    let _ = pool_tx.try_send(store);
+                    res
+                })
+                .await
+            }
+            Err(e) => Ok(Err(e)),
+        }
+    } else {
+        let db_path = trace_db_path();
+        tokio::task::spawn_blocking(move || {
+            let store =
+                data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+            store.get_trace_spans(&trace_id, &source)
+        })
+        .await
+    };
 
     match result {
         Ok(Ok(spans)) => Json(json!(spans)).into_response(),
@@ -354,16 +601,31 @@ async fn api_trace_spans(
 }
 
 async fn api_trace_scores(
-    State(_): State<Arc<McpServer>>,
+    State(server): State<Arc<McpServer>>,
     axum::extract::Path(trace_id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    let db_path = trace_db_path();
-
-    let result = tokio::task::spawn_blocking(move || {
-        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
-        store.get_scores_for_trace(&trace_id)
-    })
-    .await;
+    let result = if let Some(pool) = server.trace_pool() {
+        match pool.get().await {
+            Ok(store) => {
+                let pool_tx = pool.sender();
+                tokio::task::spawn_blocking(move || {
+                    let res = store.get_scores_for_trace(&trace_id);
+                    let _ = pool_tx.try_send(store);
+                    res
+                })
+                .await
+            }
+            Err(e) => Ok(Err(e)),
+        }
+    } else {
+        let db_path = trace_db_path();
+        tokio::task::spawn_blocking(move || {
+            let store =
+                data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+            store.get_scores_for_trace(&trace_id)
+        })
+        .await
+    };
 
     match result {
         Ok(Ok(scores)) => Json(json!(scores)).into_response(),
@@ -381,7 +643,7 @@ async fn api_trace_scores(
 }
 
 async fn api_memory_timeline(
-    State(_): State<Arc<McpServer>>,
+    State(server): State<Arc<McpServer>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let memory_key = params.get("memory_key").cloned().unwrap_or_default();
@@ -389,7 +651,6 @@ async fn api_memory_timeline(
         .get("limit")
         .and_then(|s| s.parse().ok())
         .unwrap_or(50);
-    let db_path = trace_db_path();
 
     if memory_key.is_empty() {
         return (
@@ -399,11 +660,28 @@ async fn api_memory_timeline(
             .into_response();
     }
 
-    let result = tokio::task::spawn_blocking(move || {
-        let store = data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
-        store.memory_timeline(&memory_key, None, limit)
-    })
-    .await;
+    let result = if let Some(pool) = server.trace_pool() {
+        match pool.get().await {
+            Ok(store) => {
+                let pool_tx = pool.sender();
+                tokio::task::spawn_blocking(move || {
+                    let res = store.memory_timeline(&memory_key, None, limit);
+                    let _ = pool_tx.try_send(store);
+                    res
+                })
+                .await
+            }
+            Err(e) => Ok(Err(e)),
+        }
+    } else {
+        let db_path = trace_db_path();
+        tokio::task::spawn_blocking(move || {
+            let store =
+                data_storage::trace_store::TraceStore::open(std::path::Path::new(&db_path))?;
+            store.memory_timeline(&memory_key, None, limit)
+        })
+        .await
+    };
 
     match result {
         Ok(Ok(spans)) => Json(json!(spans)).into_response(),

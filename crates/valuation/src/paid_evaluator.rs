@@ -5,6 +5,7 @@ use anyhow::Result;
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::DatasetMetadata;
 use data_core::types::QualityScore;
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 
 /// Evaluates paid datasets by ROI — is it worth paying for?
@@ -196,16 +197,25 @@ impl PaidDataEvaluator {
         }
 
         let budget_cents = price_to_cents(constraints.max_budget);
-        let mut evaluated = Vec::with_capacity(candidates.len());
-        for candidate in candidates {
-            let roi = self
-                .evaluate(
+
+        // Evaluate all candidates in parallel
+        let futures: Vec<_> = candidates
+            .iter()
+            .map(|candidate| {
+                self.evaluate(
                     candidate.metadata,
                     candidate.quality,
                     candidate.free_alternatives,
                     candidate.signal,
                 )
-                .await?;
+            })
+            .collect();
+
+        let results = join_all(futures).await;
+
+        let mut evaluated = Vec::with_capacity(candidates.len());
+        for (candidate, roi_result) in candidates.iter().zip(results) {
+            let roi = roi_result?;
             evaluated.push(CandidateEval {
                 cid: candidate.metadata.cid.0.clone(),
                 title: candidate.metadata.title.clone(),

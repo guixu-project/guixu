@@ -38,6 +38,7 @@
 
 use crate::trace_store::{SpanRecord, TraceStore};
 use anyhow::Result;
+use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -432,19 +433,26 @@ impl TraceSanitizer {
             let spans = store
                 .get_trace_spans(&summary.trace_id, source)
                 .unwrap_or_default();
-            for span in spans {
-                let sanitized = self.sanitize_span(&span);
-                let json = serde_json::to_string(&sanitized)?;
+
+            let check_redaction = self.level != SanitizationLevel::Off;
+            let processed: Vec<(String, bool)> = spans
+                .par_iter()
+                .map(|span| {
+                    let sanitized = self.sanitize_span(span);
+                    let json = serde_json::to_string(&sanitized).unwrap_or_default();
+                    let was_redacted = check_redaction && {
+                        let orig_len = serde_json::to_string(span).map(|s| s.len()).unwrap_or(0);
+                        json.len() < orig_len
+                    };
+                    (json, was_redacted)
+                })
+                .collect();
+
+            for (json, was_redacted) in processed {
                 writeln!(file, "{}", json)?;
                 report.spans_exported += 1;
-
-                // Count redactions by comparing lengths (rough heuristic)
-                if self.level != SanitizationLevel::Off {
-                    let orig_len = serde_json::to_string(&span).map(|s| s.len()).unwrap_or(0);
-                    let san_len = json.len();
-                    if san_len < orig_len {
-                        redacted_total += 1;
-                    }
+                if was_redacted {
+                    redacted_total += 1;
                 }
             }
         }
@@ -468,7 +476,7 @@ impl TraceSanitizer {
 
     /// Export spans directly (without store) to JSON string.
     pub fn export_spans_to_json(&self, spans: &[SpanRecord]) -> Result<String> {
-        let sanitized: Vec<_> = spans.iter().map(|s| self.sanitize_span(s)).collect();
+        let sanitized: Vec<_> = spans.par_iter().map(|s| self.sanitize_span(s)).collect();
         let json = serde_json::to_string_pretty(&sanitized)?;
         Ok(json)
     }
@@ -483,7 +491,7 @@ struct RedactionReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace_store::{SpanType, TraceSource, TraceStore};
+    use crate::trace_store::{SpanType, TraceSource};
     use chrono::{Duration, Utc};
 
     fn make_test_span() -> SpanRecord {

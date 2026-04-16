@@ -37,6 +37,14 @@ toml = { workspace = true }
 toml_edit = { workspace = true }
 dirs = { workspace = true }
 chrono = { workspace = true }
+daemonize = "0.5"
+reqwest = { workspace = true }
+sysinfo = { workspace = true }
+fs2 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+nix = { version = "0.27", features = ["signal"] }
 
 [lints]
 workspace = true

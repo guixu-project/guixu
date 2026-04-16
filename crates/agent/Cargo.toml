@@ -18,9 +18,15 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
+futures = "0.3"
 async-trait = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+data-test-utils = { workspace = true }
+tokio = { workspace = true }
+tempfile = "3"

@@ -10,6 +10,7 @@ pub mod otel_genai;
 pub mod trace_export;
 pub mod trace_import;
 pub mod trace_manager;
+pub mod trace_pool;
 pub mod trace_sanitizer;
 pub mod trace_store;
 

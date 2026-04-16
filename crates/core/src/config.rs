@@ -54,6 +54,15 @@ pub struct NodeConfig {
     /// Agent trace emission configuration.
     #[serde(default)]
     pub trace: TraceSettings,
+    /// Data provider configuration.
+    #[serde(default)]
+    pub provider: ProviderConfig,
+    /// Daemon / watchdog configuration.
+    #[serde(default)]
+    pub daemon: DaemonConfig,
+    /// Network / NAT traversal configuration.
+    #[serde(default)]
+    pub network: NetworkConfig,
 }
 
 /// A DuckDB HTTP server to expose as a searchable catalog.
@@ -242,6 +251,172 @@ pub enum NodeMode {
     Light,
 }
 
+/// Data provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_publish: bool,
+    #[serde(default = "default_open")]
+    pub default_access: String,
+    #[serde(default)]
+    pub default_price: f64,
+    #[serde(default = "default_license")]
+    pub default_license: String,
+    #[serde(default)]
+    pub watermark_enabled: bool,
+    #[serde(default)]
+    pub preview: PreviewConfig,
+    #[serde(default)]
+    pub seeding: SeedingConfig,
+}
+
+fn default_open() -> String {
+    "open".into()
+}
+fn default_license() -> String {
+    "CC-BY-4.0".into()
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_publish: true,
+            default_access: default_open(),
+            default_price: 0.0,
+            default_license: default_license(),
+            watermark_enabled: false,
+            preview: PreviewConfig::default(),
+            seeding: SeedingConfig::default(),
+        }
+    }
+}
+
+/// Remote sampling preview configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviewConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_max_preview_rows")]
+    pub max_preview_rows: u32,
+    #[serde(default = "default_max_preview_bytes")]
+    pub max_preview_bytes: usize,
+    #[serde(default = "default_true")]
+    pub paid_schema_preview: bool,
+    #[serde(default = "default_true")]
+    pub paid_limited_preview: bool,
+    #[serde(default = "default_paid_preview_rows")]
+    pub paid_preview_rows: u32,
+}
+
+fn default_max_preview_rows() -> u32 {
+    100
+}
+fn default_max_preview_bytes() -> usize {
+    65536
+}
+fn default_paid_preview_rows() -> u32 {
+    5
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_preview_rows: default_max_preview_rows(),
+            max_preview_bytes: default_max_preview_bytes(),
+            paid_schema_preview: true,
+            paid_limited_preview: true,
+            paid_preview_rows: default_paid_preview_rows(),
+        }
+    }
+}
+
+/// BitTorrent seeding configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedingConfig {
+    #[serde(default = "default_max_seeds")]
+    pub max_seeds: u32,
+    #[serde(default)]
+    pub upload_rate_limit: u64,
+}
+
+fn default_max_seeds() -> u32 {
+    50
+}
+
+impl Default for SeedingConfig {
+    fn default() -> Self {
+        Self {
+            max_seeds: default_max_seeds(),
+            upload_rate_limit: 0,
+        }
+    }
+}
+
+/// Daemon / watchdog configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonConfig {
+    #[serde(default = "default_watchdog_interval")]
+    pub watchdog_interval_secs: u64,
+    #[serde(default = "default_watchdog_max_failures")]
+    pub watchdog_max_failures: u32,
+    #[serde(default = "default_memory_limit")]
+    pub memory_limit_mb: u64,
+    #[serde(default = "default_disk_min_free")]
+    pub disk_min_free_mb: u64,
+}
+
+fn default_watchdog_interval() -> u64 {
+    30
+}
+fn default_watchdog_max_failures() -> u32 {
+    3
+}
+fn default_memory_limit() -> u64 {
+    2048
+}
+fn default_disk_min_free() -> u64 {
+    100
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            watchdog_interval_secs: default_watchdog_interval(),
+            watchdog_max_failures: default_watchdog_max_failures(),
+            memory_limit_mb: default_memory_limit(),
+            disk_min_free_mb: default_disk_min_free(),
+        }
+    }
+}
+
+/// Network / NAT traversal configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    #[serde(default = "default_true")]
+    pub relay_enabled: bool,
+    #[serde(default)]
+    pub relay_servers: Vec<String>,
+    #[serde(default)]
+    pub relay_server_enabled: bool,
+    #[serde(default = "default_true")]
+    pub autonat_enabled: bool,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            relay_enabled: true,
+            relay_servers: vec![],
+            relay_server_enabled: false,
+            autonat_enabled: true,
+        }
+    }
+}
+
 impl NodeConfig {
     pub fn config_dir() -> PathBuf {
         dirs::home_dir()
@@ -268,6 +443,10 @@ impl NodeConfig {
 
     pub fn db_path() -> PathBuf {
         Self::config_dir().join("db")
+    }
+
+    pub fn pid_path() -> PathBuf {
+        Self::config_dir().join("guixu.pid")
     }
 }
 
@@ -300,6 +479,9 @@ impl Default for NodeConfig {
             external_postgresql: vec![],
             external_sql: vec![],
             trace: TraceSettings::default(),
+            provider: ProviderConfig::default(),
+            daemon: DaemonConfig::default(),
+            network: NetworkConfig::default(),
         }
     }
 }

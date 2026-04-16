@@ -4,6 +4,7 @@
 pub mod adapters;
 pub mod engine;
 pub mod intent;
+pub mod p2p_sample_downloader;
 pub mod sample_eval;
 pub mod skill_sample_downloader;
 pub mod vector_index;

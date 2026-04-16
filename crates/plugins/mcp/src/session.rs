@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -43,14 +43,14 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn touch(&self, session_id: &str) {
-        let mut sessions = self.sessions.lock().expect("session mutex poisoned");
+    pub async fn touch(&self, session_id: &str) {
+        let mut sessions = self.sessions.lock().await;
         sessions
             .entry(session_id.to_string())
             .or_insert_with(|| SessionContext::new(session_id));
     }
 
-    pub fn record_tool_call(
+    pub async fn record_tool_call(
         &self,
         session_id: &str,
         tool_name: &str,
@@ -58,7 +58,7 @@ impl SessionManager {
         raw_output: &str,
         is_error: bool,
     ) {
-        let mut sessions = self.sessions.lock().expect("session mutex poisoned");
+        let mut sessions = self.sessions.lock().await;
         let session = sessions
             .entry(session_id.to_string())
             .or_insert_with(|| SessionContext::new(session_id));
@@ -123,8 +123,8 @@ impl SessionManager {
     }
 
     #[allow(dead_code)]
-    pub fn get(&self, session_id: &str) -> Option<SessionContext> {
-        let sessions = self.sessions.lock().expect("session mutex poisoned");
+    pub async fn get(&self, session_id: &str) -> Option<SessionContext> {
+        let sessions = self.sessions.lock().await;
         sessions.get(session_id).cloned()
     }
 }

@@ -65,7 +65,6 @@ impl TraceExporter {
 mod tests {
     use super::*;
     use crate::trace_store::{SpanRecord, SpanType, TraceSource, TraceStore};
-    use chrono::Utc;
 
     #[test]
     fn test_export_spans() {

@@ -22,17 +22,9 @@ async fn inner_handle(args: Value, state: &AppState) -> Result<String> {
     let goal = task.task.goal.clone();
 
     let workflow = state.workflow_service_with_job_store(state.job_store.clone());
-    std::thread::spawn(move || {
-        match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => {
-                let _ = runtime.block_on(async move { workflow.run(task).await });
-            }
-            Err(error) => {
-                tracing::error!(error = %error, "failed to build runtime for delegated workflow");
-            }
+    tokio::spawn(async move {
+        if let Err(error) = workflow.run(task).await {
+            tracing::error!(error = %error, "delegated workflow failed");
         }
     });
 

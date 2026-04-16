@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use data_core::metadata::DatasetMetadata;
-use data_core::types::DatasetCid;
+use data_core::types::{AccessGrant, DatasetCid, SeedRecord};
 use rocksdb::{Options, DB};
 use std::collections::HashMap;
 use std::path::Path;
@@ -102,6 +102,90 @@ impl MetadataStore {
             }
             _ => Ok(None),
         }
+    }
+
+    // ── Seed record CRUD (prefix: seed:{info_hash}) ──
+
+    /// Persist a seed record so it survives restarts.
+    pub fn put_seed(&self, record: &SeedRecord) -> Result<()> {
+        let key = format!("seed:{}", record.info_hash);
+        let value = serde_json::to_vec(record)?;
+        self.db.put(key.as_bytes(), &value)?;
+        Ok(())
+    }
+
+    /// Retrieve a seed record by info hash.
+    pub fn get_seed(&self, info_hash: &str) -> Result<Option<SeedRecord>> {
+        let key = format!("seed:{info_hash}");
+        match self.db.get(key.as_bytes())? {
+            Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Delete a seed record (called on unpublish).
+    pub fn delete_seed(&self, info_hash: &str) -> Result<()> {
+        let key = format!("seed:{info_hash}");
+        self.db.delete(key.as_bytes())?;
+        Ok(())
+    }
+
+    /// List all seed records (used on startup to restore seeding).
+    pub fn list_seeds(&self) -> Result<Vec<SeedRecord>> {
+        let mut seeds = Vec::new();
+        let iter = self.db.prefix_iterator(b"seed:");
+        for item in iter {
+            let (key, value) = item?;
+            if !key.starts_with(b"seed:") {
+                break;
+            }
+            if let Ok(record) = serde_json::from_slice::<SeedRecord>(&value) {
+                seeds.push(record);
+            }
+        }
+        Ok(seeds)
+    }
+
+    // ── Access grant CRUD (prefix: access:{cid}:{buyer_did}) ──
+
+    /// Persist an access grant for dispute resolution and watermark tracing.
+    pub fn put_access_grant(
+        &self,
+        cid: &DatasetCid,
+        buyer_did: &str,
+        grant: &AccessGrant,
+    ) -> Result<()> {
+        let key = format!("access:{}:{}", cid.0, buyer_did);
+        let value = serde_json::to_vec(grant)?;
+        self.db.put(key.as_bytes(), &value)?;
+        Ok(())
+    }
+
+    /// Retrieve an access grant.
+    pub fn get_access_grant(
+        &self,
+        cid: &DatasetCid,
+        buyer_did: &str,
+    ) -> Result<Option<AccessGrant>> {
+        let key = format!("access:{}:{}", cid.0, buyer_did);
+        match self.db.get(key.as_bytes())? {
+            Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Mark a dataset as unpublished (sets a flag key).
+    pub fn mark_unpublished(&self, cid: &DatasetCid) -> Result<()> {
+        let key = format!("unpub:{}", cid.0);
+        self.db.put(key.as_bytes(), b"1")?;
+        self.metadata_cache.write().unwrap().remove(&cid.0);
+        Ok(())
+    }
+
+    /// Check if a dataset is marked as unpublished.
+    pub fn is_unpublished(&self, cid: &DatasetCid) -> Result<bool> {
+        let key = format!("unpub:{}", cid.0);
+        Ok(self.db.get(key.as_bytes())?.is_some())
     }
 }
 

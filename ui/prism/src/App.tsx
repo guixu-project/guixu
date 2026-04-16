@@ -10,13 +10,30 @@ import {
   type TraceViewerData,
 } from "./vendor/ui-components/TraceViewer/TraceViewer";
 import { fetchTraces, fetchSpans } from "./guixu-adapter";
+import Dashboard from "./pages/Dashboard";
+import Network from "./pages/Network";
+import Market from "./pages/Market";
 
 import "./vendor/ui-components/theme/theme.css";
 import "./vendor/ui-index.css";
 
+type Page = "dashboard" | "traces" | "network" | "market";
 type SpansCache = Record<string, TraceSpan[]>;
 
-export default function App() {
+const NAV_ITEMS: { page: Page; label: string }[] = [
+  { page: "dashboard", label: "Dashboard" },
+  { page: "network", label: "Network" },
+  { page: "market", label: "Market" },
+  { page: "traces", label: "Traces" },
+];
+
+function getPageFromHash(): Page {
+  const hash = window.location.hash.replace("#", "");
+  if (NAV_ITEMS.some((n) => n.page === hash)) return hash as Page;
+  return "dashboard";
+}
+
+function TracesPage() {
   const [traces, setTraces] = useState<TraceRecord[]>([]);
   const [spansCache, setSpansCache] = useState<SpansCache>({});
   const [loading, setLoading] = useState(true);
@@ -28,7 +45,6 @@ export default function App() {
     try {
       const records = await fetchTraces();
       setTraces(records);
-      // Pre-load spans for all traces
       const cache: SpansCache = {};
       await Promise.all(
         records.map(async (r) => {
@@ -51,17 +67,15 @@ export default function App() {
     loadTraces();
   }, [loadTraces]);
 
-  if (loading) {
+  if (loading)
     return (
-      <div className="bg-agentprism-background text-agentprism-foreground flex h-screen items-center justify-center">
+      <div className="flex items-center justify-center h-full">
         <p className="text-agentprism-muted-foreground">Loading traces…</p>
       </div>
     );
-  }
-
-  if (error) {
+  if (error)
     return (
-      <div className="bg-agentprism-background text-agentprism-foreground flex h-screen flex-col items-center justify-center gap-4">
+      <div className="flex flex-col items-center justify-center h-full gap-4">
         <p className="text-agentprism-error">{error}</p>
         <button
           onClick={loadTraces}
@@ -71,29 +85,60 @@ export default function App() {
         </button>
       </div>
     );
-  }
-
-  if (traces.length === 0) {
+  if (traces.length === 0)
     return (
-      <div className="bg-agentprism-background text-agentprism-foreground flex h-screen items-center justify-center">
+      <div className="flex items-center justify-center h-full">
         <p className="text-agentprism-muted-foreground">
           No traces found. Run some agent workflows first.
         </p>
       </div>
     );
-  }
 
   const data: TraceViewerData[] = traces.map((t) => ({
     traceRecord: t,
     spans: spansCache[t.id] ?? [],
   }));
 
+  return <TraceViewer data={data} />;
+}
+
+export default function App() {
+  const [page, setPage] = useState<Page>(getPageFromHash);
+
+  useEffect(() => {
+    const onHash = () => setPage(getPageFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const navigate = (p: Page) => {
+    window.location.hash = p;
+  };
+
   return (
-    <div className="bg-agentprism-background text-agentprism-foreground h-screen">
-      <div className="flex h-[50px] items-center border-b border-agentprism-border px-4">
-        <h1 className="text-sm font-semibold">Guixu Trace Viewer</h1>
-      </div>
-      <TraceViewer data={data} />
+    <div className="bg-agentprism-background text-agentprism-foreground h-screen flex flex-col">
+      <nav className="flex items-center h-[50px] border-b border-agentprism-border px-4 gap-6 shrink-0">
+        <h1 className="text-sm font-semibold mr-4">Guixu</h1>
+        {NAV_ITEMS.map((n) => (
+          <button
+            key={n.page}
+            onClick={() => navigate(n.page)}
+            className={`text-sm py-1 border-b-2 transition-colors ${
+              page === n.page
+                ? "border-agentprism-primary text-agentprism-foreground font-medium"
+                : "border-transparent text-agentprism-muted-foreground hover:text-agentprism-foreground"
+            }`}
+          >
+            {n.label}
+          </button>
+        ))}
+      </nav>
+      <main className="flex-1 overflow-auto">
+        {page === "dashboard" && <Dashboard />}
+        {page === "network" && <Network />}
+        {page === "market" && <Market />}
+        {page === "traces" && <TracesPage />}
+      </main>
     </div>
   );
 }
