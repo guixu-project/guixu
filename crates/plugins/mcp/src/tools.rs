@@ -79,7 +79,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_search".into(),
-            description: "Search datasets across registered data skills, including built-in skills such as DefiLlama, RWA.xyz, Kaggle, HuggingFace, IPFS, BitTorrent, DBLP, Semantic Scholar, and arXiv. Supports free open data discovery.".into(),
+            description: "Search datasets across registered data skills, including built-in skills such as DefiLlama, RWA.xyz, Kaggle, HuggingFace, IPFS, BitTorrent, DBLP, Semantic Scholar, and arXiv. Call this after intent_parse. In Codex discovery mode this tool is the primary data discovery path: it may dispatch parallel platform sub-agents and returns the shared workspace aggregate. Use this instead of external web browsing for the first-round dataset answer.".into(),
             annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",
@@ -172,7 +172,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_evaluate".into(),
-            description: "Compute Task-Conditioned Value (TCV) for a dataset. Returns a score from -100 (harmful) to +100 (highly valuable) based on schema fit, quality, and on-chain community feedback.".into(),
+            description: "Optional follow-up after dataset_search when the user explicitly asks for suitability scoring, ranking, or evaluation. Computes Task-Conditioned Value (TCV) for a dataset and returns a score from -100 (harmful) to +100 (highly valuable) based on schema fit, quality, and on-chain community feedback.".into(),
             annotations: read_only_annotations(),
             input_schema: json!({
                 "type": "object",

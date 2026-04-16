@@ -3,7 +3,9 @@
 
 pub mod catalog;
 pub mod demo_ui;
+pub mod discovery;
 pub mod handlers;
+pub mod host_sampling;
 pub mod http;
 pub mod prism_ui;
 pub mod protocol;

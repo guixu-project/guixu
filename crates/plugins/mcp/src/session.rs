@@ -21,6 +21,7 @@ pub struct SessionContext {
     pub last_intent: Option<Value>,
     pub last_search_result_summary: Option<Value>,
     pub last_selected_cid: Option<String>,
+    pub search_completed_for_current_intent: bool,
     pub call_trace: Vec<ToolCallTrace>,
 }
 
@@ -32,6 +33,7 @@ impl SessionContext {
             last_intent: None,
             last_search_result_summary: None,
             last_selected_cid: None,
+            search_completed_for_current_intent: false,
             call_trace: Vec::new(),
         }
     }
@@ -48,6 +50,24 @@ impl SessionManager {
         sessions
             .entry(session_id.to_string())
             .or_insert_with(|| SessionContext::new(session_id));
+    }
+
+    pub async fn duplicate_dataset_search_summary(&self, session_id: &str) -> Option<Value> {
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| SessionContext::new(session_id));
+        if !session.search_completed_for_current_intent {
+            return None;
+        }
+
+        Some(json!({
+            "message": "dataset_search has already completed for the current intent; summarize the existing workspace/results, or call intent_parse again to start a new discovery task",
+            "last_search_result_summary": session
+                .last_search_result_summary
+                .clone()
+                .unwrap_or(Value::Null),
+        }))
     }
 
     pub async fn record_tool_call(
@@ -96,13 +116,17 @@ impl SessionManager {
                     .get("intent")
                     .cloned()
                     .or_else(|| Some(parsed.clone()));
+                session.last_search_result_summary = None;
+                session.search_completed_for_current_intent = false;
             }
             "dataset_search" => {
                 session.last_search_result_summary = Some(json!({
                     "intent": parsed.get("intent").cloned().unwrap_or(Value::Null),
                     "results": parsed.get("results").cloned().unwrap_or_else(|| json!([])),
                     "errors": parsed.get("errors").cloned().unwrap_or_else(|| json!([])),
+                    "workspace_meta": parsed.get("workspace_meta").cloned().unwrap_or(Value::Null),
                 }));
+                session.search_completed_for_current_intent = true;
                 if let Some(cid) = parsed
                     .get("results")
                     .and_then(|value| value.as_array())

@@ -93,6 +93,12 @@ This includes requests to:
 
 Before writing model code or proposing a training implementation, first determine whether the task requires dataset acquisition or dataset evaluation through Guixu MCP. If it does, use Guixu MCP first.
 
+For dataset discovery tasks, Codex should act as the workflow coordinator, not as an independent dataset search engine. Call `intent_parse` first, then call `dataset_search`, and use the returned workspace/results as the first-round answer.
+
+Before `dataset_search` returns, do not perform external web browsing or manually recommend datasets from outside Guixu MCP results. Aggregate only the child-agent search results returned by Guixu.
+
+Do not call `dataset_evaluate` during the default discovery flow. Keep it available, but only use it when the user explicitly asks for suitability scoring, ranking, or evaluation.
+
 When relevant, use these tools in order:
 1. intent_parse
 2. dataset_search

@@ -442,6 +442,57 @@ impl SearchEngine {
         })
     }
 
+    /// Search with a caller-provided structured profile while pinning execution
+    /// to a single external skill.
+    pub async fn search_single_skill_with_profile(
+        &self,
+        profile: &QueryProfile,
+        skill_id: &str,
+        filters: &SearchFilters,
+        local_metadata: &[DatasetMetadata],
+        signal_fetcher: &SignalFetcher,
+        limit: usize,
+    ) -> Result<SearchOutput> {
+        let mut scoped_filters = filters.clone();
+        scoped_filters.skill_ids = vec![skill_id.to_string()];
+        self.search_with_profile(
+            profile,
+            &scoped_filters,
+            local_metadata,
+            signal_fetcher,
+            limit,
+        )
+        .await
+    }
+
+    /// Search one external skill directly, mirroring the adapter-driven
+    /// platform query flow used in the upstream Guixu repository.
+    pub async fn search_single_skill_raw(
+        &self,
+        skill_id: &str,
+        query: &str,
+        signal_fetcher: &SignalFetcher,
+        limit: usize,
+    ) -> Result<Vec<RankedResult>> {
+        let adapter = self
+            .adapter_by_skill_id(skill_id)
+            .with_context(|| format!("adapter not found for skill: {skill_id}"))?;
+        let results = adapter.search(query, limit).await?;
+
+        Ok(results
+            .into_iter()
+            .take(limit)
+            .map(|result| {
+                let result = enrich_search_result_with_skill_metadata(result, adapter);
+                RankedResult {
+                    signal: signal_fetcher(&result.cid.0),
+                    result,
+                    rank_score: 0.0,
+                }
+            })
+            .collect())
+    }
+
     /// Convenience entry point for "search, then value, then pick the best dataset".
     ///
     /// The first stage uses only the task description plus dataset metadata/search

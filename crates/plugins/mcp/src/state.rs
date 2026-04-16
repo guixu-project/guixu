@@ -21,6 +21,9 @@ use data_trading::wallet::AgentWallet;
 use data_valuation::tcv::TcvEngine;
 use std::sync::Arc;
 
+use crate::discovery::runtime::DataDiscoveryRuntime;
+use crate::host_sampling::HostSamplingRuntime;
+
 /// Shared state accessible by MCP tool handlers.
 pub struct AppState {
     pub identity: NodeIdentity,
@@ -35,6 +38,9 @@ pub struct AppState {
     /// Agent trace manager (None if tracing is disabled).
     pub trace_manager:
         Option<Arc<tokio::sync::RwLock<data_storage::trace_manager::AgentTraceManager>>>,
+    pub search_workers: usize,
+    pub discovery_runtime: Option<Arc<DataDiscoveryRuntime>>,
+    pub sampling_runtime: Option<Arc<HostSamplingRuntime>>,
 }
 
 impl AppState {
@@ -58,6 +64,10 @@ impl AppState {
     }
 
     pub async fn for_codex() -> Result<Self> {
+        Self::for_codex_with_search_workers(0).await
+    }
+
+    pub async fn for_codex_with_search_workers(search_workers: usize) -> Result<Self> {
         let identity = NodeIdentity::generate();
         let session_suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -89,7 +99,8 @@ impl AppState {
             job_store,
             &PaymentConfig::default(),
         )
-        .await)
+        .await
+        .with_search_workers(search_workers))
     }
 
     pub async fn for_local_store(
@@ -97,6 +108,16 @@ impl AppState {
         store: MetadataStore,
         feedback_store: FeedbackStore,
         payment: &PaymentConfig,
+    ) -> Self {
+        Self::for_local_store_with_search_workers(identity, store, feedback_store, payment, 0).await
+    }
+
+    pub async fn for_local_store_with_search_workers(
+        identity: NodeIdentity,
+        store: MetadataStore,
+        feedback_store: FeedbackStore,
+        payment: &PaymentConfig,
+        search_workers: usize,
     ) -> Self {
         let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel(8);
         let dht = DhtIndex::new(NetworkHandle {
@@ -107,7 +128,16 @@ impl AppState {
         let job_store = JobStore::open(&NodeConfig::config_dir().join("jobs"))
             .expect("failed to open job store");
 
-        Self::with_payment_config(identity, dht, store, feedback_store, job_store, payment).await
+        Self::with_payment_config_with_search_workers(
+            identity,
+            dht,
+            store,
+            feedback_store,
+            job_store,
+            payment,
+            search_workers,
+        )
+        .await
     }
 
     pub async fn with_payment_config(
@@ -117,6 +147,27 @@ impl AppState {
         feedback_store: FeedbackStore,
         job_store: JobStore,
         payment: &PaymentConfig,
+    ) -> Self {
+        Self::with_payment_config_with_search_workers(
+            identity,
+            dht,
+            store,
+            feedback_store,
+            job_store,
+            payment,
+            0,
+        )
+        .await
+    }
+
+    pub async fn with_payment_config_with_search_workers(
+        identity: NodeIdentity,
+        dht: DhtIndex,
+        store: MetadataStore,
+        feedback_store: FeedbackStore,
+        job_store: JobStore,
+        payment: &PaymentConfig,
+        search_workers: usize,
     ) -> Self {
         Self::with_full_config(
             identity,
@@ -130,6 +181,7 @@ impl AppState {
             &[],
         )
         .await
+        .with_search_workers(search_workers)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -144,10 +196,39 @@ impl AppState {
         pg_catalogs: &[PostgreSqlCatalog],
         sql_catalogs: &[SqlEndpointCatalog],
     ) -> Self {
+        Self::with_full_config_with_search_workers(
+            identity,
+            dht,
+            store,
+            feedback_store,
+            job_store,
+            payment,
+            duckdb_catalogs,
+            pg_catalogs,
+            sql_catalogs,
+            0,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn with_full_config_with_search_workers(
+        identity: NodeIdentity,
+        dht: DhtIndex,
+        store: MetadataStore,
+        feedback_store: FeedbackStore,
+        job_store: JobStore,
+        payment: &PaymentConfig,
+        duckdb_catalogs: &[DuckDbCatalog],
+        pg_catalogs: &[PostgreSqlCatalog],
+        sql_catalogs: &[SqlEndpointCatalog],
+        search_workers: usize,
+    ) -> Self {
         let vector_index = VectorIndex;
         let intent_parser = IntentParser;
         let adapters = adapters_with_config(&[], duckdb_catalogs, pg_catalogs, sql_catalogs);
         let search_engine = SearchEngine::new(vector_index, intent_parser, adapters);
+        let search_engine = Arc::new(search_engine);
 
         let wallet = AgentWallet::from_keyfile(&payment.wallet_key_path).unwrap_or_else(|_| {
             tracing::warn!(
@@ -172,17 +253,62 @@ impl AppState {
             }
         };
 
-        Self {
+        let mut state = Self {
             identity,
             dht,
             store,
             feedback_store,
             job_store,
             tcv_engine: TcvEngine,
-            search_engine: Arc::new(search_engine),
+            search_engine,
             payment_router: PaymentRouter::new(wallet, payment.testnet),
             torrent_engine,
             trace_manager: None,
+            search_workers: 0,
+            discovery_runtime: None,
+            sampling_runtime: None,
+        };
+        state.configure_discovery_runtime(search_workers);
+        state
+    }
+
+    pub fn with_sampling_runtime(mut self, sampling_runtime: Arc<HostSamplingRuntime>) -> Self {
+        self.sampling_runtime = Some(sampling_runtime);
+        if self.search_workers > 0 {
+            let search_workers = self.search_workers;
+            self.configure_discovery_runtime(search_workers);
         }
+        self
+    }
+
+    fn configure_discovery_runtime(&mut self, search_workers: usize) {
+        self.search_workers = search_workers;
+        if search_workers == 0 {
+            self.discovery_runtime = None;
+            return;
+        }
+
+        self.discovery_runtime = match DataDiscoveryRuntime::try_new(
+            search_workers,
+            self.sampling_runtime.clone(),
+            self.search_engine.clone(),
+            self.feedback_store.clone(),
+            self.store.clone(),
+        ) {
+            Ok(runtime) => Some(Arc::new(runtime)),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    search_workers,
+                    "discovery runtime init failed; agentic dataset_search remains required"
+                );
+                None
+            }
+        };
+    }
+
+    fn with_search_workers(mut self, search_workers: usize) -> Self {
+        self.configure_discovery_runtime(search_workers);
+        self
     }
 }
