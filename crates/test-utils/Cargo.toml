@@ -2,30 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "data-agent"
+name = "data-test-utils"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 data-core = { workspace = true }
-data-search = { workspace = true }
 data-storage = { workspace = true }
-data-trading = { workspace = true }
-data-valuation = { workspace = true }
+data-search = { workspace = true }
 
-serde = { workspace = true }
-serde_json = { workspace = true }
-anyhow = { workspace = true }
 chrono = { workspace = true }
-tokio = { workspace = true }
+serde_json = { workspace = true }
 async-trait = { workspace = true }
-tracing = { workspace = true }
+anyhow = { workspace = true }
+tempfile = "3"
 uuid = { workspace = true }
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-data-test-utils = { workspace = true }
-tokio = { workspace = true }
-tempfile = "3"
