@@ -101,3 +101,190 @@ fn base64_encode(data: &[u8]) -> String {
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use data_core::identity::NodeIdentity;
+    use data_core::metadata::{DatasetMetadata, Provenance};
+    use data_core::types::*;
+    use data_storage::metadata_store::MetadataStore;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir()
+            .join("guixu-test-sample")
+            .join(name)
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn setup_store(dir: &std::path::Path, cid: &str, csv: &str) -> (MetadataStore, NodeIdentity) {
+        let store = MetadataStore::open(dir).unwrap();
+        let identity = NodeIdentity::generate();
+        let file_path = dir.join("data.csv");
+        std::fs::write(&file_path, csv).unwrap();
+
+        let metadata = DatasetMetadata {
+            cid: DatasetCid(cid.into()),
+            info_hash: None,
+            title: "test".into(),
+            description: None,
+            tags: vec![],
+            data_type: DataType::Tabular,
+            schema: DatasetSchema {
+                columns: vec![],
+                row_count: 3,
+                size_bytes: csv.len() as u64,
+            },
+            stats: None,
+            video_meta: None,
+            access: AccessMode::Open,
+            price: Price::free(),
+            license: License {
+                spdx_id: "MIT".into(),
+                commercial_use: true,
+                derivative_allowed: true,
+            },
+            provider: identity.did.clone(),
+            signature: String::new(),
+            provenance: Provenance::Original,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            verifiable_credential: None,
+            source_attributes: None,
+        };
+        store.put(&metadata).unwrap();
+        store
+            .put_file_path(&DatasetCid(cid.into()), &file_path)
+            .unwrap();
+        (store, identity)
+    }
+
+    #[test]
+    fn returns_none_for_unknown_cid() {
+        let dir = temp_dir("unknown");
+        let store = MetadataStore::open(&dir).unwrap();
+        let identity = NodeIdentity::generate();
+        let req = SampleRequest {
+            cid: DatasetCid("nonexistent".into()),
+            max_bytes: 1024,
+            format: "head".into(),
+            rows: 10,
+        };
+        let result = handle_sample_request(&req, &store, &identity).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn returns_preview_for_open_dataset() {
+        let dir = temp_dir("open-preview");
+        let csv = "a,b,c\n1,2,3\n4,5,6\n7,8,9\n";
+        let (store, identity) = setup_store(&dir, "cid-open", csv);
+
+        let req = SampleRequest {
+            cid: DatasetCid("cid-open".into()),
+            max_bytes: 65536,
+            format: "head".into(),
+            rows: 20,
+        };
+        let resp = handle_sample_request(&req, &store, &identity)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp.cid.0, "cid-open");
+        assert!(!resp.preview_data.is_empty());
+        assert!(!resp.signature.is_empty());
+    }
+
+    #[test]
+    fn paid_dataset_limits_preview_rows() {
+        let dir = temp_dir("paid-limit");
+        let csv = "a,b\n1,2\n3,4\n5,6\n7,8\n9,10\n11,12\n13,14\n";
+        let store = MetadataStore::open(&dir).unwrap();
+        let identity = NodeIdentity::generate();
+        let file_path = dir.join("paid.csv");
+        std::fs::write(&file_path, csv).unwrap();
+
+        let metadata = DatasetMetadata {
+            cid: DatasetCid("cid-paid".into()),
+            info_hash: None,
+            title: "paid".into(),
+            description: None,
+            tags: vec![],
+            data_type: DataType::Tabular,
+            schema: DatasetSchema {
+                columns: vec![],
+                row_count: 7,
+                size_bytes: csv.len() as u64,
+            },
+            stats: None,
+            video_meta: None,
+            access: AccessMode::Paid,
+            price: Price::usdc(1.0),
+            license: License {
+                spdx_id: "MIT".into(),
+                commercial_use: true,
+                derivative_allowed: true,
+            },
+            provider: identity.did.clone(),
+            signature: String::new(),
+            provenance: Provenance::Original,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            verifiable_credential: None,
+            source_attributes: None,
+        };
+        store.put(&metadata).unwrap();
+        store
+            .put_file_path(&DatasetCid("cid-paid".into()), &file_path)
+            .unwrap();
+
+        let req = SampleRequest {
+            cid: DatasetCid("cid-paid".into()),
+            max_bytes: 65536,
+            format: "head".into(),
+            rows: 100,
+        };
+        let resp = handle_sample_request(&req, &store, &identity)
+            .unwrap()
+            .unwrap();
+        // Paid datasets should have limited preview (max 5 data rows + header = 6 lines)
+        let decoded = String::from_utf8(base64_decode(&resp.preview_data)).unwrap();
+        let line_count = decoded.lines().count();
+        assert!(
+            line_count <= 6,
+            "paid preview should be limited, got {line_count} lines"
+        );
+    }
+
+    fn base64_decode(s: &str) -> Vec<u8> {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = Vec::new();
+        let bytes: Vec<u8> = s.bytes().filter(|&b| b != b'=').collect();
+        for chunk in bytes.chunks(4) {
+            let vals: Vec<u32> = chunk
+                .iter()
+                .map(|&b| TABLE.iter().position(|&c| c == b).unwrap_or(0) as u32)
+                .collect();
+            if vals.len() >= 2 {
+                out.push(((vals[0] << 2) | (vals[1] >> 4)) as u8);
+            }
+            if vals.len() >= 3 {
+                out.push((((vals[1] & 0xF) << 4) | (vals[2] >> 2)) as u8);
+            }
+            if vals.len() >= 4 {
+                out.push((((vals[2] & 0x3) << 6) | vals[3]) as u8);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn base64_encode_roundtrip() {
+        let data = b"hello, world!";
+        let encoded = base64_encode(data);
+        let decoded = base64_decode(&encoded);
+        assert_eq!(decoded, data);
+    }
+}

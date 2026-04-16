@@ -107,3 +107,163 @@ impl ExternalAdapter for GuixuP2PAdapter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use data_core::metadata::{DatasetMetadata, Provenance};
+    use data_core::types::*;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir()
+            .join("guixu-test-p2p-adapter")
+            .join(name)
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_metadata(cid: &str, title: &str, tags: &[&str]) -> DatasetMetadata {
+        DatasetMetadata {
+            cid: DatasetCid(cid.into()),
+            info_hash: None,
+            title: title.into(),
+            description: Some(format!("desc for {title}")),
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            data_type: DataType::Tabular,
+            schema: DatasetSchema {
+                columns: vec![],
+                row_count: 100,
+                size_bytes: 1024,
+            },
+            stats: None,
+            video_meta: None,
+            access: AccessMode::Open,
+            price: Price::free(),
+            license: License {
+                spdx_id: "MIT".into(),
+                commercial_use: true,
+                derivative_allowed: true,
+            },
+            provider: Did("did:test:p".into()),
+            signature: String::new(),
+            provenance: Provenance::Original,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            verifiable_credential: None,
+            source_attributes: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn search_matches_title() {
+        let dir = temp_dir("search-title");
+        let store = MetadataStore::open(&dir).unwrap();
+        store
+            .put(&make_metadata("c1", "sentiment analysis", &["nlp"]))
+            .unwrap();
+        store
+            .put(&make_metadata("c2", "image classification", &["cv"]))
+            .unwrap();
+
+        let adapter = GuixuP2PAdapter::new(store);
+        let results = adapter.search("sentiment", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].cid.0, "c1");
+    }
+
+    #[tokio::test]
+    async fn search_matches_tags() {
+        let dir = temp_dir("search-tags");
+        let store = MetadataStore::open(&dir).unwrap();
+        store
+            .put(&make_metadata("c1", "data1", &["finance", "stocks"]))
+            .unwrap();
+
+        let adapter = GuixuP2PAdapter::new(store);
+        let results = adapter.search("finance", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_no_match_returns_empty() {
+        let dir = temp_dir("search-empty");
+        let store = MetadataStore::open(&dir).unwrap();
+        store.put(&make_metadata("c1", "data1", &[])).unwrap();
+
+        let adapter = GuixuP2PAdapter::new(store);
+        let results = adapter.search("nonexistent_query_xyz", 10).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_respects_limit() {
+        let dir = temp_dir("search-limit");
+        let store = MetadataStore::open(&dir).unwrap();
+        for i in 0..10 {
+            store
+                .put(&make_metadata(
+                    &format!("c{i}"),
+                    &format!("test {i}"),
+                    &["test"],
+                ))
+                .unwrap();
+        }
+
+        let adapter = GuixuP2PAdapter::new(store);
+        let results = adapter.search("test", 3).await.unwrap();
+        assert!(results.len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn lookup_existing_returns_value() {
+        let dir = temp_dir("lookup-ok");
+        let store = MetadataStore::open(&dir).unwrap();
+        store.put(&make_metadata("c1", "data1", &[])).unwrap();
+
+        let adapter = GuixuP2PAdapter::new(store);
+        let results = adapter.lookup("c1").await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn lookup_missing_returns_empty() {
+        let dir = temp_dir("lookup-miss");
+        let store = MetadataStore::open(&dir).unwrap();
+        let adapter = GuixuP2PAdapter::new(store);
+        let results = adapter.lookup("nonexistent").await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn schema_probe_returns_schema() {
+        let dir = temp_dir("schema");
+        let store = MetadataStore::open(&dir).unwrap();
+        store.put(&make_metadata("c1", "data1", &[])).unwrap();
+
+        let adapter = GuixuP2PAdapter::new(store);
+        let results = adapter.schema_probe("c1").await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["row_count"], 100);
+    }
+
+    #[test]
+    fn capabilities_include_all_expected() {
+        let dir = temp_dir("caps");
+        let store = MetadataStore::open(&dir).unwrap();
+        let adapter = GuixuP2PAdapter::new(store);
+        let caps = adapter.capabilities();
+        assert!(caps.contains(&SkillCapability::Search));
+        assert!(caps.contains(&SkillCapability::Lookup));
+        assert!(caps.contains(&SkillCapability::SchemaProbe));
+        assert!(caps.contains(&SkillCapability::SamplePreview));
+    }
+
+    #[test]
+    fn source_family_is_decentralized() {
+        let dir = temp_dir("family");
+        let store = MetadataStore::open(&dir).unwrap();
+        let adapter = GuixuP2PAdapter::new(store);
+        assert_eq!(adapter.source_family(), SourceFamily::Decentralized);
+    }
+}

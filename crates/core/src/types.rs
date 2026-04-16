@@ -388,3 +388,121 @@ pub struct HealthReport {
     pub disk_ok: bool,
     pub memory_ok: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn access_grant_serde_roundtrip() {
+        let grant = AccessGrant {
+            cid: DatasetCid("cid-test".into()),
+            torrent_info_hash: "hash123".into(),
+            access_token: "token456".into(),
+            watermark_id: Some("wm-abc".into()),
+            watermark_status: "pending".into(),
+            granted_at: Utc::now(),
+        };
+        let json = serde_json::to_string(&grant).unwrap();
+        let decoded: AccessGrant = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.cid.0, "cid-test");
+        assert_eq!(decoded.access_token, "token456");
+        assert_eq!(decoded.watermark_id, Some("wm-abc".into()));
+    }
+
+    #[test]
+    fn access_grant_without_watermark_roundtrip() {
+        let grant = AccessGrant {
+            cid: DatasetCid("cid-2".into()),
+            torrent_info_hash: "h".into(),
+            access_token: "t".into(),
+            watermark_id: None,
+            watermark_status: "none".into(),
+            granted_at: Utc::now(),
+        };
+        let json = serde_json::to_string(&grant).unwrap();
+        assert!(!json.contains("watermark_id"));
+        let decoded: AccessGrant = serde_json::from_str(&json).unwrap();
+        assert!(decoded.watermark_id.is_none());
+    }
+
+    #[test]
+    fn access_request_serde_roundtrip() {
+        let req = AccessRequest {
+            cid: DatasetCid("cid-req".into()),
+            buyer_did: Did("did:buyer:1".into()),
+            payment_proof: "proof123".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let decoded: AccessRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.buyer_did.0, "did:buyer:1");
+    }
+
+    #[test]
+    fn sample_request_serde_roundtrip() {
+        let req = SampleRequest {
+            cid: DatasetCid("cid-sr".into()),
+            max_bytes: 65536,
+            format: "head".into(),
+            rows: 20,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let decoded: SampleRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.max_bytes, 65536);
+        assert_eq!(decoded.rows, 20);
+    }
+
+    #[test]
+    fn sample_response_serde_roundtrip() {
+        let resp = SampleResponse {
+            cid: DatasetCid("cid-resp".into()),
+            schema: DatasetSchema {
+                columns: vec![ColumnDef {
+                    name: "col1".into(),
+                    dtype: "utf8".into(),
+                    nullable: true,
+                    description: None,
+                }],
+                row_count: 100,
+                size_bytes: 2048,
+            },
+            preview_data: "aGVsbG8=".into(),
+            provider_did: Did("did:provider:1".into()),
+            signature: "sig123".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let decoded: SampleResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.schema.row_count, 100);
+        assert_eq!(decoded.schema.columns.len(), 1);
+    }
+
+    #[test]
+    fn watermark_ready_serde_roundtrip() {
+        let wr = WatermarkReady {
+            cid: DatasetCid("cid-wr".into()),
+            buyer_did: Did("did:buyer:wr".into()),
+            watermarked_info_hash: "wmhash".into(),
+        };
+        let json = serde_json::to_string(&wr).unwrap();
+        let decoded: WatermarkReady = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.watermarked_info_hash, "wmhash");
+    }
+
+    #[test]
+    fn seed_record_serde_roundtrip() {
+        let sr = SeedRecord {
+            info_hash: "ih123".into(),
+            cid: DatasetCid("cid-sr".into()),
+            file_path: "/tmp/data.csv".into(),
+            access: AccessMode::Paid,
+            title: "test seed".into(),
+            size_bytes: 4096,
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_string(&sr).unwrap();
+        let decoded: SeedRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.info_hash, "ih123");
+        assert_eq!(decoded.access, AccessMode::Paid);
+    }
+}

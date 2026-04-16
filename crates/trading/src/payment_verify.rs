@@ -68,6 +68,12 @@ mod tests {
     }
 
     #[test]
+    fn hex_0x_prefixed_hash_passes() {
+        let hash = format!("0x{}", "b".repeat(64));
+        assert!(verify_payment_proof(&hash, 1.0).unwrap());
+    }
+
+    #[test]
     fn x402_receipt_passes() {
         let proof = r#"{"signature":"0xabc","amount":1.5}"#;
         assert!(verify_payment_proof(proof, 1.0).unwrap());
@@ -80,9 +86,49 @@ mod tests {
     }
 
     #[test]
+    fn x402_empty_signature_fails() {
+        let proof = r#"{"signature":"","amount":10.0}"#;
+        assert!(!verify_payment_proof(proof, 1.0).unwrap());
+    }
+
+    #[test]
+    fn x402_no_amount_field_still_passes() {
+        let proof = r#"{"signature":"0xabc123"}"#;
+        assert!(verify_payment_proof(proof, 1.0).unwrap());
+    }
+
+    #[test]
     fn erc8183_escrow_passes() {
         let proof =
             r#"{"tx_hash":"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"}"#;
         assert!(verify_payment_proof(proof, 1.0).unwrap());
+    }
+
+    #[test]
+    fn erc8183_raw_hex_hash_passes() {
+        let proof = format!(r#"{{"tx_hash":"{}"}}"#, "c".repeat(64));
+        assert!(verify_payment_proof(&proof, 1.0).unwrap());
+    }
+
+    #[test]
+    fn random_string_fails() {
+        assert!(!verify_payment_proof("not-a-valid-proof", 1.0).unwrap());
+    }
+
+    #[test]
+    fn short_hex_fails() {
+        assert!(!verify_payment_proof("abcdef", 1.0).unwrap());
+    }
+
+    #[test]
+    fn json_without_required_fields_fails() {
+        let proof = r#"{"foo":"bar"}"#;
+        assert!(!verify_payment_proof(proof, 1.0).unwrap());
+    }
+
+    #[test]
+    fn zero_amount_required_passes_with_any_signature() {
+        let proof = r#"{"signature":"0xabc","amount":0.0}"#;
+        assert!(verify_payment_proof(proof, 0.0).unwrap());
     }
 }

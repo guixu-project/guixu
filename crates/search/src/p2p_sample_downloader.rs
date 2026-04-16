@@ -65,3 +65,63 @@ impl P2PSampleDownloader {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir()
+            .join("guixu-test-p2p-dl")
+            .join(name)
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[tokio::test]
+    async fn missing_cid_returns_unavailable() {
+        let dir = temp_dir("dl-miss");
+        let store = MetadataStore::open(&dir).unwrap();
+        let dl = P2PSampleDownloader::new(store);
+        let outcome = dl.download_sample("nonexistent", 10).await.unwrap();
+        assert!(outcome.sample.is_none());
+        assert!(outcome.unavailable_reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn existing_file_returns_sample() {
+        let dir = temp_dir("dl-ok");
+        let store = MetadataStore::open(&dir).unwrap();
+        let cid = DatasetCid("cid-dl".into());
+        let file_path = dir.join("data.csv");
+        std::fs::write(&file_path, "a,b\n1,2\n3,4\n").unwrap();
+        store.put_file_path(&cid, &file_path).unwrap();
+
+        let dl = P2PSampleDownloader::new(store);
+        let outcome = dl.download_sample("cid-dl", 10).await.unwrap();
+        assert!(outcome.sample.is_some());
+        let sample = outcome.sample.unwrap();
+        assert_eq!(sample.records.len(), 3); // header + 2 data rows
+        assert!(sample.sampled_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn respects_max_rows() {
+        let dir = temp_dir("dl-limit");
+        let store = MetadataStore::open(&dir).unwrap();
+        let cid = DatasetCid("cid-lim".into());
+        let file_path = dir.join("big.csv");
+        let mut content = "col\n".to_string();
+        for i in 0..100 {
+            content.push_str(&format!("{i}\n"));
+        }
+        std::fs::write(&file_path, &content).unwrap();
+        store.put_file_path(&cid, &file_path).unwrap();
+
+        let dl = P2PSampleDownloader::new(store);
+        let outcome = dl.download_sample("cid-lim", 5).await.unwrap();
+        let sample = outcome.sample.unwrap();
+        assert!(sample.records.len() <= 6); // max_rows + 1 for header
+    }
+}
