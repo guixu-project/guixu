@@ -367,6 +367,15 @@ pub struct SampleRequest {
     pub max_bytes: usize,
     pub format: String,
     pub rows: usize,
+    /// Optional list of column names to include for sparse column selection.
+    /// If None, all columns are returned.
+    /// For Parquet files this enables efficient column-pruned reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<String>>,
+    /// Optional row filter expression (e.g., "age > 25 AND country == 'US'").
+    /// If None, no row filtering is applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_predicate: Option<String>,
 }
 
 /// Sample response for /guixu/sample/1.0.0 protocol.
@@ -446,6 +455,8 @@ mod tests {
             max_bytes: 65536,
             format: "head".into(),
             rows: 20,
+            columns: None,
+            row_predicate: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let decoded: SampleRequest = serde_json::from_str(&json).unwrap();

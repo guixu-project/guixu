@@ -28,6 +28,10 @@ local/
 *.lof
 *.lot
 
+# Secrets
+.env
+.env.*
+
 # Kiro
 .kiro/
 

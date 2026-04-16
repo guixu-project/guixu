@@ -1,0 +1,24 @@
+# Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+# SPDX-License-Identifier: Apache-2.0
+
+# Gitleaks configuration — reduce false positives for this repository.
+
+[extend]
+useDefault = true
+
+[allowlist]
+  description = "Global allowlist"
+
+  paths = [
+    '''Cargo\.lock''',
+    '''package-lock\.json''',
+    '''\.github/workflows/.*\.yml''',
+  ]
+
+  regexTarget = "line"
+  regexes = [
+    # Environment variable references (not actual secrets)
+    '''std::env::var\(''',
+    '''env_env|_env"''',
+    '''KAGGLE_KEY|KAGGLE_USERNAME|HF_TOKEN|DEEPSEEK_API_KEY''',
+  ]

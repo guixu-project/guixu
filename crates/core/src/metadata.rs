@@ -29,6 +29,14 @@ pub struct DatasetMetadata {
     pub price: Price,
     pub license: License,
 
+    // --- Version chain for dataset versioning ---
+    /// Semantic version string (e.g., "1.0.0", "2.1.3"). None for initial version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// CID of the previous version this was derived from. Forms a version chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<DatasetCid>,
+
     // --- Provenance ---
     pub provider: Did,
     pub signature: String, // Ed25519 signature over canonical JSON

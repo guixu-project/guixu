@@ -276,6 +276,8 @@ fn persist_search_results(state: &AppState, results: &[RankedResult]) -> Result<
             provenance: Provenance::Original,
             created_at: result.created_at,
             updated_at: result.created_at,
+            version: None,
+            previous_version: None,
             verifiable_credential: None,
             source_attributes: result.source_attributes.clone(),
         };

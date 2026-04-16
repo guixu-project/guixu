@@ -187,6 +187,36 @@ impl MetadataStore {
         let key = format!("unpub:{}", cid.0);
         Ok(self.db.get(key.as_bytes())?.is_some())
     }
+
+    // ── Hit-count tracking (prefix: hits:{kind}:{cid}) ──
+
+    /// Increment a hit counter for a dataset. `kind` is one of "search", "download", "evaluate".
+    pub fn increment_hit(&self, cid: &DatasetCid, kind: &str) -> Result<u64> {
+        let key = format!("hits:{kind}:{}", cid.0);
+        let current = self.get_hit_count(cid, kind)?;
+        let next = current + 1;
+        self.db.put(key.as_bytes(), next.to_le_bytes())?;
+        Ok(next)
+    }
+
+    /// Get the hit count for a dataset and kind.
+    pub fn get_hit_count(&self, cid: &DatasetCid, kind: &str) -> Result<u64> {
+        let key = format!("hits:{kind}:{}", cid.0);
+        match self.db.get(key.as_bytes())? {
+            Some(bytes) if bytes.len() == 8 => {
+                Ok(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
+            }
+            _ => Ok(0),
+        }
+    }
+
+    /// Get total popularity score (sum of all hit kinds) for a dataset.
+    pub fn popularity(&self, cid: &DatasetCid) -> Result<u64> {
+        let s = self.get_hit_count(cid, "search")?;
+        let d = self.get_hit_count(cid, "download")?;
+        let e = self.get_hit_count(cid, "evaluate")?;
+        Ok(s + d * 3 + e * 5)
+    }
 }
 
 fn load_metadata_cache(db: &DB) -> Result<HashMap<String, DatasetMetadata>> {

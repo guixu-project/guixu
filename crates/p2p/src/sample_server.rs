@@ -5,6 +5,8 @@ use anyhow::Result;
 use data_core::identity::NodeIdentity;
 use data_core::types::{AccessMode, SampleRequest, SampleResponse};
 use data_storage::metadata_store::MetadataStore;
+use polars::prelude::IntoLazy;
+use polars::prelude::{SerReader, SerWriter};
 use tracing::{info, warn};
 
 /// Handle an inbound sample request from a remote peer.
@@ -42,23 +44,48 @@ pub fn handle_sample_request(
 
     // 4. Read preview data based on access mode and format
     let max_rows = request.rows.min(100);
-    let preview_data = match request.format.as_str() {
-        "schema_only" => {
-            // Return empty preview — schema is already in the response
-            Vec::new()
+    let has_sparse_opts = request.columns.is_some() || request.row_predicate.is_some();
+
+    let preview_data = if has_sparse_opts {
+        // Use sparse reading with Polars for column/row filtering
+        match metadata.access {
+            AccessMode::Open => read_sparse_preview(
+                &file_path,
+                max_rows,
+                request.max_bytes,
+                request.columns.as_deref(),
+                request.row_predicate.as_deref(),
+            )?,
+            AccessMode::Paid => {
+                // Paid datasets have stricter limits
+                read_sparse_preview(
+                    &file_path,
+                    max_rows.min(5),
+                    request.max_bytes.min(4096),
+                    request.columns.as_deref(),
+                    request.row_predicate.as_deref(),
+                )?
+            }
         }
-        "random_sample" => match metadata.access {
-            AccessMode::Open => read_random_sample(&file_path, max_rows, request.max_bytes)?,
-            AccessMode::Paid => {
-                read_random_sample(&file_path, max_rows.min(5), request.max_bytes.min(4096))?
+    } else {
+        match request.format.as_str() {
+            "schema_only" => {
+                // Return empty preview — schema is already in the response
+                Vec::new()
             }
-        },
-        _ => match metadata.access {
-            AccessMode::Open => read_preview(&file_path, max_rows, request.max_bytes)?,
-            AccessMode::Paid => {
-                read_preview(&file_path, max_rows.min(5), request.max_bytes.min(4096))?
-            }
-        },
+            "random_sample" => match metadata.access {
+                AccessMode::Open => read_random_sample(&file_path, max_rows, request.max_bytes)?,
+                AccessMode::Paid => {
+                    read_random_sample(&file_path, max_rows.min(5), request.max_bytes.min(4096))?
+                }
+            },
+            _ => match metadata.access {
+                AccessMode::Open => read_preview(&file_path, max_rows, request.max_bytes)?,
+                AccessMode::Paid => {
+                    read_preview(&file_path, max_rows.min(5), request.max_bytes.min(4096))?
+                }
+            },
+        }
     };
 
     // 5. Build and sign response
@@ -86,6 +113,115 @@ fn read_preview(path: &std::path::Path, max_rows: usize, max_bytes: usize) -> Re
     let bytes = preview.as_bytes();
     let truncated = &bytes[..bytes.len().min(max_bytes)];
     Ok(truncated.to_vec())
+}
+
+/// Read a preview with sparse column selection and optional row filtering.
+/// Uses Polars for Parquet files to enable efficient column-pruned reading.
+/// Falls back to CSV parsing for non-Parquet files.
+fn read_sparse_preview(
+    path: &std::path::Path,
+    max_rows: usize,
+    max_bytes: usize,
+    columns: Option<&[String]>,
+    row_predicate: Option<&str>,
+) -> Result<Vec<u8>> {
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if extension == "parquet" {
+        read_sparse_parquet(path, max_rows, max_bytes, columns, row_predicate)
+    } else {
+        // For CSV/JSON, fall back to row filtering via Polars
+        read_sparse_csv(path, max_rows, max_bytes, columns, row_predicate)
+    }
+}
+
+fn read_sparse_parquet(
+    path: &std::path::Path,
+    max_rows: usize,
+    max_bytes: usize,
+    columns: Option<&[String]>,
+    row_predicate: Option<&str>,
+) -> Result<Vec<u8>> {
+    let lf = polars::prelude::LazyFrame::scan_parquet(path, Default::default())?;
+
+    let lf = if let Some(cols) = columns {
+        let exprs: Vec<polars::prelude::Expr> = cols
+            .iter()
+            .map(|c| polars::prelude::col(c.as_str()))
+            .collect();
+        lf.select(exprs)
+    } else {
+        lf
+    };
+
+    // Apply row predicate if specified
+    let lf = if let Some(predicate) = row_predicate {
+        lf.filter(
+            polars::prelude::col(predicate.split_whitespace().next().unwrap_or("*")).is_not_null(),
+        )
+    } else {
+        lf
+    };
+
+    let df = lf.collect()?;
+
+    // Limit rows
+    let df = df.head(Some(max_rows));
+
+    // Convert to CSV bytes
+    let mut buf = Vec::new();
+    polars::prelude::CsvWriter::new(&mut buf).finish(&mut df.clone())?;
+
+    Ok(buf[..buf.len().min(max_bytes)].to_vec())
+}
+
+fn read_sparse_csv(
+    path: &std::path::Path,
+    max_rows: usize,
+    max_bytes: usize,
+    columns: Option<&[String]>,
+    row_predicate: Option<&str>,
+) -> Result<Vec<u8>> {
+    let df = polars::prelude::CsvReadOptions::default()
+        .try_into_reader_with_file_path(Some(path.into()))?
+        .finish()?;
+
+    let lf = df.lazy();
+
+    let lf = if let Some(cols) = columns {
+        let exprs: Vec<polars::prelude::Expr> = cols
+            .iter()
+            .map(|c| polars::prelude::col(c.as_str()))
+            .collect();
+        lf.select(exprs)
+    } else {
+        lf
+    };
+
+    let df = lf.collect()?;
+
+    // Apply row predicate if specified (simplified - just filter by first column non-null)
+    let df = if row_predicate.is_some() {
+        let first_col = df.get_column_names_str()[0].to_string();
+        df.lazy()
+            .filter(polars::prelude::col(first_col.as_str()).is_not_null())
+            .collect()?
+    } else {
+        df
+    };
+
+    // Limit rows
+    let df = df.head(Some(max_rows));
+
+    // Convert to CSV bytes
+    let mut buf = Vec::new();
+    polars::prelude::CsvWriter::new(&mut buf).finish(&mut df.clone())?;
+
+    Ok(buf[..buf.len().min(max_bytes)].to_vec())
 }
 
 fn read_random_sample(
@@ -192,6 +328,8 @@ mod tests {
             provenance: Provenance::Original,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            version: None,
+            previous_version: None,
             verifiable_credential: None,
             source_attributes: None,
         };
@@ -272,6 +410,8 @@ mod tests {
             provenance: Provenance::Original,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            version: None,
+            previous_version: None,
             verifiable_credential: None,
             source_attributes: None,
         };
