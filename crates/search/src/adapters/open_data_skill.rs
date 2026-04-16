@@ -1454,6 +1454,7 @@ mod tests {
             enabled: true,
             capabilities: SkillCapabilities::default(),
             governance: SkillGovernance::default(),
+            sample: None,
             provider: SkillProvider::NativeAdapter {
                 adapter: "kaggle".into(),
             },
