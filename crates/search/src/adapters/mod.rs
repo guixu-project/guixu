@@ -23,7 +23,7 @@ pub use bittorrent::BitTorrentAdapter;
 pub use datacite_commons::DataCiteCommonsAdapter;
 pub use defillama::DefiLlamaAdapter;
 pub use google_dataset_search::GoogleDatasetSearchAdapter;
-pub use guixu_p2p::GuixuP2PAdapter;
+pub use guixu_p2p::{DhtQuerier, GuixuP2PAdapter};
 pub use local_file::LocalFileAdapter;
 pub use open_data_skill::{
     execute_skill_operation, load_data_skill_profiles, load_open_data_skills, DataSkillProfile,

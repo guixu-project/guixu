@@ -1276,6 +1276,8 @@ async fn sync_external_catalogs(store: &MetadataStore) -> Result<()> {
             provenance: Provenance::Original,
             created_at: r.created_at,
             updated_at: chrono::Utc::now(),
+            version: None,
+            previous_version: None,
             verifiable_credential: None,
             source_attributes: r.source_attributes.clone(),
         }

@@ -17,13 +17,15 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("torrent engine not initialized — start node first"))?;
 
-    // Non-blocking: start download and return immediately.
-    // Frontend polls dataset_bt_stats for progress.
-    engine.start_download(info_hash).await?;
+    // Blocking download with auto-seeding: waits for completion then
+    // persists a SeedRecord so this node becomes a seeder for the dataset.
+    let downloaded_to = engine.download_and_seed(info_hash, &state.store).await?;
 
     Ok(serde_json::to_string_pretty(&json!({
         "info_hash": info_hash,
-        "status": "downloading"
+        "status": "completed",
+        "downloaded_to": downloaded_to.to_string_lossy(),
+        "auto_seeding": true
     }))?)
 }
 

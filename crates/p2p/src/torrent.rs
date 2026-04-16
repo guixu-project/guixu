@@ -3,6 +3,7 @@
 
 use anyhow::Result;
 use data_core::types::{AccessMode, SeedRecord};
+use data_storage::metadata_store::MetadataStore;
 use librqbit::{AddTorrent, AddTorrentOptions, CreateTorrentOptions, Session, SessionOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -148,6 +149,54 @@ impl TorrentEngine {
             .map_err(|e| anyhow::anyhow!("download wait: {e}"))?;
 
         Ok(self.download_dir.join(info_hash))
+    }
+
+    /// Download a dataset and automatically become a seeder when complete.
+    /// After the torrent finishes downloading, this method:
+    /// 1. Waits for download completion
+    /// 2. Looks up the dataset metadata from the store using info_hash
+    /// 3. Persists a SeedRecord so this node continues seeding after restart
+    ///
+    /// Returns the downloaded file path.
+    pub async fn download_and_seed(
+        &self,
+        info_hash: &str,
+        store: &MetadataStore,
+    ) -> Result<PathBuf> {
+        let handle = self.ensure_handle(info_hash).await?;
+
+        handle
+            .wait_until_completed()
+            .await
+            .map_err(|e| anyhow::anyhow!("download wait: {e}"))?;
+
+        let file_path = self.download_dir.join(info_hash);
+
+        // Find dataset metadata by info_hash to build SeedRecord
+        let all_metadata = store.list_all()?;
+        if let Some(metadata) = all_metadata
+            .iter()
+            .find(|m| m.info_hash.as_deref() == Some(info_hash))
+        {
+            let seed_record = SeedRecord {
+                info_hash: info_hash.to_string(),
+                cid: metadata.cid.clone(),
+                file_path: file_path.clone(),
+                access: metadata.access,
+                title: metadata.title.clone(),
+                size_bytes: metadata.schema.size_bytes,
+                created_at: chrono::Utc::now(),
+            };
+            store.put_seed(&seed_record)?;
+            info!(info_hash, cid = %metadata.cid.0, "auto-seeding enabled");
+        } else {
+            warn!(
+                info_hash,
+                "no metadata found for downloaded torrent, not persisting seed"
+            );
+        }
+
+        Ok(file_path)
     }
 
     /// Download only the first N bytes of a torrent for preview.

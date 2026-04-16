@@ -108,6 +108,8 @@ pub async fn publish_file_with_privacy(
         provenance: Provenance::Original,
         created_at: now,
         updated_at: now,
+        version: None,
+        previous_version: None,
         verifiable_credential: None,
         source_attributes: None,
     };

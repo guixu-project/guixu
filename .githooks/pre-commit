@@ -4,6 +4,26 @@
 
 set -e
 
+# Secret scanning — abort early if secrets are detected
+if command -v gitleaks >/dev/null 2>&1; then
+    gitleaks protect --staged --config .gitleaks.toml || {
+        echo "❌ gitleaks detected secrets. Remove them and re-commit."
+        exit 1
+    }
+else
+    echo "⚠️  gitleaks not installed — skipping secret scan. Install: https://github.com/gitleaks/gitleaks#installing"
+fi
+
+# Spell check
+if command -v typos >/dev/null 2>&1; then
+    typos || {
+        echo "❌ typos found. Fix spelling errors and re-commit."
+        exit 1
+    }
+else
+    echo "⚠️  typos not installed — skipping spell check. Install: cargo install typos-cli"
+fi
+
 python3 scripts/spdx_headers.py fix --staged --stage
 python3 scripts/check_english_comments.py
 cargo fmt

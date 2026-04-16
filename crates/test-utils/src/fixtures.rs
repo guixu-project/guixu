@@ -40,6 +40,8 @@ pub fn metadata(cid: &str) -> DatasetMetadata {
         provenance: Provenance::Original,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        version: None,
+        previous_version: None,
         verifiable_credential: None,
         source_attributes: None,
     }
