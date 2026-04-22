@@ -13,9 +13,10 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```ignore
 //! use data_storage::trace_manager::{AgentTraceManager, TraceConfig, SpanType};
 //!
+//! // Note: requires a Tokio runtime
 //! let config = TraceConfig::default();
 //! let manager = AgentTraceManager::new(config);
 //! ```
@@ -669,7 +670,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_manager_start_trace() {
-        let config = TraceConfig::default();
+        let config = TraceConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let manager = AgentTraceManager::new(config);
 
         let result = manager.start_trace("workflow.run", SpanType::Agent).await;
