@@ -350,6 +350,8 @@ mod tests {
             max_bytes: 1024,
             format: "head".into(),
             rows: 10,
+            columns: None,
+            row_predicate: None,
         };
         let result = handle_sample_request(&req, &store, &identity).unwrap();
         assert!(result.is_none());
@@ -366,6 +368,8 @@ mod tests {
             max_bytes: 65536,
             format: "head".into(),
             rows: 20,
+            columns: None,
+            row_predicate: None,
         };
         let resp = handle_sample_request(&req, &store, &identity)
             .unwrap()
@@ -425,6 +429,8 @@ mod tests {
             max_bytes: 65536,
             format: "head".into(),
             rows: 100,
+            columns: None,
+            row_predicate: None,
         };
         let resp = handle_sample_request(&req, &store, &identity)
             .unwrap()
@@ -480,6 +486,8 @@ mod tests {
             max_bytes: 65536,
             format: "schema_only".into(),
             rows: 20,
+            columns: None,
+            row_predicate: None,
         };
         let resp = handle_sample_request(&req, &store, &identity)
             .unwrap()
@@ -498,6 +506,8 @@ mod tests {
             max_bytes: 65536,
             format: "random_sample".into(),
             rows: 3,
+            columns: None,
+            row_predicate: None,
         };
         let resp = handle_sample_request(&req, &store, &identity)
             .unwrap()

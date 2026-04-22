@@ -2,82 +2,30 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use chrono::Utc;
-use data_core::feedback::{CommunitySignal, TaskSignal};
-use data_core::metadata::{DatasetMetadata, Provenance};
+use data_core::feedback::CommunitySignal;
+use data_core::metadata::DatasetMetadata;
 use data_core::types::*;
+use data_test_utils::builders::{
+    CommunitySignalBuilder, DatasetMetadataBuilder, QualityScoreBuilder,
+};
 
 fn make_metadata(title: &str, columns: &[(&str, &str)], price: f64) -> DatasetMetadata {
-    DatasetMetadata {
-        cid: DatasetCid(format!("cid-{title}")),
-        info_hash: None,
-        title: title.into(),
-        description: Some(format!("{title} dataset")),
-        tags: vec!["test".into()],
-        schema: DatasetSchema {
-            columns: columns
-                .iter()
-                .map(|(name, dtype)| ColumnDef {
-                    name: name.to_string(),
-                    dtype: dtype.to_string(),
-                    nullable: false,
-                    description: Some(format!("{name} column")),
-                })
-                .collect(),
-            row_count: 1000,
-            size_bytes: 50_000,
-        },
-        stats: Some(DatasetStats {
-            null_rate: 0.05,
-            unique_rate: 0.8,
-            min_values: serde_json::json!({}),
-            max_values: serde_json::json!({}),
-        }),
-        access: AccessMode::Open,
-        price: Price::usdc(price),
-        license: License {
-            spdx_id: "CC-BY-4.0".into(),
-            commercial_use: true,
-            derivative_allowed: true,
-        },
-        provider: Did("did:key:test".into()),
-        signature: "sig".into(),
-        provenance: Provenance::Original,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        verifiable_credential: None,
-        data_type: DataType::Tabular,
-        video_meta: None,
-        source_attributes: None,
-    }
+    DatasetMetadataBuilder::new(&format!("cid-{title}"))
+        .title(title)
+        .columns(columns)
+        .price(price)
+        .access(AccessMode::Open)
+        .build()
 }
 
 fn make_signal(total: u64, pos_rate: f64, neg_rate: f64) -> CommunitySignal {
-    CommunitySignal {
-        dataset_cid: DatasetCid("cid-test".into()),
-        total_reviews: total,
-        avg_relevance: 0.7,
-        avg_quality: 4.0,
-        positive_rate: pos_rate,
-        negative_rate: neg_rate,
-        task_signals: vec![TaskSignal {
-            task_type: "classification".into(),
-            count: total,
-            avg_relevance: 0.7,
-            success_rate: 0.8,
-        }],
-    }
+    CommunitySignalBuilder::new("cid-test")
+        .reviews(total, pos_rate, neg_rate)
+        .build()
 }
 
 fn make_quality(total: f64) -> QualityScore {
-    QualityScore {
-        total,
-        completeness: total,
-        consistency: total * 0.9,
-        freshness: total * 0.8,
-        schema_quality: total * 0.7,
-        provenance: 50.0,
-        community: 50.0,
-    }
+    QualityScoreBuilder::new(total).build()
 }
 
 // ============================================================

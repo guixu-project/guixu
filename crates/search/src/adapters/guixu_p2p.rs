@@ -319,6 +319,8 @@ mod tests {
             updated_at: chrono::Utc::now(),
             verifiable_credential: None,
             source_attributes: None,
+            version: None,
+            previous_version: None,
         }
     }
 

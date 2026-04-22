@@ -16,6 +16,7 @@ futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+data-test-utils = { path = "../test-utils" }
 
 [lints]
 workspace = true
