@@ -517,3 +517,43 @@ mod tests {
         assert_eq!(decoded.access, AccessMode::Paid);
     }
 }
+
+// ============================================================================
+// Confidential Valuation Types
+// ============================================================================
+
+/// Proof verification verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofVerdict {
+    Verified,
+    Failed,
+    Unsupported,
+    Pending,
+}
+
+/// Evidence mode for valuation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValuationEvidenceMode {
+    PlaintextSample,
+    ZkCommittedSummary,
+    FheTaskScoring,
+    MetadataOnly,
+}
+
+/// Confidential valuation evidence attached to a proxy utility report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfidentialValuationEvidence {
+    pub report_id: String,
+    pub report_digest: String,
+    pub manifest_digest: Option<String>,
+    pub dataset_commitment_digest: Option<String>,
+    pub proof_system: String,
+    pub proof_verdict: ProofVerdict,
+    pub score: Option<f64>,
+    pub score_band: Option<String>,
+    pub recommendation: Option<String>,
+    pub risk_flags: Vec<String>,
+    pub roi_band: Option<String>,
+}
