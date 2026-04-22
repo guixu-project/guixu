@@ -12,6 +12,9 @@ extend-exclude = [
 ba = "ba"
 ot = "ot"
 nd = "nd"
+# Cryptography: Groth16 is named after Jens Groth, not "growth"
+Groth = "Groth"
+groth = "groth"
 
 [default.extend-identifiers]
 # DOM event name (valid HTML spec)

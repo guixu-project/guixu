@@ -9,7 +9,7 @@ This guide helps AI agents and human developers understand Guixu's development e
 
 ## 1. Project Overview
 
-Guixu is a self-evolving AI agent for autonomous data discovery and assetization. The codebase is organized as a Rust workspace with multiple crates:
+Guixu is a self-evolving AI agent for autonomous data discovery and trading. The codebase is organized as a Rust workspace with multiple crates:
 
 ```
 guixu/

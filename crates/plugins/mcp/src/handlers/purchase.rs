@@ -53,14 +53,32 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
                     None
                 }
             }),
-        seller_headers: args
-            .get("seller_headers")
-            .and_then(|v| v.as_object())
-            .map(|obj| {
-                obj.iter()
-                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                    .collect()
-            }),
+        seller_headers: {
+            let mut hdrs: Vec<(String, String)> = args
+                .get("seller_headers")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Inject valuation report headers if provided
+            if let Some(rid) = args.get("valuation_report_id").and_then(|v| v.as_str()) {
+                hdrs.push(("X-Valuation-Report-Id".into(), rid.into()));
+            }
+            if let Some(rd) = args.get("valuation_report_digest").and_then(|v| v.as_str()) {
+                hdrs.push(("X-Valuation-Report-Digest".into(), rd.into()));
+            }
+            if let Some(vm) = args.get("valuation_mode").and_then(|v| v.as_str()) {
+                hdrs.push(("X-Valuation-Mode".into(), vm.into()));
+            }
+            if hdrs.is_empty() {
+                None
+            } else {
+                Some(hdrs)
+            }
+        },
     };
 
     let (receipt, protocol_desc) = if metadata.price.is_free() {
