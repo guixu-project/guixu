@@ -150,6 +150,7 @@ fn extract_tool_json(response: &Value) -> Value {
 // ============================================================================
 
 #[test]
+#[ignore = "requires data-node binary"]
 fn mcp_initialize_returns_server_info() {
     let responses = mcp_roundtrip(&[init_message()]);
     assert!(!responses.is_empty(), "no response from MCP server");
@@ -160,6 +161,7 @@ fn mcp_initialize_returns_server_info() {
 }
 
 #[test]
+#[ignore = "requires data-node binary"]
 fn mcp_tools_list_contains_expected_tools() {
     let responses = mcp_roundtrip(&[
         init_message(),
@@ -217,6 +219,7 @@ fn mcp_tools_list_contains_expected_tools() {
 }
 
 #[test]
+#[ignore = "requires data-node binary"]
 fn mcp_intent_parse_returns_profile() {
     let responses = mcp_roundtrip(&[
         init_message(),
@@ -354,6 +357,7 @@ fn mcp_dataset_search_bridge_data() {
 }
 
 #[test]
+#[ignore = "requires data-node binary"]
 fn mcp_dataset_search_unknown_tool_returns_error() {
     let responses = mcp_roundtrip(&[init_message(), tool_call(1, "nonexistent_tool", json!({}))]);
     assert!(responses.len() >= 2);
@@ -366,6 +370,7 @@ fn mcp_dataset_search_unknown_tool_returns_error() {
 }
 
 #[test]
+#[ignore = "requires data-node binary"]
 fn mcp_ping_returns_empty_object() {
     let responses = mcp_roundtrip(&[
         init_message(),

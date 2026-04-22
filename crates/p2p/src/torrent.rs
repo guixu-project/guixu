@@ -578,6 +578,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires network listen port"]
     async fn download_from_seeder() {
         let Some((_seeder, torrent_bytes, _info_hash, port)) = setup_seeder("dl_seed").await else {
             return;
@@ -629,6 +630,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires network listen port"]
     async fn download_preview_from_seeder() {
         let Some((_seeder, torrent_bytes, _info_hash, port)) = setup_seeder("prev_seed").await
         else {
