@@ -313,6 +313,15 @@ pub struct SkillItemMapping {
     pub created_at: Option<String>,
     #[serde(default)]
     pub download_count: Option<String>,
+    /// JSON path to price amount (e.g. "price.amount")
+    #[serde(default)]
+    pub price_amount: Option<String>,
+    /// JSON path to price currency (e.g. "price.currency")
+    #[serde(default)]
+    pub price_currency: Option<String>,
+    /// JSON path to per-item seller endpoint / download URL
+    #[serde(default)]
+    pub seller_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1246,7 +1255,34 @@ impl HttpSkillAdapter {
                 size_bytes,
             },
             quality: None,
-            price: Price::free(),
+            price: {
+                let amount = self
+                    .config
+                    .item_mapping
+                    .price_amount
+                    .as_ref()
+                    .and_then(|field| {
+                        item.get(field).and_then(|v| v.as_f64()).or_else(|| {
+                            Self::string_at_path(&item, field).and_then(|s| s.parse().ok())
+                        })
+                    });
+                match amount {
+                    Some(a) if a > 0.0 => {
+                        let currency = self
+                            .config
+                            .item_mapping
+                            .price_currency
+                            .as_ref()
+                            .and_then(|field| Self::string_at_path(&item, field))
+                            .unwrap_or_else(|| "USDC".into());
+                        Price {
+                            amount: a,
+                            currency,
+                        }
+                    }
+                    _ => Price::free(),
+                }
+            },
             license: License {
                 spdx_id: license_id,
                 commercial_use: false,
@@ -1261,7 +1297,13 @@ impl HttpSkillAdapter {
             }),
             data_type: infer_data_type_from_title(&title),
             created_at,
-            seller_endpoint: Some(self.config.base_url.clone()),
+            seller_endpoint: self
+                .config
+                .item_mapping
+                .seller_endpoint
+                .as_ref()
+                .and_then(|field| Self::string_at_path(&item, field))
+                .or_else(|| Some(self.config.base_url.clone())),
             source_attributes: Some(serde_json::json!({
                 "skill_id": self.config.id,
                 "provider_kind": "http_search",

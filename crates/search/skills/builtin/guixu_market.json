@@ -1,0 +1,71 @@
+{
+  "spec_version": "2.0",
+  "id": "guixu_market",
+  "name": "Guixu Data Market",
+  "description": "Search and purchase datasets from Guixu Data Market via x402 payment protocol.",
+  "source": "guixu_market",
+  "tags": [
+    "marketplace",
+    "x402",
+    "usdc",
+    "base"
+  ],
+  "routing_hints": [
+    "data market",
+    "paid datasets",
+    "guixu market",
+    "x402 purchase"
+  ],
+  "enabled": true,
+  "capabilities": {
+    "search": true,
+    "lookup": true,
+    "download": true,
+    "schema_probe": false,
+    "sample_preview": false,
+    "license_lookup": false
+  },
+  "governance": {
+    "trust_tier": "verified",
+    "provenance_hint": "Guixu Data Market — State Key Laboratory of Blockchain and Data Security, Zhejiang University",
+    "compliance_hint": "Review dataset license and seller terms. x402 purchases are non-refundable."
+  },
+  "provider": {
+    "kind": "http_search",
+    "base_url": "https://market.guixu.io",
+    "auth": {
+      "kind": "header_env",
+      "header": "Authorization",
+      "env": "GUIXU_MARKET_API_TOKEN"
+    },
+    "operations": {
+      "search": {
+        "path": "/api/v1/skill/search",
+        "method": "GET",
+        "query_param": "q",
+        "limit_param": "limit"
+      },
+      "lookup": {
+        "path": "/api/v1/skill/item/{id}",
+        "method": "GET"
+      }
+    },
+    "item_mapping": {
+      "title": "title",
+      "description": "description",
+      "id": "id",
+      "tags": "tags",
+      "download_url": "download_url",
+      "license": "license",
+      "updated_at": "updated_at",
+      "price_amount": "price.amount",
+      "price_currency": "price.currency",
+      "seller_endpoint": "download_url"
+    },
+    "payment": {
+      "protocol": "x402",
+      "network": "eip155:8453",
+      "token": "USDC"
+    }
+  }
+}

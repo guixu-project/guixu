@@ -53,6 +53,14 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
                     None
                 }
             }),
+        seller_headers: args
+            .get("seller_headers")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                    .collect()
+            }),
     };
 
     let (receipt, protocol_desc) = if metadata.price.is_free() {

@@ -295,7 +295,7 @@ pub enum DataSource {
 }
 
 /// Payment protocol used for a transaction.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PaymentProtocol {
     X402,
