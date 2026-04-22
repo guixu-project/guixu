@@ -118,7 +118,13 @@ impl X402Client {
         ctx: &TransactionContext,
     ) -> Result<TransactionReceipt> {
         // Step 1: Initial request → expect 402
-        let resp = self.http.get(seller_url).send().await?;
+        let mut req = self.http.get(seller_url);
+        if let Some(headers) = &ctx.seller_headers {
+            for (k, v) in headers {
+                req = req.header(k.as_str(), v.as_str());
+            }
+        }
+        let resp = req.send().await?;
 
         if resp.status().as_u16() != 402 {
             bail!(
@@ -216,12 +222,16 @@ impl X402Client {
         let encoded =
             base64::engine::general_purpose::STANDARD.encode(serde_json::to_string(&payload)?);
 
-        let resp = self
+        let mut req = self
             .http
             .get(seller_url)
-            .header("payment-signature", &encoded)
-            .send()
-            .await?;
+            .header("payment-signature", &encoded);
+        if let Some(headers) = &ctx.seller_headers {
+            for (k, v) in headers {
+                req = req.header(k.as_str(), v.as_str());
+            }
+        }
+        let resp = req.send().await?;
 
         if !resp.status().is_success() {
             let status = resp.status();

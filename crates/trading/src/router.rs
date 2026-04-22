@@ -57,6 +57,19 @@ impl PaymentRouter {
             PaymentProtocol::Erc8183 => self.escrow.pay(seller_url, ctx).await,
         }
     }
+
+    /// Pay with automatic fallback: if x402 fails with 409 (price too high), retry via escrow.
+    pub async fn pay_with_fallback(&self, ctx: &TransactionContext) -> Result<TransactionReceipt> {
+        let protocol = self.select_protocol(ctx);
+        match self.pay(protocol, ctx).await {
+            Ok(receipt) => Ok(receipt),
+            Err(e) if protocol == PaymentProtocol::X402 && e.to_string().contains("409") => {
+                tracing::info!("x402 rejected (price limit), falling back to ERC-8183 escrow");
+                self.pay(PaymentProtocol::Erc8183, ctx).await
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// Context for a payment decision.
@@ -72,4 +85,6 @@ pub struct TransactionContext {
     pub requires_verification: bool,
     /// HTTP endpoint of the seller's payment-gated resource.
     pub seller_endpoint: Option<String>,
+    /// Additional headers to attach to seller requests (e.g. auth tokens).
+    pub seller_headers: Option<Vec<(String, String)>>,
 }

@@ -30,6 +30,7 @@ fn make_ctx(
         prefer_fiat: fiat,
         requires_verification: verify,
         seller_endpoint: None,
+        seller_headers: None,
     }
 }
 
