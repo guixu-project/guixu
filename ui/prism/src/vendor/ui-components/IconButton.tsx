@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { ComponentPropsWithRef } from "react";
+import type { ComponentPropsWithRef, ReactNode } from "react";
 
 import cn from "classnames";
 
@@ -31,6 +31,11 @@ export type IconButtonProps = ComponentPropsWithRef<"button"> & {
    * Required for accessibility compliance
    */
   "aria-label": string;
+
+  /**
+   * The icon to render inside the button
+   */
+  icon?: ReactNode;
 };
 
 const sizeClasses: Record<IconButtonSize, string> = {
@@ -49,9 +54,8 @@ const variantClasses: Record<IconButtonVariant, string> = {
   ghost: "bg-transparent",
 };
 
-// TODO: Remake to call Icon component directly instead of passing children
 export const IconButton = ({
-  children,
+  icon,
   className,
   size = "6",
   variant = "default",
@@ -74,7 +78,7 @@ export const IconButton = ({
       )}
       {...rest}
     >
-      {children}
+      {icon}
     </button>
   );
 };

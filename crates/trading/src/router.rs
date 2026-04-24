@@ -19,10 +19,15 @@ pub struct PaymentRouter {
 
 impl PaymentRouter {
     pub fn new(wallet: AgentWallet, testnet: bool) -> Self {
+        let escrow = if testnet {
+            EscrowClient::for_base_sepolia(wallet.clone())
+        } else {
+            EscrowClient::for_base_mainnet(wallet.clone())
+        };
         Self {
             x402: Box::new(X402Client::new(wallet.clone(), testnet)),
             mpp: Box::new(MppClient::new(wallet)),
-            escrow: Box::new(EscrowClient),
+            escrow: Box::new(escrow),
         }
     }
 

@@ -74,13 +74,12 @@ export const DetailsViewHeader = ({
           }
           variant="ghost"
           onClick={handleCopy}
-        >
-          {hasCopied ? (
+          icon={hasCopied ? (
             <Check className="text-agentprism-muted-foreground size-3" />
           ) : (
             <Copy className="text-agentprism-muted-foreground size-3" />
           )}
-        </IconButton>
+        />
       )}
 
       <SpanBadge category={data.type} />

@@ -62,9 +62,8 @@ export const TraceList = ({
         <IconButton
           aria-label={expanded ? "Collapse Trace List" : "Expand Trace List"}
           onClick={() => onExpandStateChange(!expanded)}
-        >
-          <ArrowLeft className={cn("size-3", expanded ? "" : "rotate-180")} />
-        </IconButton>
+          icon={<ArrowLeft className={cn("size-3", expanded ? "" : "rotate-180")} />}
+        />
       </header>
 
       {expanded && (
