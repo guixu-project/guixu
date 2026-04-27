@@ -124,7 +124,10 @@ impl FreeDataEvaluator {
     fn extract_temporal_start(&self, metadata: &DatasetMetadata) -> chrono::NaiveDate {
         // Check tags for "temporal:YYYY-MM-DD" or "since:YYYY-MM-DD"
         for tag in &metadata.tags {
-            if let Some(date_str) = tag.strip_prefix("temporal:").or_else(|| tag.strip_prefix("since:")) {
+            if let Some(date_str) = tag
+                .strip_prefix("temporal:")
+                .or_else(|| tag.strip_prefix("since:"))
+            {
                 if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
                     return date;
                 }
@@ -137,7 +140,10 @@ impl FreeDataEvaluator {
     fn extract_temporal_end(&self, metadata: &DatasetMetadata) -> chrono::NaiveDate {
         // Check tags for "until:YYYY-MM-DD" or "temporal_end:YYYY-MM-DD"
         for tag in &metadata.tags {
-            if let Some(date_str) = tag.strip_prefix("until:").or_else(|| tag.strip_prefix("temporal_end:")) {
+            if let Some(date_str) = tag
+                .strip_prefix("until:")
+                .or_else(|| tag.strip_prefix("temporal_end:"))
+            {
                 if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
                     return date;
                 }

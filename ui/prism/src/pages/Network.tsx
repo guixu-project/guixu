@@ -3,46 +3,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useState } from "react";
-
-interface PeerInfo {
-  peer_id: string;
-  address: string;
-  connected_since: string;
-}
-
-interface NatInfo {
-  is_public: boolean;
-  nat_type: string;
-  relay_active: boolean;
-  relay_address: string | null;
-}
+import { useNetworkPeers, useNetworkNat } from "../api";
 
 export default function Network() {
-  const [peers, setPeers] = useState<PeerInfo[]>([]);
-  const [nat, setNat] = useState<NatInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data: peersData,
+    error: peersError,
+  } = useNetworkPeers();
+  const { data: nat } = useNetworkNat();
 
-  useEffect(() => {
-    Promise.all([
-      fetch("/api/network/peers").then((r) =>
-        r.ok ? r.json() : Promise.resolve([]),
-      ),
-      fetch("/api/network/nat").then((r) =>
-        r.ok ? r.json() : Promise.resolve(null),
-      ),
-    ])
-      .then(([p, n]) => {
-        setPeers(p);
-        setNat(n);
-      })
-      .catch((e) => setError(e.message));
-  }, []);
+  const peers = peersData?.peers ?? [];
 
-  if (error)
+  if (peersError)
     return (
       <div className="p-6 text-agentprism-error">
-        Failed to load network info: {error}
+        Failed to load network info:{" "}
+        {peersError instanceof Error ? peersError.message : "Unknown error"}
       </div>
     );
 
@@ -54,14 +30,6 @@ export default function Network() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div className="rounded-lg border border-agentprism-border bg-agentprism-card p-4">
             <p className="text-xs text-agentprism-muted-foreground">
-              NAT Status
-            </p>
-            <p className="text-lg font-bold mt-1">
-              {nat.is_public ? "Public" : "Behind NAT"}
-            </p>
-          </div>
-          <div className="rounded-lg border border-agentprism-border bg-agentprism-card p-4">
-            <p className="text-xs text-agentprism-muted-foreground">
               NAT Type
             </p>
             <p className="text-lg font-bold mt-1">{nat.nat_type}</p>
@@ -69,7 +37,7 @@ export default function Network() {
           <div className="rounded-lg border border-agentprism-border bg-agentprism-card p-4">
             <p className="text-xs text-agentprism-muted-foreground">Relay</p>
             <p className="text-lg font-bold mt-1">
-              {nat.relay_active ? "Active" : "Inactive"}
+              {nat.relay_enabled ? "Enabled" : "Disabled"}
             </p>
           </div>
           <div className="rounded-lg border border-agentprism-border bg-agentprism-card p-4">
@@ -78,6 +46,16 @@ export default function Network() {
             </p>
             <p className="text-lg font-bold mt-1">{peers.length}</p>
           </div>
+          {peersData?.local_peer_id && (
+            <div className="rounded-lg border border-agentprism-border bg-agentprism-card p-4">
+              <p className="text-xs text-agentprism-muted-foreground">
+                Local Peer
+              </p>
+              <p className="text-xs font-mono mt-1 truncate">
+                {peersData.local_peer_id}
+              </p>
+            </div>
+          )}
         </div>
       )}
 

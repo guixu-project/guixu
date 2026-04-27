@@ -3,24 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useState } from "react";
-
-interface NodeStatus {
-  peer_id: string;
-  did: string;
-  uptime_secs: number;
-  connected_peers: number;
-  published_datasets: number;
-  total_size_bytes: number;
-  seeding_count: number;
-}
-
-interface SeedInfo {
-  cid: string;
-  title: string;
-  size_bytes: number;
-  info_hash: string;
-}
+import { useNodeStatus, useDatasets } from "../api";
+import { useNavigate } from "@tanstack/react-router";
 
 function formatSize(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
@@ -36,43 +20,42 @@ function formatUptime(secs: number): string {
 }
 
 export default function Dashboard() {
-  const [status, setStatus] = useState<NodeStatus | null>(null);
-  const [seeds, setSeeds] = useState<SeedInfo[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const { data: status, isLoading, error } = useNodeStatus();
+  const { data: datasets } = useDatasets(true);
+  const navigate = useNavigate();
 
-  useEffect(() => {
-    Promise.all([
-      fetch("/api/node/status").then((r) =>
-        r.ok ? r.json() : Promise.reject(new Error(`${r.status}`)),
-      ),
-      fetch("/api/datasets?mine=true").then((r) =>
-        r.ok ? r.json() : Promise.resolve([]),
-      ),
-    ])
-      .then(([s, d]) => {
-        setStatus(s);
-        setSeeds(d);
-      })
-      .catch((e) => setError(e.message));
-  }, []);
+  const handleGlobalSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      const q = e.currentTarget.value.trim();
+      if (q) navigate({ to: "/discover", search: { q } });
+    }
+  };
 
   if (error)
     return (
       <div className="p-6 text-agentprism-error">
-        Failed to load node status: {error}
+        Failed to load node status:{" "}
+        {error instanceof Error ? error.message : "Unknown error"}
       </div>
     );
-  if (!status)
+  if (isLoading || !status)
     return (
       <div className="p-6 text-agentprism-muted-foreground">Loading…</div>
     );
 
+  const totalSize =
+    status.total_size_bytes ??
+    (datasets ?? []).reduce((sum, d) => sum + (d.size_bytes ?? 0), 0);
+
   const cards = [
-    { label: "Connected Peers", value: status.connected_peers },
-    { label: "Published Datasets", value: status.published_datasets },
+    { label: "Connected Peers", value: status.connected_peers ?? 0 },
+    {
+      label: "Published Datasets",
+      value: status.published_datasets ?? (datasets ?? []).length,
+    },
     { label: "Seeding", value: status.seeding_count },
-    { label: "Total Size", value: formatSize(status.total_size_bytes) },
-    { label: "Uptime", value: formatUptime(status.uptime_secs) },
+    { label: "Total Size", value: formatSize(totalSize) },
+    { label: "Uptime", value: formatUptime(status.uptime) },
   ];
 
   return (
@@ -86,6 +69,14 @@ export default function Dashboard() {
           DID: {status.did}
         </p>
       </div>
+
+      {/* Global search → Discover */}
+      <input
+        type="text"
+        onKeyDown={handleGlobalSearch}
+        placeholder="Find datasets… (press Enter to discover)"
+        className="w-full rounded-lg border border-agentprism-border bg-agentprism-card px-3 py-2 text-sm outline-none focus:border-agentprism-primary"
+      />
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         {cards.map((c) => (
@@ -103,7 +94,7 @@ export default function Dashboard() {
 
       <div>
         <h3 className="text-sm font-semibold mb-2">Published Datasets</h3>
-        {seeds.length === 0 ? (
+        {!datasets || datasets.length === 0 ? (
           <p className="text-sm text-agentprism-muted-foreground">
             No datasets published yet.
           </p>
@@ -118,17 +109,17 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {seeds.map((s) => (
+                {datasets.map((d) => (
                   <tr
-                    key={s.cid}
+                    key={d.cid}
                     className="border-b border-agentprism-border/50"
                   >
-                    <td className="py-2 pr-4">{s.title}</td>
+                    <td className="py-2 pr-4">{d.title}</td>
                     <td className="py-2 pr-4 font-mono text-xs truncate max-w-[200px]">
-                      {s.cid}
+                      {d.cid}
                     </td>
                     <td className="py-2 pr-4 text-right">
-                      {formatSize(s.size_bytes)}
+                      {formatSize(d.size_bytes ?? 0)}
                     </td>
                   </tr>
                 ))}

@@ -156,7 +156,7 @@ export const useIsMobile = () => {
       setIsMobile(e.matches);
     };
 
-    handleChange(mediaQuery);
+    setIsMobile(mediaQuery.matches);
 
     mediaQuery.addEventListener("change", handleChange);
 

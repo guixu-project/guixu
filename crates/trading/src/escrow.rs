@@ -1,8 +1,8 @@
 // Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::wallet::AgentWallet;
 use crate::router::TransactionContext;
+use crate::wallet::AgentWallet;
 use alloy_primitives::{Address, U256};
 use anyhow::{bail, Context, Result};
 use data_core::types::*;
@@ -38,20 +38,12 @@ impl EscrowClient {
 
     /// Create for Base mainnet (chain_id = 8453).
     pub fn for_base_mainnet(wallet: AgentWallet) -> Self {
-        Self::new(
-            wallet,
-            "https://mainnet.base.org",
-            8453,
-        )
+        Self::new(wallet, "https://mainnet.base.org", 8453)
     }
 
     /// Create for Base Sepolia testnet (chain_id = 84532).
     pub fn for_base_sepolia(wallet: AgentWallet) -> Self {
-        Self::new(
-            wallet,
-            "https://sepolia.base.org",
-            84532,
-        )
+        Self::new(wallet, "https://sepolia.base.org", 84532)
     }
 
     /// Execute an escrowed purchase.
@@ -64,7 +56,13 @@ impl EscrowClient {
         let buyer_addr: Address = ctx.buyer.0.parse().context("invalid buyer address")?;
 
         // ERC-8183 createJob(address buyer, address seller, uint256 amount, bytes calldata cid, uint256 timeout)
-        let call_data = encode_create_job(buyer_addr, seller_addr, usdc_amount, &ctx.dataset_cid.0, timeout);
+        let call_data = encode_create_job(
+            buyer_addr,
+            seller_addr,
+            usdc_amount,
+            &ctx.dataset_cid.0,
+            timeout,
+        );
 
         info!(
             buyer = %ctx.buyer.0,
@@ -87,7 +85,9 @@ impl EscrowClient {
 
         // Step 5: Confirm job to release funds
         let confirm_data = encode_confirm_job(&tx_hash, &delivery.merkle_root);
-        let confirm_tx = self.send_transaction(seller_addr, confirm_data, 0u128).await?;
+        let confirm_tx = self
+            .send_transaction(seller_addr, confirm_data, 0u128)
+            .await?;
 
         info!(
             job_tx = %tx_hash,
@@ -113,14 +113,18 @@ impl EscrowClient {
 
         // Get nonce
         let nonce_raw = self
-            .call_rpc_raw("eth_getTransactionCount", &[serde_json::json!(from.to_string()), serde_json::json!("latest")])
+            .call_rpc_raw(
+                "eth_getTransactionCount",
+                &[
+                    serde_json::json!(from.to_string()),
+                    serde_json::json!("latest"),
+                ],
+            )
             .await?;
         let nonce = Self::parse_hex_to_u256(nonce_raw.as_str().unwrap_or("0x0"))?;
 
         // Get gas price
-        let gas_price_raw = self
-            .call_rpc_raw("eth_gasPrice", &[])
-            .await?;
+        let gas_price_raw = self.call_rpc_raw("eth_gasPrice", &[]).await?;
         let gas_price = Self::parse_hex_to_u256(gas_price_raw.as_str().unwrap_or("0x0"))?;
 
         // Estimate gas (simplified - use 200000 as default for contract interaction)
@@ -146,7 +150,11 @@ impl EscrowClient {
     }
 
     /// Call JSON-RPC method returning raw JSON value.
-    async fn call_rpc_raw(&self, method: &str, params: &[serde_json::Value]) -> Result<serde_json::Value> {
+    async fn call_rpc_raw(
+        &self,
+        method: &str,
+        params: &[serde_json::Value],
+    ) -> Result<serde_json::Value> {
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -154,7 +162,8 @@ impl EscrowClient {
             "id": 1,
         });
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(&self.rpc_url)
             .json(&request)
             .send()
@@ -166,13 +175,16 @@ impl EscrowClient {
             bail!("RPC error: {}", error);
         }
 
-        let result = resp.get("result").cloned().context("no result in RPC response")?;
+        let result = resp
+            .get("result")
+            .cloned()
+            .context("no result in RPC response")?;
         Ok(result)
     }
 
     /// Parse a hex string to U256 (handles "0x" prefix and various formats).
     fn parse_hex_to_u256(hex: &str) -> Result<U256> {
-        let hex_clean = if hex.starts_with("0x") { &hex[2..] } else { hex };
+        let hex_clean = hex.strip_prefix("0x").unwrap_or(hex);
         let bytes = hex::decode(hex_clean).context("failed to decode hex")?;
         let mut arr = [0u8; 32];
         let start = 32 - bytes.len().min(32);
@@ -205,7 +217,8 @@ impl EscrowClient {
         // In production, this would listen for Delivery events from the escrow contract
         // For now, we simulate a successful delivery
         Ok(DeliveryResult {
-            merkle_root: "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            merkle_root: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
         })
     }
 
@@ -225,7 +238,13 @@ struct DeliveryResult {
 
 /// Encode createJob call data.
 /// Function signature: createJob(address buyer, address seller, uint256 amount, bytes cid, uint256 timeout)
-fn encode_create_job(buyer: Address, seller: Address, amount: u128, cid: &str, timeout: u64) -> Vec<u8> {
+fn encode_create_job(
+    buyer: Address,
+    seller: Address,
+    amount: u128,
+    cid: &str,
+    timeout: u64,
+) -> Vec<u8> {
     // Function selector: keccak256("createJob(address,address,uint256,bytes,uint256)")[0:4]
     let selector = hex::decode("9c2e1d8").unwrap(); // First 4 bytes of the selector
 
@@ -306,14 +325,16 @@ fn encode_confirm_job(job_id: &str, merkle_root: &str) -> Vec<u8> {
     let job_hex = job_id.trim_start_matches("0x");
     let job_bytes = hex::decode(job_hex).unwrap_or_else(|_| vec![0u8; 32]);
     let mut job_padded = [0u8; 32];
-    job_padded[32 - job_bytes.len().min(32)..].copy_from_slice(&job_bytes[..job_bytes.len().min(32)]);
+    job_padded[32 - job_bytes.len().min(32)..]
+        .copy_from_slice(&job_bytes[..job_bytes.len().min(32)]);
     data.extend_from_slice(&job_padded);
 
     // Encode merkle_root (bytes32)
     let merkle_hex = merkle_root.trim_start_matches("0x");
     let merkle_bytes = hex::decode(merkle_hex).unwrap_or_else(|_| vec![0u8; 32]);
     let mut merkle_padded = [0u8; 32];
-    merkle_padded[32 - merkle_bytes.len().min(32)..].copy_from_slice(&merkle_bytes[..merkle_bytes.len().min(32)]);
+    merkle_padded[32 - merkle_bytes.len().min(32)..]
+        .copy_from_slice(&merkle_bytes[..merkle_bytes.len().min(32)]);
     data.extend_from_slice(&merkle_padded);
 
     data

@@ -3036,8 +3036,12 @@ mod selection_tests {
         }
     }
 
-    fn test_engine() -> SearchEngine {
-        SearchEngine::new(VectorIndex, IntentParser, vec![])
+    async fn test_engine() -> SearchEngine {
+        SearchEngine::new(
+            VectorIndex::init().await.expect("VectorIndex init failed"),
+            IntentParser,
+            vec![],
+        )
     }
 
     struct StubSampleEvaluator {
