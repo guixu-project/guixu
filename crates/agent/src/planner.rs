@@ -4,16 +4,92 @@
 use chrono::{DateTime, Utc};
 use data_core::agent::contracts::{DelegatedDataTask, JobId};
 use data_core::agent::memory::AgentMemory;
-use data_core::types::{DataType, SkillCapability, SourceFamily};
-use data_search::adapters::{load_data_skill_profiles, DataSkillProfile};
+use data_core::types::{DataType, LatencyClass, SignalFamily, SkillCapability, SourceFamily};
+use data_search::adapters::{load_data_skill_profiles, load_open_data_skills, DataSkillProfile};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanMode {
+    OneShot {
+        timeout_ms: u64,
+        max_results: usize,
+    },
+    Continuous {
+        watch_duration_secs: u64,
+        evaluation_interval_ms: u64,
+        opportunity_book_size: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathConfig {
+    pub hot_path: HotPathConfig,
+    pub warm_path: WarmPathConfig,
+    pub cold_path: ColdPathConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotPathConfig {
+    pub latency_budget_ms: u64,
+    pub include_signal_families: Vec<SignalFamily>,
+    pub exclude_llm: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WarmPathConfig {
+    pub latency_budget_ms: u64,
+    pub llm_explanation: bool,
+    pub cross_reference: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColdPathConfig {
+    pub latency_budget_ms: u64,
+    pub historical_analysis: bool,
+    pub backtest_enabled: bool,
+}
+
+impl Default for PathConfig {
+    fn default() -> Self {
+        Self {
+            hot_path: HotPathConfig {
+                latency_budget_ms: 1000,
+                include_signal_families: vec![
+                    SignalFamily::Mempool,
+                    SignalFamily::Swap,
+                    SignalFamily::WhaleFlow,
+                ],
+                exclude_llm: true,
+            },
+            warm_path: WarmPathConfig {
+                latency_budget_ms: 30_000,
+                llm_explanation: true,
+                cross_reference: true,
+            },
+            cold_path: ColdPathConfig {
+                latency_budget_ms: 300_000,
+                historical_analysis: true,
+                backtest_enabled: true,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EnrichedSkillProfile {
+    pub profile: DataSkillProfile,
+    pub latency_class: Option<LatencyClass>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillExecutionPlan {
     pub job_id: JobId,
+    pub mode: PlanMode,
     pub stages: Vec<PlanStage>,
     pub stop_conditions: Vec<StopCondition>,
     pub budget_policy: BudgetPolicy,
+    pub path_config: PathConfig,
     pub rationale: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -80,9 +156,26 @@ pub struct Planner;
 
 impl Planner {
     pub fn build(task: &DelegatedDataTask, memory: Option<&AgentMemory>) -> SkillExecutionPlan {
-        let mut routed_skills = route_skills(task);
+        let is_continuous = detect_continuous_monitoring_task(task);
+        let mode = if is_continuous {
+            PlanMode::Continuous {
+                watch_duration_secs: 3600,
+                evaluation_interval_ms: 5000,
+                opportunity_book_size: 50,
+            }
+        } else {
+            PlanMode::OneShot {
+                timeout_ms: 15_000,
+                max_results: 10,
+            }
+        };
 
-        // Memory boost: if a skill succeeded for a similar task before, move it to front
+        let path_config = PathConfig::default();
+
+        let routed_skills = route_skills(task);
+
+        let mut routed_skills = routed_skills;
+
         if let Some(mem) = memory {
             if let Some(mapping) = mem.get_best_mapping(&task.task.goal) {
                 if let Some(pos) = routed_skills
@@ -104,7 +197,7 @@ impl Planner {
                 source_family: Some(skill.source_family),
                 operation: PlannedOperation::Search,
                 priority: (i + 1) as u32,
-                timeout_ms: 15_000,
+                timeout_ms: if is_continuous { 30_000 } else { 15_000 },
             })
             .collect();
 
@@ -125,7 +218,7 @@ impl Planner {
                 source_family: None,
                 operation: PlannedOperation::Evaluate,
                 priority: 1,
-                timeout_ms: 10_000,
+                timeout_ms: if is_continuous { 60_000 } else { 10_000 },
             }],
         });
 
@@ -155,8 +248,13 @@ impl Planner {
             }
         }
 
+        if is_continuous {
+            rationale.push("mode: continuous monitoring".into());
+        }
+
         SkillExecutionPlan {
             job_id: task.job_id.clone(),
+            mode,
             stages,
             stop_conditions: vec![
                 StopCondition {
@@ -173,10 +271,41 @@ impl Planner {
                 free_first: !task.policy.allow_purchase,
                 allow_purchase: task.policy.allow_purchase,
             },
+            path_config,
             rationale,
             created_at: Utc::now(),
         }
     }
+}
+
+fn detect_continuous_monitoring_task(task: &DelegatedDataTask) -> bool {
+    let goal_lower = task.task.goal.to_ascii_lowercase();
+
+    let continuous_keywords = [
+        "monitor",
+        "watch",
+        "track",
+        "subscribe",
+        "stream",
+        "real-time",
+        "realtime",
+        "live",
+        "mempool",
+        "whale",
+        "swap",
+        "bridge",
+        "mint",
+        "governance",
+    ];
+
+    let has_continuous_keyword = continuous_keywords.iter().any(|kw| goal_lower.contains(kw));
+
+    let has_subscribe_capability = task
+        .policy
+        .required_capabilities
+        .contains(&SkillCapability::Subscribe);
+
+    has_continuous_keyword || has_subscribe_capability
 }
 
 fn route_skills(task: &DelegatedDataTask) -> Vec<DataSkillProfile> {
@@ -195,6 +324,130 @@ fn route_skills(task: &DelegatedDataTask) -> Vec<DataSkillProfile> {
             .then_with(|| left.skill_id.cmp(&right.skill_id))
     });
     skills
+}
+
+pub fn route_skills_for_signals(
+    task: &DelegatedDataTask,
+    path: LatencyClass,
+) -> Vec<EnrichedSkillProfile> {
+    let skills = load_open_data_skills().unwrap_or_default();
+
+    let subscribe_skills: Vec<EnrichedSkillProfile> = skills
+        .into_iter()
+        .filter(|skill| skill.capabilities.subscribe)
+        .map(|skill| {
+            let caps = &skill.capabilities;
+            let capabilities = {
+                let mut list = Vec::new();
+                if caps.search {
+                    list.push(SkillCapability::Search);
+                }
+                if caps.lookup {
+                    list.push(SkillCapability::Lookup);
+                }
+                if caps.download {
+                    list.push(SkillCapability::Download);
+                }
+                if caps.schema_probe {
+                    list.push(SkillCapability::SchemaProbe);
+                }
+                if caps.sample_preview {
+                    list.push(SkillCapability::SamplePreview);
+                }
+                if caps.license_lookup {
+                    list.push(SkillCapability::LicenseLookup);
+                }
+                if caps.query {
+                    list.push(SkillCapability::Query);
+                }
+                if caps.subscribe {
+                    list.push(SkillCapability::Subscribe);
+                }
+                if caps.backfill {
+                    list.push(SkillCapability::Backfill);
+                }
+                if caps.decode {
+                    list.push(SkillCapability::Decode);
+                }
+                if caps.simulate {
+                    list.push(SkillCapability::Simulate);
+                }
+                if caps.execute {
+                    list.push(SkillCapability::Execute);
+                }
+                list
+            };
+            EnrichedSkillProfile {
+                profile: DataSkillProfile {
+                    skill_id: skill.id.clone(),
+                    name: skill.name.clone(),
+                    description: skill.description.clone(),
+                    source_family: infer_source_family_from_id(&skill.id),
+                    capabilities,
+                    labels: skill.tags.clone(),
+                    routing_hints: if skill.routing_hints.is_empty() {
+                        skill.tags.clone()
+                    } else {
+                        skill.routing_hints.clone()
+                    },
+                },
+                latency_class: skill.governance.latency_class,
+            }
+        })
+        .collect();
+
+    let mut filtered: Vec<EnrichedSkillProfile> = if task.policy.required_capabilities.is_empty() {
+        subscribe_skills
+    } else {
+        subscribe_skills
+            .into_iter()
+            .filter(|e| {
+                task.policy
+                    .required_capabilities
+                    .iter()
+                    .all(|cap| e.profile.capabilities.contains(cap))
+            })
+            .collect()
+    };
+
+    filtered.sort_by(|left, right| {
+        let left_score = latency_match_score(path, &left.latency_class);
+        let right_score = latency_match_score(path, &right.latency_class);
+        right_score
+            .cmp(&left_score)
+            .then_with(|| left.profile.skill_id.cmp(&right.profile.skill_id))
+    });
+
+    filtered
+}
+
+fn infer_source_family_from_id(skill_id: &str) -> SourceFamily {
+    match skill_id.to_ascii_lowercase().as_str() {
+        "kaggle" | "huggingface" | "guixu_hub" | "guixu-hub" => SourceFamily::Marketplace,
+        "arxiv" | "dblp" | "semantic_scholar" | "datacite_commons" => SourceFamily::Academic,
+        "ipfs" | "bittorrent" => SourceFamily::Decentralized,
+        "postgresql" | "duckdb" | "spark" | "flink" | "presto" => SourceFamily::DbCatalog,
+        "local_file" | "localfile" => SourceFamily::Local,
+        "google_dataset_search"
+        | "pan_search"
+        | "open_data_skill"
+        | "defillama"
+        | "rwa_xyz"
+        | "rwaxyz"
+        | "thegraph" => SourceFamily::WebRegistry,
+        _ => SourceFamily::Custom,
+    }
+}
+
+fn latency_match_score(preferred: LatencyClass, actual: &Option<LatencyClass>) -> i64 {
+    match actual {
+        None => 0,
+        Some(class) if class == &preferred => 100,
+        Some(class) => {
+            let distance = (preferred as i32 - *class as i32).abs();
+            100 - (distance as i64 * 30)
+        }
+    }
 }
 
 fn filter_skill_profiles(
@@ -479,6 +732,38 @@ mod tests {
         }
     }
 
+    fn continuous_monitor_task() -> DelegatedDataTask {
+        DelegatedDataTask {
+            job_id: JobId::new(),
+            host: HostContext {
+                kind: HostKind::openclaw(),
+                session_key: "agent:main:main".into(),
+                run_id: None,
+            },
+            workspace: WorkspaceContext {
+                id: "repo:guixu".into(),
+                root_hint: None,
+            },
+            task: DataTaskSpec {
+                goal: "monitor mempool for large ETH transfers".into(),
+                task_type: Some("monitoring".into()),
+                required_modalities: vec![DataType::Text],
+                required_columns: vec!["tx_hash".into(), "value".into()],
+                budget: Some(Budget::usd(50.0)),
+            },
+            policy: TaskPolicy {
+                allow_purchase: true,
+                allowed_skill_ids: vec!["ethereum_mempool".into()],
+                blocked_skill_ids: vec![],
+                allowed_source_families: vec![],
+                required_capabilities: vec![SkillCapability::Subscribe],
+                require_license_review: false,
+            },
+            desired_outputs: vec![],
+            created_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn planner_builds_parallel_search_stage() {
         let task = test_task();
@@ -500,11 +785,9 @@ mod tests {
     fn planner_boosts_skill_from_memory() {
         let task = test_task();
 
-        // Without memory
         let plan_no_mem = Planner::build(&task, None);
         let first_no_mem = &plan_no_mem.stages[0].tasks[0].skill_id;
 
-        // With memory that says "arxiv" was great for similar tasks
         let mut memory = AgentMemory::default();
         memory.record_successful_mapping(
             "find a chart QA dataset",
@@ -521,7 +804,202 @@ mod tests {
             .iter()
             .any(|r| r.contains("memory_boost")));
 
-        // Verify it actually changed the order (arxiv might not have been first without memory)
-        let _ = first_no_mem; // used for comparison context
+        let _ = first_no_mem;
+    }
+
+    #[test]
+    fn planner_oneshot_mode_by_default() {
+        let task = test_task();
+        let plan = Planner::build(&task, None);
+        match plan.mode {
+            PlanMode::OneShot {
+                timeout_ms,
+                max_results,
+            } => {
+                assert_eq!(timeout_ms, 15_000);
+                assert_eq!(max_results, 10);
+            }
+            PlanMode::Continuous { .. } => {
+                panic!("Expected OneShot mode for non-continuous task");
+            }
+        }
+    }
+
+    #[test]
+    fn planner_continuous_mode_for_monitoring_task() {
+        let task = continuous_monitor_task();
+        let plan = Planner::build(&task, None);
+        match plan.mode {
+            PlanMode::OneShot { .. } => {
+                panic!("Expected Continuous mode for monitoring task");
+            }
+            PlanMode::Continuous {
+                watch_duration_secs,
+                evaluation_interval_ms,
+                opportunity_book_size,
+            } => {
+                assert_eq!(watch_duration_secs, 3600);
+                assert_eq!(evaluation_interval_ms, 5000);
+                assert_eq!(opportunity_book_size, 50);
+            }
+        }
+        assert!(plan.rationale.iter().any(|r| r.contains("continuous")));
+    }
+
+    #[test]
+    fn detect_continuous_monitoring_task_keywords() {
+        let monitor_task = DelegatedDataTask {
+            job_id: JobId::new(),
+            host: HostContext {
+                kind: HostKind::openclaw(),
+                session_key: "agent:main:main".into(),
+                run_id: None,
+            },
+            workspace: WorkspaceContext {
+                id: "repo:guixu".into(),
+                root_hint: None,
+            },
+            task: DataTaskSpec {
+                goal: "watch whale wallets for large swaps".into(),
+                task_type: None,
+                required_modalities: vec![],
+                required_columns: vec![],
+                budget: None,
+            },
+            policy: TaskPolicy {
+                allow_purchase: false,
+                allowed_skill_ids: vec![],
+                blocked_skill_ids: vec![],
+                allowed_source_families: vec![],
+                required_capabilities: vec![],
+                require_license_review: false,
+            },
+            desired_outputs: vec![],
+            created_at: Utc::now(),
+        };
+        assert!(detect_continuous_monitoring_task(&monitor_task));
+    }
+
+    #[test]
+    fn detect_continuous_monitoring_task_by_subscribe_capability() {
+        let task = DelegatedDataTask {
+            job_id: JobId::new(),
+            host: HostContext {
+                kind: HostKind::openclaw(),
+                session_key: "agent:main:main".into(),
+                run_id: None,
+            },
+            workspace: WorkspaceContext {
+                id: "repo:guixu".into(),
+                root_hint: None,
+            },
+            task: DataTaskSpec {
+                goal: "find datasets".into(),
+                task_type: None,
+                required_modalities: vec![],
+                required_columns: vec![],
+                budget: None,
+            },
+            policy: TaskPolicy {
+                allow_purchase: false,
+                allowed_skill_ids: vec![],
+                blocked_skill_ids: vec![],
+                allowed_source_families: vec![],
+                required_capabilities: vec![SkillCapability::Subscribe],
+                require_license_review: false,
+            },
+            desired_outputs: vec![],
+            created_at: Utc::now(),
+        };
+        assert!(detect_continuous_monitoring_task(&task));
+    }
+
+    #[test]
+    fn path_config_has_default_values() {
+        let config = PathConfig::default();
+        assert_eq!(config.hot_path.latency_budget_ms, 1000);
+        assert!(config.hot_path.exclude_llm);
+        assert_eq!(config.warm_path.latency_budget_ms, 30_000);
+        assert!(config.warm_path.llm_explanation);
+        assert!(config.warm_path.cross_reference);
+        assert_eq!(config.cold_path.latency_budget_ms, 300_000);
+        assert!(config.cold_path.historical_analysis);
+        assert!(config.cold_path.backtest_enabled);
+    }
+
+    #[test]
+    fn plan_mode_serialization() {
+        let oneshot = PlanMode::OneShot {
+            timeout_ms: 15000,
+            max_results: 10,
+        };
+        let json = serde_json::to_string(&oneshot).unwrap();
+        assert!(json.contains("one_shot"));
+        let deserialized: PlanMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, oneshot);
+
+        let continuous = PlanMode::Continuous {
+            watch_duration_secs: 3600,
+            evaluation_interval_ms: 5000,
+            opportunity_book_size: 50,
+        };
+        let json = serde_json::to_string(&continuous).unwrap();
+        assert!(json.contains("continuous"));
+        let deserialized: PlanMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, continuous);
+    }
+
+    #[test]
+    fn path_config_serialization() {
+        let config = PathConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("hot_path"));
+        assert!(json.contains("warm_path"));
+        assert!(json.contains("cold_path"));
+        let deserialized: PathConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.hot_path.latency_budget_ms,
+            config.hot_path.latency_budget_ms
+        );
+    }
+
+    #[test]
+    fn latency_match_score_prefers_matching_class() {
+        assert_eq!(
+            latency_match_score(LatencyClass::Hot, &Some(LatencyClass::Hot)),
+            100
+        );
+        assert_eq!(
+            latency_match_score(LatencyClass::Warm, &Some(LatencyClass::Warm)),
+            100
+        );
+        assert_eq!(
+            latency_match_score(LatencyClass::Cold, &Some(LatencyClass::Cold)),
+            100
+        );
+    }
+
+    #[test]
+    fn latency_match_score_penalizes_non_matching() {
+        let hot_score = latency_match_score(LatencyClass::Hot, &Some(LatencyClass::Cold));
+        let warm_score = latency_match_score(LatencyClass::Warm, &Some(LatencyClass::Hot));
+        assert!(hot_score < 100);
+        assert!(warm_score < 100);
+    }
+
+    #[test]
+    fn latency_match_score_handles_none() {
+        assert_eq!(latency_match_score(LatencyClass::Hot, &None), 0);
+    }
+
+    #[test]
+    fn skill_execution_plan_includes_mode_and_path_config() {
+        let task = test_task();
+        let plan = Planner::build(&task, None);
+        assert!(plan.path_config.hot_path.latency_budget_ms > 0);
+        match plan.mode {
+            PlanMode::OneShot { .. } => {}
+            PlanMode::Continuous { .. } => panic!("Expected OneShot"),
+        }
     }
 }

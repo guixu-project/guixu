@@ -1,0 +1,46 @@
+{
+  "spec_version": "2.0",
+  "id": "ethereum_mempool",
+  "name": "Ethereum Mempool Monitor",
+  "description": "Real-time Ethereum mempool monitoring for pending transactions, gas price anomalies, and whale movements.",
+  "source": "ethereum_mempool",
+  "tags": ["ethereum", "mempool", "pending_tx", "gas", "whale"],
+  "enabled": true,
+  "capabilities": {
+    "search": true,
+    "subscribe": true,
+    "backfill": true,
+    "decode": true,
+    "simulate": false,
+    "execute": false
+  },
+  "governance": {
+    "trust_tier": "first_party",
+    "latency_class": "hot",
+    "freshness_sla_ms": 500,
+    "reorg_safety_level": "unsafe_until_2_confirmations",
+    "confirmations_required": 0,
+    "decode_confidence": "high",
+    "rate_limit_hint": {
+      "requests_per_minute": 300,
+      "burst": 50
+    }
+  },
+  "provider": {
+    "kind": "ws_jsonrpc",
+    "base_url": "wss://mainnet.infura.io/ws/v3/YOUR_PROJECT_ID",
+    "subscriptions": {
+      "newPendingTransactions": {
+        "path": "/subscribe",
+        "unsubscribe_path": "/unsubscribe"
+      }
+    },
+    "event_mapping": {
+      "tx_hash": "transaction.hash",
+      "block_number": "blockNumber",
+      "from": "transaction.from",
+      "to": "transaction.to",
+      "value": "transaction.value"
+    }
+  }
+}

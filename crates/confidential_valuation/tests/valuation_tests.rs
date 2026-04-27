@@ -80,7 +80,7 @@ fn test_merge_verified_score() {
 
 #[test]
 fn test_merge_no_score_keeps_base() {
-    let mut r = mock_report("verified", Some("0xd"), None);
+    let r = mock_report("verified", Some("0xd"), None);
     let ev = build_evidence(&r, "groth16").unwrap();
     let merged = merge_into_proxy_score(60.0, &ev);
     assert_eq!(merged, 60.0);

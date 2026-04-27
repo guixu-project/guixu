@@ -542,6 +542,10 @@ fn build_heuristic_sample_requirements(task: &DatasetSelectionTask) -> SampleReq
         "time_series_prediction" | "forecasting" => required_signals.push("timestamp".into()),
         "video_classification" => required_signals.push("video".into()),
         "nlp" => required_signals.push("text".into()),
+        "image_corpus" | "image_retrieval" => {
+            required_signals.push("image".into());
+            required_signals.push("subject".into());
+        }
         _ => {}
     }
 

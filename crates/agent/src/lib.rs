@@ -4,4 +4,5 @@
 pub mod contracts;
 pub mod memory;
 pub mod planner;
+pub mod signal_supervisor;
 pub mod workflow;
