@@ -20,7 +20,7 @@
   "capabilities": {
     "search": true,
     "lookup": true,
-    "download": true,
+    "download": false,
     "schema_probe": false,
     "sample_preview": false,
     "license_lookup": false
