@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::handlers::job_api;
 use crate::registry::{ToolExecutor, ToolFuture, ToolRegistry};
 use crate::tool_adapters::legacy_json_tool;
 use crate::tools::{all_tool_definitions, validate_tool_definitions};
@@ -191,6 +192,49 @@ fn memory_history_executor<'a>(
     Box::pin(crate::handlers::memory_history::handle(args, state))
 }
 
+fn signal_subscribe_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::signal_subscribe::handle_signal_subscribe(
+        args, state,
+    ))
+}
+
+fn signal_unsubscribe_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::signal_subscribe::handle_signal_unsubscribe(args, state))
+}
+
+fn opportunity_rank_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::opportunity_rank::handle_opportunity_rank(
+        args, state,
+    ))
+}
+
+fn wallet_watch_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::opportunity_rank::handle_wallet_watch(
+        args, state,
+    ))
+}
+
+fn protocol_monitor_executor<'a>(
+    args: serde_json::Value,
+    state: &'a crate::state::AppState,
+) -> ToolFuture<'a> {
+    Box::pin(crate::handlers::opportunity_rank::handle_protocol_monitor(
+        args, state,
+    ))
+}
+
 pub fn build_registry() -> ToolRegistry {
     let mut definitions = collect_definitions();
     let mut registry = ToolRegistry::new();
@@ -286,6 +330,71 @@ pub fn build_registry() -> ToolRegistry {
     registry.register(legacy_json_tool(
         require_definition(&mut definitions, "memory_history"),
         executor_from_fn(memory_history_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "signal_subscribe"),
+        executor_from_fn(signal_subscribe_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "signal_unsubscribe"),
+        executor_from_fn(signal_unsubscribe_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "opportunity_rank"),
+        executor_from_fn(opportunity_rank_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "wallet_watch"),
+        executor_from_fn(wallet_watch_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "protocol_monitor"),
+        executor_from_fn(protocol_monitor_executor),
+    ));
+
+    fn ingest_jobs_executor<'a>(
+        args: serde_json::Value,
+        state: &'a crate::state::AppState,
+    ) -> ToolFuture<'a> {
+        Box::pin(job_api::ingest_jobs(args, state))
+    }
+
+    fn ingest_status_executor<'a>(
+        args: serde_json::Value,
+        state: &'a crate::state::AppState,
+    ) -> ToolFuture<'a> {
+        Box::pin(job_api::ingest_status(args, state))
+    }
+
+    fn ingest_resume_executor<'a>(
+        args: serde_json::Value,
+        state: &'a crate::state::AppState,
+    ) -> ToolFuture<'a> {
+        Box::pin(job_api::ingest_resume(args, state))
+    }
+
+    fn ingest_cancel_executor<'a>(
+        args: serde_json::Value,
+        state: &'a crate::state::AppState,
+    ) -> ToolFuture<'a> {
+        Box::pin(job_api::ingest_cancel(args, state))
+    }
+
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "ingest_jobs"),
+        executor_from_fn(ingest_jobs_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "ingest_status"),
+        executor_from_fn(ingest_status_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "ingest_resume"),
+        executor_from_fn(ingest_resume_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "ingest_cancel"),
+        executor_from_fn(ingest_cancel_executor),
     ));
 
     let all_definitions = registry.list_definitions();

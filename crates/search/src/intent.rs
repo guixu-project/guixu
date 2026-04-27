@@ -173,8 +173,11 @@ Use this exact json schema:
 
 Rules:
 - First infer the user's likely task description from the natural-language query and any relevant user memories.
-- task_type must be a concise task label such as classification, forecasting, detection, ranking, retrieval, segmentation, generation, summarization, or evaluation.
+- task_type must be a concise task label such as classification, forecasting, detection, ranking, retrieval, segmentation, generation, summarization, evaluation, image_corpus, or image_retrieval.
 - task_description must be a detailed natural-language description of what the user is trying to accomplish with the data.
+- When task_type is "image_corpus" or "image_retrieval", also include the following fields in your output:
+  - "image_query": { "subject": "string", "style": "string or null", "scene": "string or null", "shot_type": "string or null", "license_requirement": "string or null", "target_volume_bytes": "integer or null", "min_resolution": "string or null" }
+  - These fields capture the visual theme, aesthetic style, scene type, shot composition, licensing needs, target data volume, and minimum image resolution for image corpus searches.
 - data_standard.budget must preserve the amount together with its explicit unit or currency, for example "$20", "20 USD", "100 RMB", or "0.05 ETH".
 - If the query gives a bare budget number without a currency, normalize it as USD, for example "20 USD".
 - If the query does not explicitly mention a budget, data_standard.budget must be "0 USD".

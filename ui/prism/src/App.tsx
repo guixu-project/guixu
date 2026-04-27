@@ -3,142 +3,158 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useCallback, useEffect, useState } from "react";
-import type { TraceSpan, TraceRecord } from "@evilmartians/agent-prism-types";
 import {
-  TraceViewer,
-  type TraceViewerData,
-} from "./vendor/ui-components/TraceViewer/TraceViewer";
-import { fetchTraces, fetchSpans } from "./guixu-adapter";
+  createRouter,
+  createRoute,
+  createRootRoute,
+  RouterProvider,
+  Link,
+  Outlet,
+} from "@tanstack/react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Dashboard from "./pages/Dashboard";
+import Discover from "./pages/Discover";
 import Network from "./pages/Network";
 import Market from "./pages/Market";
+import TracesPage from "./pages/Traces";
+import Publish from "./pages/Publish";
+import Datasets from "./pages/Datasets";
+import Wallet from "./pages/Wallet";
+import Approvals from "./pages/Approvals";
 
 import "./vendor/ui-components/theme/theme.css";
 import "./vendor/ui-index.css";
 
-type Page = "dashboard" | "traces" | "network" | "market";
-type SpansCache = Record<string, TraceSpan[]>;
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
+});
 
-const NAV_ITEMS: { page: Page; label: string }[] = [
-  { page: "dashboard", label: "Dashboard" },
-  { page: "network", label: "Network" },
-  { page: "market", label: "Market" },
-  { page: "traces", label: "Traces" },
-];
+// --- Router ---
 
-function getPageFromHash(): Page {
-  const hash = window.location.hash.replace("#", "");
-  if (NAV_ITEMS.some((n) => n.page === hash)) return hash as Page;
-  return "dashboard";
-}
+const NAV_ITEMS = [
+  { to: "/", label: "Dashboard" },
+  { to: "/discover", label: "Discover" },
+  { to: "/datasets", label: "Datasets" },
+  { to: "/publish", label: "Publish" },
+  { to: "/market", label: "Market" },
+  { to: "/traces", label: "Traces" },
+  { to: "/network", label: "Network" },
+  { to: "/wallet", label: "Wallet" },
+  { to: "/approvals", label: "Approvals" },
+] as const;
 
-function TracesPage() {
-  const [traces, setTraces] = useState<TraceRecord[]>([]);
-  const [spansCache, setSpansCache] = useState<SpansCache>({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadTraces = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const records = await fetchTraces();
-      setTraces(records);
-      const cache: SpansCache = {};
-      await Promise.all(
-        records.map(async (r) => {
-          try {
-            cache[r.id] = await fetchSpans(r.id);
-          } catch {
-            cache[r.id] = [];
-          }
-        }),
-      );
-      setSpansCache(cache);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load traces");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadTraces();
-  }, [loadTraces]);
-
-  if (loading)
-    return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-agentprism-muted-foreground">Loading traces…</p>
-      </div>
-    );
-  if (error)
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4">
-        <p className="text-agentprism-error">{error}</p>
-        <button
-          onClick={loadTraces}
-          className="bg-agentprism-primary text-agentprism-primary-foreground rounded px-4 py-2"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  if (traces.length === 0)
-    return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-agentprism-muted-foreground">
-          No traces found. Run some agent workflows first.
-        </p>
-      </div>
-    );
-
-  const data: TraceViewerData[] = traces.map((t) => ({
-    traceRecord: t,
-    spans: spansCache[t.id] ?? [],
-  }));
-
-  return <TraceViewer data={data} />;
-}
-
-export default function App() {
-  const [page, setPage] = useState<Page>(getPageFromHash);
-
-  useEffect(() => {
-    const onHash = () => setPage(getPageFromHash());
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
-
-  const navigate = (p: Page) => {
-    window.location.hash = p;
-  };
-
-  return (
+const rootRoute = createRootRoute({
+  component: () => (
     <div className="bg-agentprism-background text-agentprism-foreground h-screen flex flex-col">
-      <nav className="flex items-center h-[50px] border-b border-agentprism-border px-4 gap-6 shrink-0">
-        <h1 className="text-sm font-semibold mr-4">Guixu</h1>
+      <nav className="flex items-center h-[50px] border-b border-agentprism-border px-4 gap-4 shrink-0 overflow-x-auto">
+        <h1 className="text-sm font-semibold mr-2 shrink-0">Guixu</h1>
         {NAV_ITEMS.map((n) => (
-          <button
-            key={n.page}
-            onClick={() => navigate(n.page)}
-            className={`text-sm py-1 border-b-2 transition-colors ${
-              page === n.page
-                ? "border-agentprism-primary text-agentprism-foreground font-medium"
-                : "border-transparent text-agentprism-muted-foreground hover:text-agentprism-foreground"
-            }`}
+          <Link
+            key={n.to}
+            to={n.to}
+            className="text-xs py-1 border-b-2 transition-colors shrink-0"
+            activeProps={{
+              className:
+                "border-agentprism-primary text-agentprism-foreground font-medium",
+            }}
+            inactiveProps={{
+              className:
+                "border-transparent text-agentprism-muted-foreground hover:text-agentprism-foreground",
+            }}
           >
             {n.label}
-          </button>
+          </Link>
         ))}
       </nav>
       <main className="flex-1 overflow-auto">
-        {page === "dashboard" && <Dashboard />}
-        {page === "network" && <Network />}
-        {page === "market" && <Market />}
-        {page === "traces" && <TracesPage />}
+        <Outlet />
       </main>
     </div>
+  ),
+});
+
+const indexRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/",
+  component: Dashboard,
+});
+
+const discoverRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/discover",
+  validateSearch: (search: Record<string, unknown>) => ({
+    q: (search.q as string) ?? "",
+  }),
+  component: () => {
+    const { q } = discoverRoute.useSearch();
+    return <Discover initialQuery={q || undefined} />;
+  },
+});
+
+const datasetsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/datasets",
+  component: Datasets,
+});
+
+const publishRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/publish",
+  component: Publish,
+});
+
+const networkRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/network",
+  component: Network,
+});
+
+const marketRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/market",
+  component: Market,
+});
+
+const tracesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/traces",
+  component: TracesPage,
+});
+
+const walletRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/wallet",
+  component: Wallet,
+});
+
+const approvalsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/approvals",
+  component: Approvals,
+});
+
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  discoverRoute,
+  datasetsRoute,
+  publishRoute,
+  networkRoute,
+  marketRoute,
+  tracesRoute,
+  walletRoute,
+  approvalsRoute,
+]);
+
+const router = createRouter({
+  routeTree,
+  basepath: "/prism",
+  defaultPreload: "intent",
+});
+
+export default function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
   );
 }

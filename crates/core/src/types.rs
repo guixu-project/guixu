@@ -3,6 +3,8 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use uuid::Uuid;
 
 /// Content identifier for a dataset (content-addressed hash).
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -207,6 +209,11 @@ pub enum SkillCapability {
     SamplePreview,
     LicenseLookup,
     Query,
+    Subscribe,
+    Backfill,
+    Decode,
+    Simulate,
+    Execute,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +225,16 @@ pub struct GovernanceMeta {
     pub provenance_hint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compliance_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_class: Option<LatencyClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness_sla_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reorg_safety_level: Option<ReorgSafetyLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmations_required: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decode_confidence: Option<DecodeConfidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +244,33 @@ pub enum TrustTier {
     Community,
     Verified,
     FirstParty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LatencyClass {
+    Hot,
+    Warm,
+    Cold,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReorgSafetyLevel {
+    ZeroConfirmations,
+    OneConfirmation,
+    TwoConfirmations,
+    SixConfirmations,
+    TwelveConfirmations,
+    Finalized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecodeConfidence {
+    High,
+    Medium,
+    Low,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -519,6 +563,92 @@ mod tests {
 }
 
 // ============================================================================
+// Delivery Manifest & Ingest Job Types
+// ============================================================================
+
+/// Reference to a single artifact within a delivery manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactRef {
+    pub artifact_id: String,
+    pub protocol: String, // "https" | "bt" | "ipfs" | "file"
+    pub uri: String,
+    pub size_bytes: u64,
+    pub checksum: Option<String>,
+    pub supports_range: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_headers: Option<std::collections::HashMap<String, String>>,
+}
+
+/// Packaging metadata for a delivery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackagingInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>, // e.g. "tar+parquet", "zip"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<String>, // e.g. "zstd", "gzip"
+}
+
+/// Access constraints for a delivery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_limit: Option<u32>,
+}
+
+/// Delivery manifest issued by guixu.market after order fulfillment.
+/// This is the authoritative record of what artifacts are available,
+/// how they are packaged, and how they can be accessed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliveryManifest {
+    pub order_id: String,
+    pub delivery_id: String,
+    pub dataset_id: String,
+    pub artifacts: Vec<ArtifactRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packaging: Option<PackagingInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<AccessInfo>,
+}
+
+/// State of an ingest job that manages large file download and processing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestState {
+    Pending,
+    Downloading,
+    Verifying,
+    Extracting,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// A download and ingestion job managed by the ingest subsystem.
+/// Tracks the full lifecycle of a large file acquisition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestJob {
+    pub job_id: uuid::Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    pub dataset_id: String,
+    pub manifest: DeliveryManifest,
+    pub state: IngestState,
+    pub target_bytes: u64,
+    pub downloaded_bytes: u64,
+    pub verified_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+// ============================================================================
 // Confidential Valuation Types
 // ============================================================================
 
@@ -556,4 +686,147 @@ pub struct ConfidentialValuationEvidence {
     pub recommendation: Option<String>,
     pub risk_flags: Vec<String>,
     pub roi_band: Option<String>,
+}
+
+// ============================================================================
+// Signal Event Model Types (Real-time Signal Discovery)
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalFamily {
+    Mempool,
+    Swap,
+    Bridge,
+    Mint,
+    Governance,
+    ContractVerify,
+    WhaleFlow,
+    NewPair,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChainId(pub String);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalId(pub String);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxHash(pub String);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Address(pub String);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalSource {
+    pub skill_id: String,
+    pub adapter_kind: String,
+    pub endpoint: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EntityRefs {
+    #[serde(default)]
+    pub tokens: Vec<String>,
+    #[serde(default)]
+    pub pools: Vec<String>,
+    #[serde(default)]
+    pub wallets: Vec<String>,
+    #[serde(default)]
+    pub contracts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Evidence {
+    pub evidence_type: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalEvent {
+    pub signal_id: SignalId,
+    pub signal_family: SignalFamily,
+    pub chain_id: ChainId,
+    pub block_number: u64,
+    pub tx_hash: TxHash,
+    pub observed_at: DateTime<Utc>,
+    pub source: SignalSource,
+    pub entity_refs: EntityRefs,
+    #[serde(default)]
+    pub features: HashMap<String, f64>,
+    #[serde(default)]
+    pub evidence: Vec<Evidence>,
+    pub confidence: f64,
+    pub freshness_ms: u64,
+    pub reorg_safe: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntityType {
+    Pool,
+    Vault,
+    Bridge,
+    Minter,
+    Deployer,
+    LP,
+    MarketMaker,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketEntity {
+    pub entity_type: EntityType,
+    pub chain_id: ChainId,
+    pub address: Address,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AlphaScore {
+    pub freshness_score: f64,
+    pub novelty_score: f64,
+    pub entity_importance_score: f64,
+    pub flow_score: f64,
+    pub execution_score: f64,
+    pub risk_score: f64,
+    pub evidence_score: f64,
+    pub decay_score: f64,
+    pub total: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionAction {
+    Alert,
+    Simulate,
+    SemiAuto,
+    AutoExecute,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionIntent {
+    pub action: ExecutionAction,
+    #[serde(default)]
+    pub route: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gas_budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slippage_bps: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Opportunity {
+    pub opportunity_id: Uuid,
+    #[serde(default)]
+    pub signal_events: Vec<SignalEvent>,
+    pub alpha_score: AlphaScore,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_plan: Option<ExecutionIntent>,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
 }

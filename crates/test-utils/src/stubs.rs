@@ -59,6 +59,10 @@ impl ExternalAdapter for StubAdapter {
 }
 
 /// Build a `SearchEngine` with the given stub adapters.
-pub fn stub_search_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
-    SearchEngine::new(VectorIndex, IntentParser, adapters)
+pub async fn stub_search_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
+    SearchEngine::new(
+        VectorIndex::init().await.expect("VectorIndex init failed"),
+        IntentParser,
+        adapters,
+    )
 }

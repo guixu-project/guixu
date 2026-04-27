@@ -12,6 +12,7 @@ mod open_data_skill;
 pub mod pan_search;
 mod rwa_xyz;
 pub(crate) mod sql_catalog;
+pub mod stream_adapter;
 pub(crate) mod util;
 
 use anyhow::{anyhow, Result};
@@ -31,6 +32,12 @@ pub use open_data_skill::{
 };
 pub use pan_search::PanSearchAdapter;
 pub use rwa_xyz::RwaXyzAdapter;
+pub use stream_adapter::{
+    BoxStream, EntityRef, EntityRefs, EntityType, Evidence, EvidenceType, GrpcStreamAdapter,
+    GrpcStreamAdapterConfig, SignalEvent, SignalFamily, SignalId, SignalSource, StreamAdapter,
+    SubgraphStreamAdapter, SubgraphStreamAdapterConfig, TxHash, WebSocketStreamAdapter,
+    WebSocketStreamAdapterConfig, WsAuth,
+};
 
 #[cfg(test)]
 pub(crate) use util::infer_data_type_from_title;
@@ -75,6 +82,9 @@ pub trait ExternalAdapter: Send + Sync {
             "query unsupported for adapter: {}",
             self.skill_id()
         ))
+    }
+    fn as_stream_adapter(&self) -> Option<&dyn StreamAdapter> {
+        None
     }
 }
 

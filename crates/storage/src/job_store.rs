@@ -4,6 +4,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use data_core::agent::contracts::{JobEvent, JobId, JobResult, JobState, JobStatus};
+use data_core::types::IngestJob;
 use rocksdb::{Options, DB};
 use std::path::Path;
 use std::sync::Arc;
@@ -134,6 +135,54 @@ impl JobStore {
             self.db.delete(key)?;
         }
         Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // IngestJob management (download + ingest lifecycle)
+    // -------------------------------------------------------------------------
+
+    pub fn put_ingest_job(&self, job: &IngestJob) -> Result<()> {
+        let key = format!("ingest:{}", job.job_id);
+        let value = serde_json::to_vec(job)?;
+        self.db.put(key.as_bytes(), &value)?;
+        Ok(())
+    }
+
+    pub fn get_ingest_job(&self, job_id: &uuid::Uuid) -> Result<Option<IngestJob>> {
+        let key = format!("ingest:{}", job_id);
+        match self.db.get(key.as_bytes())? {
+            Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn update_ingest_state(
+        &self,
+        job_id: &uuid::Uuid,
+        state: data_core::types::IngestState,
+    ) -> Result<IngestJob> {
+        let mut job = self
+            .get_ingest_job(job_id)?
+            .ok_or_else(|| anyhow::anyhow!("ingest job not found: {}", job_id))?;
+        job.state = state;
+        job.updated_at = Utc::now();
+        self.put_ingest_job(&job)?;
+        Ok(job)
+    }
+
+    pub fn list_ingest_jobs(&self) -> Result<Vec<IngestJob>> {
+        let mut results = vec![];
+        let iter = self.db.prefix_iterator(b"ingest:");
+        for item in iter {
+            let (k, v) = item?;
+            if !k.starts_with(b"ingest:") {
+                break;
+            }
+            if let Ok(job) = serde_json::from_slice::<IngestJob>(&v) {
+                results.push(job);
+            }
+        }
+        Ok(results)
     }
 }
 

@@ -26,10 +26,19 @@ uuid = { workspace = true }
 glob = "0.3"
 futures = "0.3"
 base64 = "0.22"
+url = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio-postgres = { workspace = true }
+tokio-tungstenite = "0.26"
+tonic = { version = "0.12", features = ["prost"] }
+prost = "0.13"
 qdrant-client = "1.7"
-thiserror = { workspace = true }
+ort = { version = "2.0.0-rc.12", optional = true, features = ["std", "ndarray", "load-dynamic"] }
+ndarray = { version = "0.17", optional = true }
+tokenizers = { version = "0.21", optional = true }
+
+[features]
+real-embeddings = ["ort", "ndarray", "tokenizers"]
 
 [dev-dependencies]
 tempfile = "3"

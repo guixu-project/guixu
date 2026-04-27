@@ -4,42 +4,33 @@
 use anyhow::Result;
 use data_core::metadata::DatasetMetadata;
 use data_core::types::DatasetCid;
-use qdrant_client::client::QdrantClient;
-use qdrant_client::qdrant::{CreateCollection, Distance, PointStruct, VectorParams, VectorsConfig};
+use qdrant_client::qdrant::{Distance, PointStruct, SearchPointsBuilder, UpsertPointsBuilder};
+use qdrant_client::Qdrant;
 use std::sync::Arc;
 
-/// Local vector index for semantic search over dataset metadata.
-/// Uses Qdrant in embedded/standalone mode.
 pub struct VectorIndex {
-    client: Arc<QdrantClient>,
+    client: Arc<Qdrant>,
     collection_name: String,
 }
 
 impl VectorIndex {
-    /// Initialize the vector index (create collection if not exists).
     pub async fn init() -> Result<Self> {
-        let client = QdrantClient::from_url("http://127.0.0.1:6334").build()?;
+        let client = Qdrant::from_url("http://127.0.0.1:6334").build()?;
 
-        // Create "datasets" collection with 384-dim vectors (all-MiniLM-L6-v2 output dim)
         let collection_name = "datasets";
-        let collection_exists = client.collection_exists(collection_name).await.unwrap_or(false);
+        let collection_exists = client
+            .collection_exists(collection_name)
+            .await
+            .unwrap_or(false);
 
         if !collection_exists {
             client
                 .create_collection(
-                    &CreateCollection {
-                        collection_name: collection_name.to_string(),
-                        vectors_config: Some(VectorsConfig {
-                            config: Some(qdrant_client::qdrant::vectors_config::Config::Params(
-                                VectorParams {
-                                    size: 384,
-                                    distance: Distance::Cosine.into(),
-                                    ..Default::default()
-                                },
-                            )),
-                        }),
-                        ..Default::default()
-                    },
+                    qdrant_client::qdrant::CreateCollectionBuilder::new(collection_name)
+                        .vectors_config(qdrant_client::qdrant::VectorParamsBuilder::new(
+                            384,
+                            Distance::Cosine,
+                        )),
                 )
                 .await?;
         }
@@ -50,9 +41,7 @@ impl VectorIndex {
         })
     }
 
-    /// Index a dataset's metadata (embed title+description+tags → vector).
     pub async fn upsert(&self, metadata: &DatasetMetadata) -> Result<()> {
-        // 1. Concatenate title + description + tags
         let text = [
             metadata.title.as_str(),
             metadata.description.as_deref().unwrap_or(""),
@@ -60,37 +49,30 @@ impl VectorIndex {
         ]
         .join(" ");
 
-        // 2. Generate embedding (384-dim vector for all-MiniLM-L6-v2)
         let embedding = self.embed_text(&text);
 
-        // 3. Upsert vector + payload into Qdrant
-        let point = PointStruct {
-            id: Some(metadata.cid.0.clone().into()),
-            vectors: Some(embedding),
-            payload: Some(
-                serde_json::json!({
-                    "cid": metadata.cid.0,
-                    "title": metadata.title,
-                    "description": metadata.description,
-                    "tags": metadata.tags,
-                })
-                .try_into()?,
-            ),
-        };
+        let mut payload = qdrant_client::Payload::with_capacity(4);
+        payload.insert("cid", metadata.cid.0.clone());
+        payload.insert("title", metadata.title.clone());
+        payload.insert(
+            "description",
+            metadata.description.clone().unwrap_or_default(),
+        );
+        payload.insert("tags", metadata.tags.join(","));
+
+        let point = PointStruct::new(metadata.cid.0.clone(), embedding, payload);
 
         self.client
-            .upsert_points(&self.collection_name, vec![point], None)
+            .upsert_points(UpsertPointsBuilder::new(&self.collection_name, vec![point]))
             .await?;
 
         Ok(())
     }
 
-    /// Generate a 384-dimensional embedding for text.
-    /// Note: This is a placeholder that generates random vectors.
-    /// In production, integrate with all-MiniLM-L6-v2 ONNX model via ort crate.
+    #[cfg(not(feature = "real-embeddings"))]
     fn embed_text(&self, text: &str) -> Vec<f32> {
-        // Placeholder: use simple hash-based pseudo-embedding for development
-        // TODO(milestone-2): Replace with actual ONNX model inference
+        use rand::Rng;
+        use rand::SeedableRng;
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -98,33 +80,101 @@ impl VectorIndex {
         text.hash(&mut hasher);
         let hash = hasher.finish();
 
-        // Generate deterministic pseudo-random 384-dim vector from hash
         let mut rng = rand::rngs::StdRng::seed_from_u64(hash);
-        use rand::Rng;
         (0..384).map(|_| rng.gen::<f32>()).collect()
     }
 
-    /// Semantic search: embed query → nearest neighbors.
+    #[cfg(feature = "real-embeddings")]
+    fn embed_text(&self, text: &str) -> Vec<f32> {
+        use ndarray::Array2;
+        use ort::session::Session;
+        use tokenizers::Tokenizer;
+
+        let model_path = std::env::var("EMBEDDING_MODEL_PATH")
+            .unwrap_or_else(|_| "models/all-MiniLM-L6-v2.onnx".to_string());
+        let tokenizer_path = std::env::var("TOKENIZER_PATH")
+            .unwrap_or_else(|_| "models/sentencepiece.bpe.model".to_string());
+
+        let mut session = Session::builder()
+            .expect("failed to create session builder")
+            .commit_from_file(&model_path)
+            .expect("failed to load embedding model");
+
+        let tokenizer = Tokenizer::from_file(&tokenizer_path).expect("failed to load tokenizer");
+
+        let encoding = tokenizer.encode(text, true).expect("tokenization failed");
+
+        let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
+        let attention_mask: Vec<i64> = encoding
+            .get_attention_mask()
+            .iter()
+            .map(|&x| x as i64)
+            .collect();
+
+        let seq_len = input_ids.len();
+        let batch_size = 1;
+
+        let input_array = Array2::from_shape_vec((batch_size, seq_len), input_ids)
+            .expect("failed to create input array");
+        let mask_array = Array2::from_shape_vec((batch_size, seq_len), attention_mask)
+            .expect("failed to create mask array");
+
+        let input_tensor = ort::value::Tensor::from_array(input_array.into_owned())
+            .expect("failed to create input tensor");
+        let mask_tensor = ort::value::Tensor::from_array(mask_array.into_owned())
+            .expect("failed to create mask tensor");
+
+        let outputs = session
+            .run(ort::inputs![input_tensor, mask_tensor])
+            .expect("model inference failed");
+
+        let output_array = outputs[0]
+            .try_extract_array::<f32>()
+            .expect("failed to extract output tensor");
+        let seq_len = output_array.shape()[1];
+        let mut embedding = vec![0.0f32; 384];
+        for i in 0..384 {
+            let mut sum = 0.0f32;
+            for j in 0..seq_len {
+                sum += output_array[[0, j, i]];
+            }
+            embedding[i] = sum / seq_len as f32;
+        }
+        Self::normalize(&mut embedding);
+        embedding
+    }
+
+    #[cfg(feature = "real-embeddings")]
+    fn normalize(v: &mut [f32]) {
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in v.iter_mut() {
+                *x /= norm;
+            }
+        }
+    }
+
     pub async fn search(&self, query_embedding: &[f32], limit: usize) -> Result<Vec<DatasetCid>> {
         let search_result = self
             .client
-            .search_points(&qdrant_client::qdrant::SearchPoints {
-                collection_name: self.collection_name.clone(),
-                vector: query_embedding.to_vec(),
-                limit: limit as u64,
-                ..Default::default()
-            })
+            .search_points(SearchPointsBuilder::new(
+                &self.collection_name,
+                query_embedding.to_vec(),
+                limit as u64,
+            ))
             .await?;
 
         let cids: Vec<DatasetCid> = search_result
             .result
             .iter()
             .filter_map(|point| {
-                point
-                    .payload
-                    .get("cid")
-                    .and_then(|v| v.as_str())
-                    .map(|s| DatasetCid(s.to_string()))
+                point.payload.get("cid").and_then(|v| {
+                    if let Some(qdrant_client::qdrant::value::Kind::StringValue(s)) = &v.kind {
+                        Some(DatasetCid(s.clone()))
+                    } else {
+                        None
+                    }
+                })
             })
             .collect();
 

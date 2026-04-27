@@ -1,0 +1,48 @@
+{
+  "spec_version": "2.0",
+  "id": "erc20_transfer_tracker",
+  "name": "ERC20 Transfer Tracker",
+  "description": "Track ERC20 token transfers for specific tokens with real-time alerts for large transfers.",
+  "source": "ethereum",
+  "tags": ["ethereum", "erc20", "transfer", "token", "whale"],
+  "enabled": true,
+  "capabilities": {
+    "search": true,
+    "subscribe": true,
+    "backfill": true,
+    "decode": true,
+    "simulate": false,
+    "execute": false
+  },
+  "governance": {
+    "trust_tier": "first_party",
+    "latency_class": "hot",
+    "freshness_sla_ms": 1000,
+    "reorg_safety_level": "unsafe_until_2_confirmations",
+    "confirmations_required": 0,
+    "decode_confidence": "high",
+    "rate_limit_hint": {
+      "requests_per_minute": 300,
+      "burst": 50
+    }
+  },
+  "provider": {
+    "kind": "ws_jsonrpc",
+    "base_url": "wss://mainnet.infura.io/ws/v3/YOUR_PROJECT_ID",
+    "subscriptions": {
+      "logs": {
+        "path": "/subscribe",
+        "unsubscribe_path": "/unsubscribe"
+      }
+    },
+    "event_mapping": {
+      "tx_hash": "transactionHash",
+      "block_number": "blockNumber",
+      "log_index": "logIndex",
+      "token_in": "topics[2]",
+      "token_out": "topics[3]",
+      "wallet": "address",
+      "raw_event": "data"
+    }
+  }
+}

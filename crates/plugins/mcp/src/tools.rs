@@ -607,6 +607,191 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["memory_key"]
             }),
         },
+        ToolDefinition {
+            name: "signal_subscribe".into(),
+            description: "Subscribe to real-time signal streams (mempool, swap, bridge events). Returns a subscription_id that can be used to manage the subscription or unsubscribe.".into(),
+            annotations: mutating_annotations(false),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "signal_family": {
+                        "type": "string",
+                        "enum": ["mempool", "swap", "bridge", "mint", "governance", "contract_verify", "whale_flow", "new_pair"],
+                        "description": "The signal family to subscribe to (e.g. mempool, swap, bridge)"
+                    },
+                    "chain_id": {
+                        "type": "string",
+                        "description": "The blockchain chain ID (e.g. ethereum, arbitrum, polygon)"
+                    },
+                    "filters": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional entity filters (wallet addresses, token symbols, pool addresses)"
+                    },
+                    "action_mode": {
+                        "type": "string",
+                        "enum": ["alert", "simulate", "semi_auto", "auto_execute"],
+                        "description": "Action mode for signals: alert (notify only), simulate (preview before action), semi_auto (confirm before execution), auto_execute (fully automated)"
+                    }
+                },
+                "required": ["signal_family", "chain_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "signal_unsubscribe".into(),
+            description: "Cancel an existing signal subscription.".into(),
+            annotations: mutating_annotations(true),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "subscription_id": {
+                        "type": "string",
+                        "description": "The subscription ID returned by signal_subscribe"
+                    }
+                },
+                "required": ["subscription_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "opportunity_rank".into(),
+            description: "Get a ranked list of trading opportunities based on alpha scores. Returns opportunities filtered by signal families, chains, minimum alpha score, and action mode. Useful for identifying high-value trading signals like mempool异动, large fund flows, or new pool creation.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of opportunities to return (default: 10)",
+                        "default": 10
+                    },
+                    "signal_families": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["mempool", "swap", "bridge", "mint", "governance", "contract_verify", "whale_flow", "new_pair"]
+                        },
+                        "description": "Filter by signal types (e.g. mempool, swap, bridge)"
+                    },
+                    "chain_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Filter by blockchain chain IDs (e.g. ethereum, arbitrum, polygon)"
+                    },
+                    "min_alpha_score": {
+                        "type": "number",
+                        "description": "Minimum alpha score threshold (0-100)"
+                    },
+                    "action_mode": {
+                        "type": "string",
+                        "enum": ["alert", "simulate", "semi_auto", "auto_execute"],
+                        "description": "Filter by execution action mode"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "wallet_watch".into(),
+            description: "Track wallet activity for specified addresses. Returns recent transactions, transfers, swaps, and other on-chain activity filtered by wallet addresses, chain IDs, and minimum value.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "wallets": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Wallet addresses to track"
+                    },
+                    "chain_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Filter by blockchain chain IDs"
+                    },
+                    "min_value_usd": {
+                        "type": "number",
+                        "description": "Minimum transaction value in USD"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "protocol_monitor".into(),
+            description: "Monitor protocol-level events such as new pool creation, parameter changes, large liquidations, and governance proposals. Returns events filtered by protocol, chain, and event type.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "protocols": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Protocol names to monitor (e.g. uniswap_v3, aave_v3, curve)"
+                    },
+                    "chain_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Filter by blockchain chain IDs"
+                    },
+                    "event_types": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Event types to include (e.g. new_pool, large_liquidation, parameter_change, market_listing, fee_switch)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "ingest_jobs".into(),
+            description: "List all ingest jobs for large file download and processing. Returns job metadata including state, progress, and error information.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "ingest_status".into(),
+            description: "Get detailed status of an ingest job including download progress and verification status.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The ingest job ID (UUID or ingest_ prefixed ID)"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "ingest_resume".into(),
+            description: "Resume a paused or failed ingest job for continuing large file downloads.".into(),
+            annotations: mutating_annotations(false),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The ingest job ID to resume"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "ingest_cancel".into(),
+            description: "Cancel an ongoing ingest job, stopping any active downloads.".into(),
+            annotations: mutating_annotations(false),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The ingest job ID to cancel"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
     ]
 }
 

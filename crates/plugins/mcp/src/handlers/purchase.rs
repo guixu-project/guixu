@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::Result;
+use chrono::Utc;
+use data_core::types::{ArtifactRef, DeliveryManifest, IngestJob, IngestState};
+use data_trading::router::TransactionContext;
 use serde_json::json;
 
-use data_core::types::{DatasetCid, PaymentProtocol};
-use data_trading::router::TransactionContext;
-
-use crate::server::AppState;
+use crate::state::AppState;
 
 pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String> {
     let cid_str = args.get("cid").and_then(|v| v.as_str()).unwrap_or("");
@@ -16,7 +16,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
 
-    let cid = DatasetCid(cid_str.to_string());
+    let cid = data_core::types::DatasetCid(cid_str.to_string());
     let metadata = match state.store.get(&cid)? {
         Some(m) => m,
         None => anyhow::bail!("Dataset {cid_str} not found"),
@@ -44,7 +44,6 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             .and_then(|v| v.as_str())
             .map(String::from)
             .or_else(|| {
-                // Auto-resolve x402 endpoint for Guixu Hub datasets
                 if let Some(listing_id) = cid_str.strip_prefix("guixu-hub:") {
                     let base = std::env::var("GUIXU_HUB_BASE_URL")
                         .unwrap_or_else(|_| "https://www.guixu.org".into());
@@ -63,7 +62,6 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
                         .collect()
                 })
                 .unwrap_or_default();
-            // Inject valuation report headers if provided
             if let Some(rid) = args.get("valuation_report_id").and_then(|v| v.as_str()) {
                 hdrs.push(("X-Valuation-Report-Id".into(), rid.into()));
             }
@@ -87,9 +85,11 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         let protocol = state.payment_router.select_protocol(&tx_ctx);
         let r = state.payment_router.pay(protocol, &tx_ctx).await?;
         let desc = match protocol {
-            PaymentProtocol::X402 => "Micropayment via x402 (USDC on Base L2)",
-            PaymentProtocol::StripeMpp => "Session payment via Stripe MPP",
-            PaymentProtocol::Erc8183 => "Escrowed payment via ERC-8183 (verify then release)",
+            data_core::types::PaymentProtocol::X402 => "Micropayment via x402 (USDC on Base L2)",
+            data_core::types::PaymentProtocol::StripeMpp => "Session payment via Stripe MPP",
+            data_core::types::PaymentProtocol::Erc8183 => {
+                "Escrowed payment via ERC-8183 (verify then release)"
+            }
         };
         (Some(r), desc)
     };
@@ -109,33 +109,75 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
         .and_then(|v| v.get("downloadUrl")?.as_str().map(String::from))
     {
-        json!({
-            "method": "url",
-            "download_url": download_url,
-        })
+        ("url".to_string(), download_url, None)
     } else {
         match state.store.get_file_path(&cid)? {
             Some(path) if path.exists() => {
-                json!({
-                    "method": "local",
-                    "file_path": path.to_string_lossy(),
-                    "size_bytes": std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
-                })
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                (
+                    "local".to_string(),
+                    path.to_string_lossy().to_string(),
+                    Some(size),
+                )
             }
             _ => {
                 let download_dir = state
                     .store
-                    .get_file_path(&DatasetCid("__config_data_dir__".into()))?
+                    .get_file_path(&data_core::types::DatasetCid("__config_data_dir__".into()))?
                     .unwrap_or_else(|| std::path::PathBuf::from("/tmp/guixu-downloads"));
                 let dest = download_dir.join(format!("{}.dat", &cid_str[..16.min(cid_str.len())]));
-                json!({
-                    "method": "torrent_pending",
-                    "info_hash": metadata.info_hash,
-                    "download_path": dest.to_string_lossy(),
-                })
+                (
+                    "torrent_pending".to_string(),
+                    dest.to_string_lossy().to_string(),
+                    None,
+                )
             }
         }
     };
+
+    let order_id = format!("order_{}", tx_id);
+    let delivery_id = format!("delivery_{}", uuid::Uuid::new_v4());
+    let target_bytes = delivery.2.unwrap_or(0);
+    let delivery_type = delivery.0.clone();
+    let delivery_uri = delivery.1.clone();
+
+    let manifest = DeliveryManifest {
+        order_id: order_id.clone(),
+        delivery_id: delivery_id.clone(),
+        dataset_id: cid_str.to_string(),
+        artifacts: vec![ArtifactRef {
+            artifact_id: format!("artifact_{}", uuid::Uuid::new_v4()),
+            protocol: delivery_type.clone(),
+            uri: delivery_uri.clone(),
+            size_bytes: target_bytes,
+            checksum: None,
+            supports_range: true,
+            required_headers: None,
+        }],
+        packaging: Some(data_core::types::PackagingInfo {
+            format: Some("zip".to_string()),
+            compression: Some("deflate".to_string()),
+        }),
+        access: None,
+    };
+
+    let job = IngestJob {
+        job_id: uuid::Uuid::new_v4(),
+        order_id: Some(order_id.clone()),
+        dataset_id: cid_str.to_string(),
+        manifest: manifest.clone(),
+        state: IngestState::Pending,
+        target_bytes,
+        downloaded_bytes: 0,
+        verified_bytes: 0,
+        resume_token: None,
+        failure_reason: None,
+        started_at: Utc::now(),
+        updated_at: Utc::now(),
+        completed_at: None,
+    };
+
+    state.job_store.put_ingest_job(&job)?;
 
     Ok(json!({
         "status": "purchased",
@@ -145,7 +187,15 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         "protocol_description": protocol_desc,
         "tx_id": tx_id,
         "on_chain_receipt": "EAS attestation simulated (Base L2)",
-        "delivery": delivery,
+        "delivery": {
+            "method": delivery_type,
+            "download_url": None::<String>,
+            "file_path": None::<String>,
+            "download_path": None::<String>,
+            "info_hash": metadata.info_hash,
+        },
+        "manifest": manifest,
+        "ingest_job_id": job.job_id.to_string(),
     })
     .to_string())
 }

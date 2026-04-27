@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::Result;
-use data_core::feedback::CommunitySignal;
 use data_core::metadata::DatasetMetadata;
 use data_core::types::QualityScore;
-use data_storage::FeedbackStore;
+use data_storage::feedback_store::FeedbackStore;
 use std::sync::Arc;
 
 /// Computes the universal quality score (0-100) for any dataset.
@@ -99,11 +98,7 @@ impl QualityScorer {
     }
 
     /// Score with actual data access (more accurate, requires download).
-    pub fn score_from_data(
-        &self,
-        data: &[u8],
-        metadata: &DatasetMetadata,
-    ) -> Result<QualityScore> {
+    pub fn score_from_data(&self, data: &[u8], metadata: &DatasetMetadata) -> Result<QualityScore> {
         use polars::prelude::*;
 
         // Try to parse data as Parquet or CSV to compute actual stats
@@ -113,14 +108,10 @@ impl QualityScorer {
             reader.finish().ok()
         } else if data.starts_with(&[0xff, 0xfe]) || data.starts_with(&[0xff, 0xf9]) {
             // CSV BOM (utf-8 BOM or utf-16 LE/BE)
-            CsvReader::new(std::io::Cursor::new(data))
-                .finish()
-                .ok()
+            CsvReader::new(std::io::Cursor::new(data)).finish().ok()
         } else {
             // Try as CSV without BOM
-            CsvReader::new(std::io::Cursor::new(data))
-                .finish()
-                .ok()
+            CsvReader::new(std::io::Cursor::new(data)).finish().ok()
         };
 
         let mut score = self.score_from_metadata(metadata);
@@ -129,12 +120,16 @@ impl QualityScorer {
             let height = df.height() as f64;
             if height > 0.0 {
                 // Compute actual null_rate from DataFrame
-                let null_count: u64 = df.null_count().iter().sum();
+                let null_count: u64 = df
+                    .null_count()
+                    .iter()
+                    .map(|s| s.sum::<u64>().unwrap_or(0))
+                    .sum();
                 let null_rate = null_count as f64 / (height * df.width() as f64);
                 score.completeness = (1.0 - null_rate) * 100.0;
 
                 // Compute actual unique_rate
-                let total_unique: u64 = df.n_unique().unwrap_or(1) as u64;
+                let total_unique: u64 = df.iter().map(|s| s.n_unique().unwrap_or(1) as u64).sum();
                 let unique_rate = (total_unique as f64 / height).min(1.0);
                 score.consistency = unique_rate * 100.0;
             }

@@ -58,6 +58,16 @@ pub struct SkillCapabilities {
     pub license_lookup: bool,
     #[serde(default)]
     pub query: bool,
+    #[serde(default)]
+    pub subscribe: bool,
+    #[serde(default)]
+    pub backfill: bool,
+    #[serde(default)]
+    pub decode: bool,
+    #[serde(default)]
+    pub simulate: bool,
+    #[serde(default)]
+    pub execute: bool,
 }
 
 impl SkillCapabilities {
@@ -84,6 +94,21 @@ impl SkillCapabilities {
         if self.query {
             capabilities.push(SkillCapability::Query);
         }
+        if self.subscribe {
+            capabilities.push(SkillCapability::Subscribe);
+        }
+        if self.backfill {
+            capabilities.push(SkillCapability::Backfill);
+        }
+        if self.decode {
+            capabilities.push(SkillCapability::Decode);
+        }
+        if self.simulate {
+            capabilities.push(SkillCapability::Simulate);
+        }
+        if self.execute {
+            capabilities.push(SkillCapability::Execute);
+        }
         capabilities
     }
 
@@ -102,6 +127,16 @@ pub struct SkillGovernance {
     pub provenance_hint: Option<String>,
     #[serde(default)]
     pub compliance_hint: Option<String>,
+    #[serde(default)]
+    pub latency_class: Option<LatencyClass>,
+    #[serde(default)]
+    pub freshness_sla_ms: Option<u64>,
+    #[serde(default)]
+    pub reorg_safety_level: Option<ReorgSafetyLevel>,
+    #[serde(default)]
+    pub confirmations_required: Option<u32>,
+    #[serde(default)]
+    pub decode_confidence: Option<DecodeConfidence>,
 }
 
 impl Default for SkillGovernance {
@@ -111,6 +146,11 @@ impl Default for SkillGovernance {
             rate_limit_hint: None,
             provenance_hint: None,
             compliance_hint: None,
+            latency_class: None,
+            freshness_sla_ms: None,
+            reorg_safety_level: None,
+            confirmations_required: None,
+            decode_confidence: None,
         }
     }
 }
@@ -135,6 +175,41 @@ pub enum SkillProvider {
         #[serde(default)]
         nl2sql: Box<Option<sql_catalog::Nl2SqlConfig>>,
     },
+    WsJsonRpc {
+        base_url: String,
+        #[serde(default)]
+        subscriptions: std::collections::HashMap<String, WsSubscriptionConfig>,
+        #[serde(default)]
+        event_mapping: Box<SkillItemMapping>,
+    },
+    GrpcStream {
+        endpoint: String,
+        service: String,
+        rpc_name: String,
+        #[serde(default)]
+        descriptor_path: Option<String>,
+        #[serde(default)]
+        event_mapping: Box<SkillItemMapping>,
+    },
+    Subgraph {
+        subgraph_url: String,
+        query: String,
+        #[serde(default = "default_poll_interval_ms")]
+        poll_interval_ms: u64,
+        #[serde(default)]
+        event_mapping: Box<SkillItemMapping>,
+    },
+}
+
+fn default_poll_interval_ms() -> u64 {
+    15000
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WsSubscriptionConfig {
+    pub path: String,
+    #[serde(default)]
+    pub unsubscribe_path: Option<String>,
 }
 
 /// Sample download provider configuration for a skill.
@@ -313,15 +388,38 @@ pub struct SkillItemMapping {
     pub created_at: Option<String>,
     #[serde(default)]
     pub download_count: Option<String>,
-    /// JSON path to price amount (e.g. "price.amount")
     #[serde(default)]
     pub price_amount: Option<String>,
-    /// JSON path to price currency (e.g. "price.currency")
     #[serde(default)]
     pub price_currency: Option<String>,
-    /// JSON path to per-item seller endpoint / download URL
     #[serde(default)]
     pub seller_endpoint: Option<String>,
+    #[serde(default)]
+    pub tx_hash: Option<String>,
+    #[serde(default)]
+    pub block_number: Option<String>,
+    #[serde(default)]
+    pub log_index: Option<String>,
+    #[serde(default)]
+    pub pool_address: Option<String>,
+    #[serde(default)]
+    pub token_in: Option<String>,
+    #[serde(default)]
+    pub token_out: Option<String>,
+    #[serde(default)]
+    pub amount_in: Option<String>,
+    #[serde(default)]
+    pub amount_out: Option<String>,
+    #[serde(default)]
+    pub wallet: Option<String>,
+    #[serde(default)]
+    pub counterparty: Option<String>,
+    #[serde(default)]
+    pub price_impact_bps: Option<String>,
+    #[serde(default)]
+    pub verified_contract: Option<String>,
+    #[serde(default)]
+    pub raw_event: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -504,6 +602,11 @@ fn build_adapter_from_skill(
                 rate_limit_hint: skill.governance.rate_limit_hint.clone(),
                 provenance_hint: skill.governance.provenance_hint.clone(),
                 compliance_hint: skill.governance.compliance_hint.clone(),
+                latency_class: skill.governance.latency_class,
+                freshness_sla_ms: skill.governance.freshness_sla_ms,
+                reorg_safety_level: skill.governance.reorg_safety_level,
+                confirmations_required: skill.governance.confirmations_required,
+                decode_confidence: skill.governance.decode_confidence,
             };
             let entries = resolve_catalog_entries(
                 engine,
@@ -522,6 +625,18 @@ fn build_adapter_from_skill(
                 *nl2sql.clone(),
             )))
         }
+        SkillProvider::WsJsonRpc { .. } => Err(anyhow!(
+            "ws_jsonrpc provider not yet implemented: {}",
+            skill.id
+        )),
+        SkillProvider::GrpcStream { .. } => Err(anyhow!(
+            "grpc_stream provider not yet implemented: {}",
+            skill.id
+        )),
+        SkillProvider::Subgraph { .. } => Err(anyhow!(
+            "subgraph provider not yet implemented: {}",
+            skill.id
+        )),
     }
 }
 
@@ -578,12 +693,70 @@ pub fn validate_skill_spec(skill: &OpenDataSkillSpec) -> Result<()> {
     if skill.id.trim().is_empty() {
         return Err(anyhow!("skill id must not be empty"));
     }
-    if let SkillProvider::HttpSearch { operations, .. } = &skill.provider {
-        if operations.search.path.trim().is_empty() {
-            return Err(anyhow!(
-                "http_search operation.search.path must not be empty"
-            ));
+    match &skill.provider {
+        SkillProvider::HttpSearch { operations, .. } => {
+            if operations.search.path.trim().is_empty() {
+                return Err(anyhow!(
+                    "http_search operation.search.path must not be empty"
+                ));
+            }
         }
+        SkillProvider::WsJsonRpc {
+            base_url,
+            subscriptions,
+            ..
+        } => {
+            if base_url.trim().is_empty() {
+                return Err(anyhow!("ws_jsonrpc base_url must not be empty"));
+            }
+            if subscriptions.is_empty() {
+                return Err(anyhow!("ws_jsonrpc subscriptions must not be empty"));
+            }
+        }
+        SkillProvider::GrpcStream {
+            endpoint,
+            service,
+            rpc_name,
+            ..
+        } => {
+            if endpoint.trim().is_empty() {
+                return Err(anyhow!("grpc_stream endpoint must not be empty"));
+            }
+            if service.trim().is_empty() {
+                return Err(anyhow!("grpc_stream service must not be empty"));
+            }
+            if rpc_name.trim().is_empty() {
+                return Err(anyhow!("grpc_stream rpc_name must not be empty"));
+            }
+        }
+        SkillProvider::Subgraph {
+            subgraph_url,
+            query,
+            poll_interval_ms,
+            ..
+        } => {
+            if subgraph_url.trim().is_empty() {
+                return Err(anyhow!("subgraph subgraph_url must not be empty"));
+            }
+            if query.trim().is_empty() {
+                return Err(anyhow!("subgraph query must not be empty"));
+            }
+            if *poll_interval_ms == 0 {
+                return Err(anyhow!("subgraph poll_interval_ms must be greater than 0"));
+            }
+        }
+        SkillProvider::NativeAdapter { .. } | SkillProvider::SqlCatalog { .. } => {}
+    }
+    if (skill.capabilities.subscribe
+        || skill.capabilities.backfill
+        || skill.capabilities.decode
+        || skill.capabilities.simulate
+        || skill.capabilities.execute)
+        && skill.spec_version.starts_with("1.")
+    {
+        return Err(anyhow!(
+            "real-time capabilities (subscribe/backfill/decode/simulate/execute) require spec_version 2.x"
+        ));
     }
     Ok(())
 }
@@ -1318,6 +1491,11 @@ impl HttpSkillAdapter {
                 rate_limit_hint: self.config.governance.rate_limit_hint.clone(),
                 provenance_hint: self.config.governance.provenance_hint.clone(),
                 compliance_hint: self.config.governance.compliance_hint.clone(),
+                latency_class: None,
+                freshness_sla_ms: None,
+                reorg_safety_level: None,
+                confirmations_required: None,
+                decode_confidence: None,
             }),
         }
     }

@@ -205,6 +205,15 @@ impl SearchEngine {
         self
     }
 
+    /// Returns all adapters that support the Subscribe capability.
+    pub fn stream_adapters(&self) -> Vec<&dyn ExternalAdapter> {
+        self.adapters
+            .iter()
+            .filter(|adapter| adapter.capabilities().contains(&SkillCapability::Subscribe))
+            .map(|adapter| adapter.as_ref())
+            .collect()
+    }
+
     fn adapter_by_skill_id(&self, skill_id: &str) -> Option<&dyn ExternalAdapter> {
         self.adapters
             .iter()
@@ -3036,8 +3045,12 @@ mod selection_tests {
         }
     }
 
-    fn test_engine() -> SearchEngine {
-        SearchEngine::new(VectorIndex, IntentParser, vec![])
+    async fn test_engine() -> SearchEngine {
+        SearchEngine::new(
+            VectorIndex::init().await.expect("VectorIndex init failed"),
+            IntentParser,
+            vec![],
+        )
     }
 
     struct StubSampleEvaluator {

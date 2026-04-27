@@ -1,0 +1,35 @@
+{
+  "spec_version": "2.0",
+  "id": "uniswap_v2_subgraph",
+  "name": "Uniswap V2 Subgraph",
+  "description": "Real-time Uniswap V2 pair creation, swaps, and liquidity events via The Graph.",
+  "source": "uniswap",
+  "tags": ["uniswap", "dex", "swap", "liquidity", "ethereum"],
+  "enabled": true,
+  "capabilities": {
+    "search": true,
+    "subscribe": true,
+    "backfill": true,
+    "decode": false,
+    "simulate": false,
+    "execute": false
+  },
+  "governance": {
+    "trust_tier": "verified",
+    "latency_class": "warm",
+    "freshness_sla_ms": 15000,
+    "reorg_safety_level": "safe_at_1_confirmation",
+    "confirmations_required": 1,
+    "decode_confidence": "high",
+    "rate_limit_hint": {
+      "requests_per_minute": 100,
+      "burst": 20
+    }
+  },
+  "provider": {
+    "kind": "subgraph",
+    "subgraph_url": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v2",
+    "query": "{ pairs(first: 10, orderBy: createdAt, orderDirection: desc) { id token0 { symbol } token1 { symbol } createdAt reserve0 reserve1 volumeUSD transactionHash } }",
+    "poll_interval_ms": 15000
+  }
+}

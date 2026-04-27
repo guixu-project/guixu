@@ -9,7 +9,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use libp2p::futures::StreamExt;
 use serde_json::json;
+use sha2::Digest;
 
 use data_core::config::NodeConfig;
 
@@ -89,10 +91,41 @@ fn http_client() -> Result<reqwest::Client> {
 }
 
 fn safe_filename(id: &str) -> String {
-    id.replace(['/', '\\'], "_")
+    let mut result = String::with_capacity(id.len());
+    let bytes = id.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'/' | b'\\' => result.push('_'),
+            b'.' if i + 1 < bytes.len() && bytes[i + 1] == b'.' => {
+                result.push('_');
+                result.push('_');
+                tracing::warn!("safe_filename: replaced path traversal sequence in id");
+            }
+            0 => {
+                tracing::warn!("safe_filename: null byte detected in id");
+            }
+            _ => result.push(b as char),
+        }
+        i += 1;
+    }
+    if result.is_empty() {
+        "unnamed".to_string()
+    } else {
+        result
+    }
 }
 
-async fn download_to_file(url: &str, dest: &Path) -> Result<u64> {
+const CHUNK_SIZE: usize = 8 * 1024 * 1024; // 8 MB chunks
+
+/// Stream-download a file to disk, writing in chunks to avoid loading the
+/// entire body into memory.  Writes to a `.tmp` file first, then atomically
+/// renames on success.
+///
+/// If `checksum` is provided it must be a `sha256:...` string and the file
+/// will be verified after download.
+async fn download_to_file(url: &str, dest: &Path, checksum: Option<&str>) -> Result<u64> {
     let client = http_client()?;
     let resp = client
         .get(url)
@@ -101,10 +134,41 @@ async fn download_to_file(url: &str, dest: &Path) -> Result<u64> {
         .with_context(|| format!("request failed: {url}"))?
         .error_for_status()
         .with_context(|| format!("HTTP error from: {url}"))?;
-    let bytes = resp.bytes().await?;
-    let len = bytes.len() as u64;
-    std::fs::write(dest, &bytes)?;
-    Ok(len)
+
+    let total_size: u64 = resp.content_length().unwrap_or(0);
+    let tmp_dest = dest.with_extension("tmp");
+
+    std::fs::create_dir_all(dest.parent().unwrap_or(Path::new(".")))?;
+    let file = tokio::fs::File::create(&tmp_dest).await?;
+    let mut writer = tokio::io::BufWriter::with_capacity(CHUNK_SIZE, file);
+    let mut downloaded: u64 = 0;
+    let mut stream = resp.bytes_stream();
+    let mut hasher: Option<sha2::Sha256> = checksum.map(|_| sha2::Digest::new());
+
+    use tokio::io::AsyncWriteExt;
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result?;
+        if let Some(ref mut h) = hasher {
+            h.update(&chunk);
+        }
+        writer.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+    }
+    writer.flush().await?;
+
+    // Atomically rename (.tmp -> dest)
+    tokio::fs::rename(&tmp_dest, dest).await?;
+
+    // Verify checksum if provided
+    if let Some(cs) = checksum {
+        let computed = format!("sha256:{:x}", hasher.unwrap().finalize());
+        if computed != cs {
+            std::fs::remove_file(dest).ok();
+            anyhow::bail!("checksum mismatch: expected {cs}, got {computed}");
+        }
+    }
+
+    Ok(total_size.max(downloaded))
 }
 
 fn ok_json(source: &str, id: &str, path: &Path, size: u64) -> Result<String> {
@@ -117,13 +181,21 @@ fn ok_json(source: &str, id: &str, path: &Path, size: u64) -> Result<String> {
     }))?)
 }
 
+fn check_cli_available(name: &str) -> Result<(), anyhow::Error> {
+    std::process::Command::new(name)
+        .arg("--version")
+        .status()
+        .map_err(|e| anyhow::anyhow!("'{}' is not installed or not in PATH: {}", name, e))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Generic HTTP download (IPFS, Common Crawl, etc.)
 // ---------------------------------------------------------------------------
 
 async fn download_http(id: &str, url: &str, source: &str, dir: &Path) -> Result<String> {
     let dest = dir.join(safe_filename(id));
-    let size = download_to_file(url, &dest).await?;
+    let size = download_to_file(url, &dest, None).await?;
     ok_json(source, id, &dest, size)
 }
 
@@ -132,6 +204,7 @@ async fn download_http(id: &str, url: &str, source: &str, dir: &Path) -> Result<
 // ---------------------------------------------------------------------------
 
 async fn download_kaggle(slug: &str, dir: &Path) -> Result<String> {
+    check_cli_available("kaggle").context("kaggle CLI is required for Kaggle downloads")?;
     let dest = dir.join(safe_filename(slug));
     std::fs::create_dir_all(&dest)?;
     let output = tokio::process::Command::new("kaggle")
@@ -161,7 +234,7 @@ async fn download_huggingface(repo_id: &str, dir: &Path) -> Result<String> {
     let dest = dir.join(safe_filename(repo_id));
     std::fs::create_dir_all(&dest)?;
 
-    // Try huggingface-cli (handles auth if configured).
+    // Try huggingface-cli first (handles auth if configured).
     let cli = tokio::process::Command::new("huggingface-cli")
         .args(["download", repo_id, "--local-dir"])
         .arg(&dest)
@@ -178,6 +251,7 @@ async fn download_huggingface(repo_id: &str, dir: &Path) -> Result<String> {
     }
 
     // Fallback: git clone (works for public repos without token).
+    check_cli_available("git").context("git CLI is required for HuggingFace downloads")?;
     let url = format!("https://huggingface.co/datasets/{repo_id}");
     let output = tokio::process::Command::new("git")
         .args(["clone", "--depth", "1", &url])
@@ -215,7 +289,7 @@ async fn download_uci(id: &str, dir: &Path) -> Result<String> {
     if let Some(slug) = slug {
         let url = format!("https://archive.ics.uci.edu/static/public/{numeric_id}/{slug}.zip");
         let dest = dir.join(format!("uci-{numeric_id}-{slug}.zip"));
-        let size = download_to_file(&url, &dest).await?;
+        let size = download_to_file(&url, &dest, None).await?;
         return ok_json("uci", id, &dest, size);
     }
 
@@ -276,7 +350,7 @@ async fn download_openml(id: &str, dir: &Path) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("OpenML dataset {id} has no download URL"))?;
 
     let dest = dir.join(format!("openml-{}", safe_filename(id)));
-    let size = download_to_file(file_url, &dest).await?;
+    let size = download_to_file(file_url, &dest, None).await?;
     ok_json("openml", id, &dest, size)
 }
 
@@ -314,7 +388,7 @@ async fn download_zenodo(id: &str, dir: &Path) -> Result<String> {
         let filename = file.get("key").and_then(|v| v.as_str()).unwrap_or("file");
         if let Some(url) = link {
             let dest = dest_dir.join(filename);
-            let size = download_to_file(url, &dest).await?;
+            let size = download_to_file(url, &dest, None).await?;
             total_size += size;
             downloaded.push(filename.to_string());
         }
@@ -353,7 +427,7 @@ async fn download_figshare(id: &str, dir: &Path) -> Result<String> {
         let filename = file.get("name").and_then(|v| v.as_str()).unwrap_or("file");
         if let Some(url) = url {
             let dest = dest_dir.join(filename);
-            let size = download_to_file(url, &dest).await?;
+            let size = download_to_file(url, &dest, None).await?;
             total_size += size;
             downloaded.push(filename.to_string());
         }
@@ -371,6 +445,7 @@ async fn download_figshare(id: &str, dir: &Path) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 async fn download_s3_no_sign(path: &str, source: &str, prefix: &str, dir: &Path) -> Result<String> {
+    check_cli_available("aws").context("aws CLI is required for S3 downloads")?;
     let dest = dir.join(format!("{source}-{}", safe_filename(path)));
     std::fs::create_dir_all(&dest)?;
     let s3_uri = format!("{prefix}{path}");
@@ -397,7 +472,7 @@ async fn download_s3_no_sign(path: &str, source: &str, prefix: &str, dir: &Path)
 // ---------------------------------------------------------------------------
 
 async fn download_openneuro(id: &str, dir: &Path) -> Result<String> {
-    // OpenNeuro snapshot download via S3-compatible endpoint.
+    check_cli_available("aws").context("aws CLI is required for OpenNeuro downloads")?;
     let dest = dir.join(format!("openneuro-{id}"));
     std::fs::create_dir_all(&dest)?;
     let s3_uri = format!("s3://openneuro.org/{id}");
@@ -431,6 +506,7 @@ async fn download_openneuro(id: &str, dir: &Path) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 async fn download_physionet(id: &str, dir: &Path) -> Result<String> {
+    check_cli_available("wget").context("wget CLI is required for PhysioNet downloads")?;
     let url = format!("https://physionet.org/files/{id}/");
     let dest = dir.join(format!("physionet-{}", safe_filename(id)));
     std::fs::create_dir_all(&dest)?;
@@ -471,11 +547,12 @@ async fn download_guixu_hub(cid: &str, dir: &Path, state: &AppState) -> Result<S
         }
     }
     let listing_id = cid.strip_prefix("guixu-hub:").unwrap_or(cid);
-    let base =
-        std::env::var("GUIXU_HUB_BASE_URL").unwrap_or_else(|_| "https://www.guixu.org".into());
+    let base = std::env::var("GUIXU_HUB_BASE_URL").map_err(|_| {
+        anyhow::anyhow!("GUIXU_HUB_BASE_URL environment variable not set — Guixu Hub downloads require explicit configuration")
+    })?;
     let url = format!("{base}/api/hub/datasets/{listing_id}/download");
     let dest = dir.join(format!("guixu-hub-{listing_id}"));
-    let size = download_to_file(&url, &dest).await?;
+    let size = download_to_file(&url, &dest, None).await?;
     ok_json("guixu_hub", cid, &dest, size)
 }
 

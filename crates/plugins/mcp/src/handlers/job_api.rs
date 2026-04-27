@@ -3,6 +3,7 @@
 
 use anyhow::Result;
 use data_core::agent::contracts::{JobEvent, JobEventType, JobId, JobState};
+use data_core::types::IngestState;
 use serde_json::json;
 use serde_json::Value;
 
@@ -111,5 +112,84 @@ pub async fn artifacts(args: Value, state: &AppState) -> Result<String> {
         "job_id": job_id.to_string(),
         "artifacts": result.as_ref().map(|r| r.artifacts.clone()).unwrap_or_default(),
         "selected_dataset": result.and_then(|r| r.selected_dataset.map(|cid| cid.0)),
+    }))?)
+}
+
+// ---------------------------------------------------------------------------
+// Ingest Job management (large file download lifecycle)
+// ---------------------------------------------------------------------------
+
+pub async fn ingest_jobs(_args: Value, state: &AppState) -> Result<String> {
+    let jobs = state.job_store.list_ingest_jobs()?;
+    Ok(serde_json::to_string_pretty(&json!({
+        "jobs": jobs,
+    }))?)
+}
+
+pub async fn ingest_status(args: Value, state: &AppState) -> Result<String> {
+    let job_id = args
+        .get("job_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
+    let job_uuid = uuid::Uuid::parse_str(job_id)
+        .or_else(|_| uuid::Uuid::parse_str(job_id.strip_prefix("ingest_").unwrap_or(job_id)))
+        .map_err(|_| anyhow::anyhow!("invalid job_id format: {job_id}"))?;
+    let job = state
+        .job_store
+        .get_ingest_job(&job_uuid)?
+        .ok_or_else(|| anyhow::anyhow!("ingest job not found: {job_id}"))?;
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "job_id": job.job_id.to_string(),
+        "dataset_id": job.dataset_id,
+        "state": job.state,
+        "target_bytes": job.target_bytes,
+        "downloaded_bytes": job.downloaded_bytes,
+        "verified_bytes": job.verified_bytes,
+        "resume_token": job.resume_token,
+        "failure_reason": job.failure_reason,
+        "started_at": job.started_at,
+        "updated_at": job.updated_at,
+        "completed_at": job.completed_at,
+    }))?)
+}
+
+pub async fn ingest_resume(args: Value, state: &AppState) -> Result<String> {
+    let job_id = args
+        .get("job_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
+    let job_uuid = uuid::Uuid::parse_str(job_id)
+        .or_else(|_| uuid::Uuid::parse_str(job_id.strip_prefix("ingest_").unwrap_or(job_id)))
+        .map_err(|_| anyhow::anyhow!("invalid job_id format: {job_id}"))?;
+
+    let job = state
+        .job_store
+        .update_ingest_state(&job_uuid, IngestState::Pending)?;
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "job_id": job.job_id.to_string(),
+        "state": job.state,
+        "message": "Ingest job resumed. Use dataset_download to restart.",
+    }))?)
+}
+
+pub async fn ingest_cancel(args: Value, state: &AppState) -> Result<String> {
+    let job_id = args
+        .get("job_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
+    let job_uuid = uuid::Uuid::parse_str(job_id)
+        .or_else(|_| uuid::Uuid::parse_str(job_id.strip_prefix("ingest_").unwrap_or(job_id)))
+        .map_err(|_| anyhow::anyhow!("invalid job_id format: {job_id}"))?;
+
+    let job = state
+        .job_store
+        .update_ingest_state(&job_uuid, IngestState::Cancelled)?;
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "job_id": job.job_id.to_string(),
+        "state": "cancelled",
+        "message": "Ingest job cancelled.",
     }))?)
 }

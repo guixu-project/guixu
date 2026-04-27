@@ -193,8 +193,12 @@ impl ExternalAdapter for MultiOpStubAdapter {
     }
 }
 
-fn make_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
-    SearchEngine::new(VectorIndex, IntentParser, adapters)
+async fn make_engine(adapters: Vec<Box<dyn ExternalAdapter>>) -> SearchEngine {
+    SearchEngine::new(
+        VectorIndex::init().await.expect("VectorIndex init failed"),
+        IntentParser,
+        adapters,
+    )
 }
 
 #[tokio::test]
