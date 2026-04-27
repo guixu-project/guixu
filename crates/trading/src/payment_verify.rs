@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn erc8183_escrow_passes() {
         let proof =
-            r#"{"tx_hash":"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"}"#;
+            r#"{"tx_hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
         assert!(verify_payment_proof(proof, 1.0).unwrap());
     }
 

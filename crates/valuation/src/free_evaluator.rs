@@ -3,7 +3,9 @@
 
 use anyhow::Result;
 use data_core::metadata::DatasetMetadata;
+use data_core::types::DatasetSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// Evaluates free datasets by Task Fitness — which free dataset best helps
 /// the Agent complete its current task.
@@ -91,9 +93,58 @@ impl FreeDataEvaluator {
         (matched as f64 / task.required_columns.len() as f64) * 100.0
     }
 
-    fn compute_temporal_coverage(&self, _metadata: &DatasetMetadata, _task: &TaskContext) -> f64 {
-        // TODO(milestone-3): parse temporal metadata and compare with task time_range
-        50.0
+    fn compute_temporal_coverage(&self, metadata: &DatasetMetadata, task: &TaskContext) -> f64 {
+        let Some((task_start, task_end)) = &task.time_range else {
+            return 50.0; // No time range specified in task
+        };
+
+        let task_start_date = chrono::NaiveDate::parse_from_str(task_start, "%Y-%m-%d");
+        let task_end_date = chrono::NaiveDate::parse_from_str(task_end, "%Y-%m-%d");
+
+        match (task_start_date, task_end_date) {
+            (Ok(ts), Ok(te)) => {
+                let dataset_start = self.extract_temporal_start(metadata);
+                let dataset_end = self.extract_temporal_end(metadata);
+
+                // Compute overlap ratio
+                let overlap_start = ts.max(dataset_start);
+                let overlap_end = te.min(dataset_end);
+                if overlap_end > overlap_start {
+                    let overlap_days = (overlap_end - overlap_start).num_days() as f64;
+                    let task_days = (te - ts).num_days().max(1) as f64;
+                    (overlap_days / task_days * 100.0).clamp(0.0, 100.0)
+                } else {
+                    0.0 // No temporal overlap
+                }
+            }
+            _ => 50.0, // Could not parse dates
+        }
+    }
+
+    fn extract_temporal_start(&self, metadata: &DatasetMetadata) -> chrono::NaiveDate {
+        // Check tags for "temporal:YYYY-MM-DD" or "since:YYYY-MM-DD"
+        for tag in &metadata.tags {
+            if let Some(date_str) = tag.strip_prefix("temporal:").or_else(|| tag.strip_prefix("since:")) {
+                if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                    return date;
+                }
+            }
+        }
+        // Fall back to created_at
+        metadata.created_at.date_naive()
+    }
+
+    fn extract_temporal_end(&self, metadata: &DatasetMetadata) -> chrono::NaiveDate {
+        // Check tags for "until:YYYY-MM-DD" or "temporal_end:YYYY-MM-DD"
+        for tag in &metadata.tags {
+            if let Some(date_str) = tag.strip_prefix("until:").or_else(|| tag.strip_prefix("temporal_end:")) {
+                if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                    return date;
+                }
+            }
+        }
+        // Fall back to updated_at
+        metadata.updated_at.date_naive()
     }
 
     /// PMI-based information gain estimate.
@@ -161,12 +212,58 @@ impl FreeDataEvaluator {
         (coverage * 60.0 + pmi_norm * 40.0).clamp(0.0, 100.0)
     }
 
-    fn compute_dedup_value(&self, _metadata: &DatasetMetadata, task: &TaskContext) -> f64 {
+    fn compute_dedup_value(&self, metadata: &DatasetMetadata, task: &TaskContext) -> f64 {
         if task.existing_data_cids.is_empty() {
             100.0 // no existing data → maximum dedup value
         } else {
-            // TODO(milestone-3): compare schema overlap with existing datasets
-            70.0
+            let candidate_cols: HashSet<String> = metadata
+                .schema
+                .columns
+                .iter()
+                .map(|c| c.name.to_lowercase())
+                .collect();
+
+            let mut total_similarity = 0.0;
+            let mut fetched = 0;
+
+            // For each existing CID, try to fetch its schema and compute overlap
+            for cid_str in &task.existing_data_cids {
+                if let Some(existing_schema) = self.fetch_schema_by_cid(cid_str) {
+                    let existing_cols: HashSet<String> = existing_schema
+                        .columns
+                        .iter()
+                        .map(|c| c.name.to_lowercase())
+                        .collect();
+
+                    total_similarity += jaccard_similarity(&candidate_cols, &existing_cols);
+                    fetched += 1;
+                }
+            }
+
+            if fetched == 0 {
+                return 70.0; // Could not fetch any existing schemas
+            }
+
+            // Higher overlap = lower dedup value (less new information)
+            // Lower overlap = higher dedup value (more new columns)
+            let avg_overlap = total_similarity / fetched as f64;
+            (1.0 - avg_overlap) * 100.0
         }
+    }
+
+    /// Fetch schema by CID. In production, this would query DHT or local schema store.
+    fn fetch_schema_by_cid(&self, _cid: &str) -> Option<DatasetSchema> {
+        // TODO: In production, query DHT or local schema store
+        None
+    }
+}
+
+fn jaccard_similarity(set_a: &HashSet<String>, set_b: &HashSet<String>) -> f64 {
+    let intersection = set_a.intersection(set_b).count() as f64;
+    let union = set_a.union(set_b).count() as f64;
+    if union == 0.0 {
+        1.0
+    } else {
+        intersection / union
     }
 }

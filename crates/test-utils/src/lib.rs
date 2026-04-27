@@ -6,6 +6,7 @@
 //! Provides fixture factories, stub adapters, and temporary store helpers
 //! so individual crates don't need to duplicate test setup logic.
 
+pub mod builders;
 pub mod fixtures;
 pub mod stores;
 pub mod stubs;

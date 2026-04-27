@@ -47,6 +47,8 @@ fn make_metadata(cid: &str) -> DatasetMetadata {
         updated_at: Utc::now(),
         verifiable_credential: None,
         source_attributes: None,
+        version: None,
+        previous_version: None,
     }
 }
 

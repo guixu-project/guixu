@@ -146,11 +146,13 @@ export const useIsMobile = () => {
 
   const [isMobile, setIsMobile] = useState(false);
 
-  useEffect(() => {
-    // TODO: replace with something more beautiful and correct (tailwind screens?)
-    const mediaQuery = window.matchMedia("(max-width: 1023px)");
+  // Tailwind's lg breakpoint is 1024px, so max-lg corresponds to 1023px
+  const LG_BREAKPOINT_PX = 1024;
 
-    const handleChange = (e: MediaQueryListEvent | MediaQueryList) => {
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(`(max-width: ${LG_BREAKPOINT_PX - 1}px)`);
+
+    const handleChange = (e: MediaQueryListEvent) => {
       setIsMobile(e.matches);
     };
 

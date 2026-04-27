@@ -127,6 +127,32 @@ impl RedactionSummary {
             _ => {}
         }
     }
+
+    /// Compute total number of redactions across all categories.
+    pub fn total_redactions(&self) -> usize {
+        self.uuids
+            + self.file_paths
+            + self.urls
+            + self.ips
+            + self.emails
+            + self.api_keys
+            + self.content_fields
+            + self.errors
+            + self.attributes_removed
+    }
+
+    /// Merge another RedactionSummary into this one (cumulative addition).
+    pub fn merge(&mut self, other: &RedactionSummary) {
+        self.uuids += other.uuids;
+        self.file_paths += other.file_paths;
+        self.urls += other.urls;
+        self.ips += other.ips;
+        self.emails += other.emails;
+        self.api_keys += other.api_keys;
+        self.content_fields += other.content_fields;
+        self.errors += other.errors;
+        self.attributes_removed += other.attributes_removed;
+    }
 }
 
 /// Global compiled regex patterns (compiled once, reused across all sanitizations).
@@ -207,8 +233,28 @@ impl TraceSanitizer {
         }
     }
 
-    /// Standard sanitization: rename IDs, redact sensitive strings.
-    fn sanitize_standard(&self, span: &SpanRecord) -> SpanRecord {
+    /// Sanitize a single span and track redaction summary.
+    pub fn sanitize_span_with_report(&self, span: &SpanRecord) -> (SpanRecord, RedactionSummary) {
+        match self.level {
+            SanitizationLevel::Off => (span.clone(), RedactionSummary::default()),
+            SanitizationLevel::Standard => {
+                let (sanitized, report) = self.sanitize_standard_with_report(span);
+                (sanitized, report.summary)
+            }
+            SanitizationLevel::Strict => {
+                let sanitized = self.sanitize_strict(span);
+                // Strict mode removes all attributes - count as attribute removals
+                let mut summary = RedactionSummary::default();
+                if let serde_json::Value::Object(obj) = &span.attributes {
+                    summary.attributes_removed = obj.len();
+                }
+                (sanitized, summary)
+            }
+        }
+    }
+
+    /// Standard sanitization with detailed redaction report.
+    fn sanitize_standard_with_report(&self, span: &SpanRecord) -> (SpanRecord, RedactionReport) {
         let mut id_renamer = IdRenamer::new();
         let mut report = RedactionReport::default();
 
@@ -258,7 +304,12 @@ impl TraceSanitizer {
         // Redact content in attributes
         self.redact_content_fields(&mut result, &mut report);
 
-        result
+        (result, report)
+    }
+
+    /// Standard sanitization: rename IDs, redact sensitive strings.
+    fn sanitize_standard(&self, span: &SpanRecord) -> SpanRecord {
+        self.sanitize_standard_with_report(span).0
     }
 
     /// Strict sanitization: remove all semantic content, keep only timing and counts.
@@ -424,7 +475,6 @@ impl TraceSanitizer {
             source: source.to_string(),
             ..Default::default()
         };
-        let mut redacted_total = 0usize;
 
         let traces = store.list_traces(source, 10000)?;
         let mut file = File::create(output_path)?;
@@ -434,31 +484,24 @@ impl TraceSanitizer {
                 .get_trace_spans(&summary.trace_id, source)
                 .unwrap_or_default();
 
-            let check_redaction = self.level != SanitizationLevel::Off;
-            let processed: Vec<(String, bool)> = spans
+            // Process spans with detailed redaction tracking
+            let processed: Vec<(String, RedactionSummary)> = spans
                 .par_iter()
                 .map(|span| {
-                    let sanitized = self.sanitize_span(span);
+                    let (sanitized, summary) = self.sanitize_span_with_report(span);
                     let json = serde_json::to_string(&sanitized).unwrap_or_default();
-                    let was_redacted = check_redaction && {
-                        let orig_len = serde_json::to_string(span).map(|s| s.len()).unwrap_or(0);
-                        json.len() < orig_len
-                    };
-                    (json, was_redacted)
+                    (json, summary)
                 })
                 .collect();
 
-            for (json, was_redacted) in processed {
+            for (json, summary) in processed {
                 writeln!(file, "{}", json)?;
                 report.spans_exported += 1;
-                if was_redacted {
-                    redacted_total += 1;
-                }
+                report.redaction_summary.merge(&summary);
             }
         }
 
-        report.total_redactions = redacted_total;
-        report.redaction_summary = RedactionSummary::default(); // TODO: track properly
+        report.total_redactions = report.redaction_summary.total_redactions();
 
         Ok(report)
     }

@@ -26,10 +26,9 @@ export const ExpandAllButton = ({
       size="6"
       onClick={onExpandAll}
       aria-label="Expand all"
+      icon={<ChevronsUpDown className="size-3.5" />}
       {...rest}
-    >
-      <ChevronsUpDown className="size-3.5" />
-    </IconButton>
+    />
   );
 };
 
@@ -42,9 +41,8 @@ export const CollapseAllButton = ({
       size="6"
       onClick={onCollapseAll}
       aria-label="Collapse all"
+      icon={<ChevronsDownUp className="size-3.5" />}
       {...rest}
-    >
-      <ChevronsDownUp className="size-3.5" />
-    </IconButton>
+    />
   );
 };

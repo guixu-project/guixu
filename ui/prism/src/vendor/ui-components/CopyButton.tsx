@@ -60,9 +60,8 @@ export const CopyButton = ({ label, content }: CopyButtonProps) => {
       onClick={onClick}
       aria-label={getAriaLabel()}
       variant="ghost"
+      icon={getIcon()}
       disabled={copyState !== "idle"}
-    >
-      {getIcon()}
-    </IconButton>
+    />
   );
 };
