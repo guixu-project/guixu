@@ -28,7 +28,8 @@ pub use guixu_p2p::{DhtQuerier, GuixuP2PAdapter};
 pub use local_file::LocalFileAdapter;
 pub use open_data_skill::{
     execute_skill_operation, load_data_skill_profiles, load_open_data_skills, DataSkillProfile,
-    OpenDataSkillSpec, SkillAuth, SkillProvider, SkillSampleParseMode, SkillSampleProvider,
+    HttpSkillAdapter, OpenDataSkillSpec, SkillAuth, SkillProvider, SkillSampleParseMode,
+    SkillSampleProvider,
 };
 pub use pan_search::PanSearchAdapter;
 pub use rwa_xyz::RwaXyzAdapter;

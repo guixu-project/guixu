@@ -3,7 +3,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use data_core::config::{DuckDbCatalog, PostgreSqlCatalog, SqlEndpointCatalog};
@@ -800,7 +799,7 @@ pub fn parse_skill_source(source: &str) -> Result<DataSource> {
     })
 }
 
-struct HttpSkillAdapterConfig {
+pub struct HttpSkillAdapterConfig {
     id: String,
     name: String,
     description: String,
@@ -863,7 +862,7 @@ pub async fn apply_skill_auth(
             if let Some(scope) = scope {
                 form.push(("scope", scope.clone()));
             }
-            let token_json: serde_json::Value = reqwest::Client::new()
+            let token_json: serde_json::Value = crate::http_client::SHARED_HTTP_CLIENT
                 .post(token_url)
                 .form(&form)
                 .send()
@@ -881,7 +880,7 @@ pub async fn apply_skill_auth(
     })
 }
 
-struct HttpSkillAdapter {
+pub struct HttpSkillAdapter {
     config: HttpSkillAdapterConfig,
     client: reqwest::Client,
 }
@@ -970,11 +969,7 @@ impl HttpSkillAdapter {
     fn new(config: HttpSkillAdapterConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .user_agent("guixu/0.1")
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            client: crate::http_client::SHARED_HTTP_CLIENT.clone(),
         }
     }
 
@@ -1088,6 +1083,14 @@ impl HttpSkillAdapter {
         Ok(headers)
     }
 
+    pub fn render_operation_path(path: &str, id: &str) -> String {
+        if path.contains("{id}") {
+            path.replace("{id}", &urlencoding::encode(id))
+        } else {
+            path.to_string()
+        }
+    }
+
     async fn execute_request(
         &self,
         operation: &HttpOperation,
@@ -1095,12 +1098,18 @@ impl HttpSkillAdapter {
     ) -> Result<serde_json::Value> {
         let headers = self.base_headers(operation).await?;
         let method = operation.method.to_ascii_uppercase();
+        let path_id = params.get("id").and_then(|v| v.as_str());
+        let rendered_path = if let Some(id) = path_id {
+            Self::render_operation_path(&operation.path, id)
+        } else {
+            operation.path.clone()
+        };
         let response = if method == "POST" {
             self.client
                 .post(format!(
                     "{}{}",
                     self.config.base_url.trim_end_matches('/'),
-                    operation.path
+                    rendered_path
                 ))
                 .headers(headers)
                 .json(params)
@@ -1115,7 +1124,7 @@ impl HttpSkillAdapter {
                 .get(format!(
                     "{}{}",
                     self.config.base_url.trim_end_matches('/'),
-                    operation.path
+                    rendered_path
                 ))
                 .headers(headers)
                 .query(&query_params)
@@ -1151,14 +1160,22 @@ impl HttpSkillAdapter {
         page_index: usize,
     ) -> Result<Vec<serde_json::Value>> {
         let mut params = operation.static_params.clone();
-        params.insert(
-            if operation.query_param.is_empty() {
-                "q".to_string()
-            } else {
-                operation.query_param.clone()
-            },
-            serde_json::Value::String(query.to_string()),
-        );
+        let path_has_template = operation.path.contains("{id}");
+        if path_has_template {
+            params.insert(
+                "id".to_string(),
+                serde_json::Value::String(query.to_string()),
+            );
+        } else {
+            params.insert(
+                if operation.query_param.is_empty() {
+                    "q".to_string()
+                } else {
+                    operation.query_param.clone()
+                },
+                serde_json::Value::String(query.to_string()),
+            );
+        }
 
         match &operation.pagination {
             PaginationConfig::None => {
@@ -1528,14 +1545,32 @@ impl ExternalAdapter for HttpSkillAdapter {
             return Ok(vec![]);
         }
 
-        Ok(self
+        let cache_key = crate::search_cache::SearchCache::cache_key(&self.config.id, query, limit);
+        let ttl = crate::search_cache::SearchCache::ttl_for_skill(&self.config.id);
+
+        static CACHE: std::sync::LazyLock<crate::search_cache::SearchCache> =
+            std::sync::LazyLock::new(crate::search_cache::SearchCache::new);
+
+        if let Some(cached) = CACHE.get(&cache_key).await {
+            tracing::debug!(skill_id = %self.config.id, cache_hit = true, "search cache hit");
+            return Ok(cached);
+        }
+
+        let raw_results = self
             .execute_named_operation(ExecutedOperation::Search, query, limit)
-            .await?
+            .await?;
+
+        let results: Vec<SearchResult> = raw_results
             .into_iter()
             .take(limit)
             .enumerate()
             .map(|(i, item)| self.normalize_search_item(item, i))
-            .collect())
+            .collect();
+
+        CACHE.set(cache_key, results.clone(), ttl).await;
+        tracing::debug!(skill_id = %self.config.id, result_count = results.len(), "search cache miss, cached result");
+
+        Ok(results)
     }
 
     async fn lookup(&self, id: &str) -> Result<Vec<serde_json::Value>> {

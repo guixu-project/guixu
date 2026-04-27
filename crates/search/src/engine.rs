@@ -13,6 +13,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use tracing::warn;
 
 use crate::adapters::ExternalAdapter;
@@ -25,6 +26,7 @@ const ON_CHAIN_TRADE_SATURATION: u64 = 50;
 const ON_CHAIN_SENTIMENT_SAMPLE_LIMIT: usize = 20;
 const MAX_SELECTION_BUDGET_BUCKETS: usize = 10_000;
 const SELECTION_VALUE_EPSILON: f64 = 1e-6;
+const ADAPTER_SEARCH_TIMEOUT_SECS: u64 = 5;
 
 /// Search filters that can be applied to results.
 #[derive(Debug, Clone, Default)]
@@ -907,6 +909,7 @@ impl SearchEngine {
         limit: usize,
     ) -> (Vec<SearchResult>, Vec<String>) {
         let external_query = build_search_query(intent);
+        let timeout_duration = Duration::from_secs(ADAPTER_SEARCH_TIMEOUT_SECS);
         let mut futures: FuturesUnordered<_> = self
             .adapters
             .iter()
@@ -914,10 +917,9 @@ impl SearchEngine {
             .map(|adapter| {
                 let query = external_query.clone();
                 async move {
-                    (
-                        adapter.name().to_string(),
-                        adapter.search(&query, limit).await,
-                    )
+                    let result =
+                        tokio::time::timeout(timeout_duration, adapter.search(&query, limit)).await;
+                    (adapter.name().to_string(), result)
                 }
             })
             .collect();
@@ -926,8 +928,7 @@ impl SearchEngine {
         let mut errors = vec![];
         while let Some((name, outcome)) = futures.next().await {
             match outcome {
-                Ok(r) => {
-                    // Look up the adapter by name for metadata enrichment.
+                Ok(Ok(r)) => {
                     if let Some(adapter) = self.adapters.iter().find(|a| a.name() == name.as_str())
                     {
                         results.extend(r.into_iter().map(|result| {
@@ -937,9 +938,16 @@ impl SearchEngine {
                         results.extend(r);
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!(adapter = %name, error = %e, "adapter search failed");
                     errors.push(format!("{name}: {e}"));
+                }
+                Err(_) => {
+                    warn!(adapter = %name, timeout_secs = %ADAPTER_SEARCH_TIMEOUT_SECS, "adapter search timed out");
+                    errors.push(format!(
+                        "{name}: timeout after {}s",
+                        ADAPTER_SEARCH_TIMEOUT_SECS
+                    ));
                 }
             }
         }
