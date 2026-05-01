@@ -11,6 +11,7 @@ members = [
     "crates/auth",
     "crates/trading",
     "crates/valuation",
+    "crates/udf",
     "crates/publish",
     "crates/attestation",
     "crates/plugins/mcp",
@@ -42,6 +43,7 @@ data-search = { path = "crates/search" }
 data-auth = { path = "crates/auth" }
 data-trading = { path = "crates/trading" }
 data-valuation = { path = "crates/valuation" }
+data-udf = { path = "crates/udf" }
 data-publish = { path = "crates/publish" }
 data-attestation = { path = "crates/attestation" }
 data-mcp-server = { path = "crates/plugins/mcp" }
