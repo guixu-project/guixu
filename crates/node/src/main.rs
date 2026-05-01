@@ -39,6 +39,7 @@ fn kill(pid: u32, _sig: i32) -> std::io::Result<()> {
     Ok(())
 }
 
+mod chat;
 mod mcp_install;
 mod service_files;
 mod watchdog;
@@ -114,10 +115,33 @@ enum Commands {
         #[arg(long, default_value = "light", global = true)]
         mode: String,
     },
+    /// Start an interactive agent chat session.
+    Chat {
+        /// LLM provider (openai, anthropic, ollama).
+        #[arg(long, default_value = "openai")]
+        provider: String,
+
+        /// Model name (e.g. gpt-4, claude-3-sonnet, llama3).
+        #[arg(long)]
+        model: Option<String>,
+
+        /// API key (overrides env var).
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// API base URL (for custom endpoints).
+        #[arg(long)]
+        api_base: Option<String>,
+    },
     /// Manage AI agent traces (import, export, query, sanitize).
     Trace {
         #[command(subcommand)]
         action: TraceAction,
+    },
+    /// Control external AI agents (hermes, openclaw, etc.).
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
     },
 }
 
@@ -205,6 +229,56 @@ enum TraceAction {
     },
 }
 
+/// External agent control subcommands.
+#[derive(Subcommand)]
+enum AgentAction {
+    /// List configured external agents.
+    List,
+    /// Add a new external agent configuration.
+    Add {
+        /// Agent identifier.
+        #[arg(long)]
+        id: String,
+        /// Agent name.
+        #[arg(long)]
+        name: String,
+        /// Agent type: http or cli.
+        #[arg(long)]
+        agent_type: String,
+        /// Connection URL (for http type).
+        #[arg(long)]
+        url: Option<String>,
+        /// Executable path (for cli type).
+        #[arg(long)]
+        executable: Option<String>,
+    },
+    /// Remove an external agent configuration.
+    Remove {
+        /// Agent identifier.
+        id: String,
+    },
+    /// Execute a task on an external agent.
+    Execute {
+        /// Agent identifier.
+        #[arg(long)]
+        agent: String,
+        /// Task description or prompt.
+        #[arg(long)]
+        prompt: String,
+        /// Timeout in seconds.
+        #[arg(long, default_value = "60")]
+        timeout: u64,
+        /// Additional parameters (JSON format).
+        #[arg(long)]
+        params: Option<String>,
+    },
+    /// Check health of an external agent.
+    Health {
+        /// Agent identifier.
+        agent: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     if let Err(error) = load_local_settings() {
@@ -239,7 +313,14 @@ async fn main() -> Result<()> {
             Some(McpAction::Uninstall { client }) => cmd_mcp_uninstall(&client)?,
             None => cmd_mcp(mode).await?,
         },
+        Commands::Chat {
+            provider,
+            model,
+            api_key,
+            api_base,
+        } => cmd_chat(provider, model, api_key, api_base).await?,
         Commands::Trace { action } => cmd_trace(action)?,
+        Commands::Agent { action } => cmd_agent(action).await?,
     }
 
     Ok(())
@@ -712,6 +793,15 @@ fn cmd_mcp_install(client: Option<String>) -> Result<()> {
 
 fn cmd_mcp_uninstall(client: &str) -> Result<()> {
     mcp_install::uninstall(client)
+}
+
+async fn cmd_chat(
+    provider: String,
+    model: Option<String>,
+    api_key: Option<String>,
+    api_base: Option<String>,
+) -> Result<()> {
+    chat::run(provider, model, api_key, api_base).await
 }
 
 async fn cmd_mcp(mode: String) -> Result<()> {
@@ -1302,5 +1392,164 @@ async fn sync_external_catalogs(store: &MetadataStore) -> Result<()> {
     }
 
     info!("catalog sync completed");
+    Ok(())
+}
+
+async fn cmd_agent(action: AgentAction) -> Result<()> {
+    use data_external_agents::config::{
+        CliConnection, ConnectionConfig, ExternalAgentConfig, HttpConnection,
+    };
+    use data_external_agents::traits::AgentFactory;
+    use data_external_agents::types::AgentTask;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    // Load agent configurations from file
+    let config_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".data-node")
+        .join("external-agents.json");
+
+    let mut agents: HashMap<String, ExternalAgentConfig> = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)?;
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
+    match action {
+        AgentAction::List => {
+            if agents.is_empty() {
+                println!("No external agents configured.");
+            } else {
+                println!("Configured external agents:");
+                for (id, config) in &agents {
+                    println!("  {} - {} ({})", id, config.name, config.agent_type);
+                }
+            }
+        }
+        AgentAction::Add {
+            id,
+            name,
+            agent_type,
+            url,
+            executable,
+        } => {
+            let connection = match agent_type.as_str() {
+                "http" => {
+                    let base_url =
+                        url.ok_or_else(|| anyhow::anyhow!("URL is required for HTTP agent type"))?;
+                    ConnectionConfig::Http(HttpConnection {
+                        base_url,
+                        timeout_secs: 30,
+                        verify_ssl: true,
+                        headers: HashMap::new(),
+                    })
+                }
+                "cli" => {
+                    let exec_path = executable.ok_or_else(|| {
+                        anyhow::anyhow!("Executable path is required for CLI agent type")
+                    })?;
+                    ConnectionConfig::Cli(CliConnection {
+                        executable: PathBuf::from(exec_path),
+                        working_dir: None,
+                        env_vars: HashMap::new(),
+                        shell: None,
+                        capture_stderr: true,
+                    })
+                }
+                _ => anyhow::bail!("Unknown agent type: {}", agent_type),
+            };
+
+            let config = ExternalAgentConfig {
+                id: id.clone(),
+                name,
+                agent_type,
+                connection,
+                default_timeout_secs: 60,
+                max_retries: 3,
+                auth: None,
+                extra: HashMap::new(),
+            };
+
+            agents.insert(id.clone(), config);
+
+            // Save to file
+            let content = serde_json::to_string_pretty(&agents)?;
+            std::fs::create_dir_all(config_path.parent().unwrap())?;
+            std::fs::write(&config_path, content)?;
+
+            println!("Agent '{}' added successfully.", id);
+        }
+        AgentAction::Remove { id } => {
+            if agents.remove(&id).is_some() {
+                let content = serde_json::to_string_pretty(&agents)?;
+                std::fs::write(&config_path, content)?;
+                println!("Agent '{}' removed.", id);
+            } else {
+                println!("Agent '{}' not found.", id);
+            }
+        }
+        AgentAction::Execute {
+            agent,
+            prompt,
+            timeout,
+            params,
+        } => {
+            let config = agents
+                .get(&agent)
+                .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found", agent))?;
+
+            let agent_instance = AgentFactory::create(config)?;
+
+            let mut task = AgentTask::new(&prompt).with_timeout(timeout);
+
+            // Add parameters if provided
+            if let Some(params_str) = params {
+                let params_value: serde_json::Value = serde_json::from_str(&params_str)?;
+                if let Some(params_obj) = params_value.as_object() {
+                    for (key, value) in params_obj {
+                        task = task.with_parameter(key, value.clone());
+                    }
+                }
+            }
+
+            println!("Executing task on agent '{}'...", agent);
+            let response = agent_instance.execute_task(task).await?;
+
+            if response.is_success() {
+                println!("Task completed successfully:");
+                if let Some(content) = &response.content {
+                    println!("{}", content);
+                }
+            } else {
+                println!("Task failed:");
+                if let Some(error) = &response.error {
+                    println!("Error: {}", error);
+                }
+            }
+        }
+        AgentAction::Health { agent } => {
+            let config = agents
+                .get(&agent)
+                .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found", agent))?;
+
+            let agent_instance = AgentFactory::create(config)?;
+            let health = agent_instance.health_check().await?;
+
+            println!("Agent '{}' health status:", agent);
+            println!("  Reachable: {}", health.is_reachable);
+            if let Some(version) = &health.version {
+                println!("  Version: {}", version);
+            }
+            if !health.metadata.is_empty() {
+                println!("  Metadata:");
+                for (key, value) in &health.metadata {
+                    println!("    {}: {}", key, value);
+                }
+            }
+        }
+    }
+
     Ok(())
 }

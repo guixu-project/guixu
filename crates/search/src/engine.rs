@@ -29,7 +29,7 @@ const SELECTION_VALUE_EPSILON: f64 = 1e-6;
 const ADAPTER_SEARCH_TIMEOUT_SECS: u64 = 5;
 
 /// Search filters that can be applied to results.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchFilters {
     pub topic: Option<String>,
     pub min_rows: Option<u64>,
@@ -81,6 +81,7 @@ pub struct SearchEngine {
     intent_parser: IntentParser,
     adapters: Vec<Box<dyn ExternalAdapter>>,
     sentiment_classifier: Option<Box<dyn SentimentClassifier>>,
+    cache: crate::search_cache::SearchCache,
 }
 
 fn format_error_chain(error: &anyhow::Error) -> String {
@@ -198,6 +199,22 @@ impl SearchEngine {
             intent_parser,
             adapters,
             sentiment_classifier: None,
+            cache: crate::search_cache::SearchCache::new(),
+        }
+    }
+
+    pub fn with_cache(
+        vector_index: VectorIndex,
+        intent_parser: IntentParser,
+        adapters: Vec<Box<dyn ExternalAdapter>>,
+        cache: crate::search_cache::SearchCache,
+    ) -> Self {
+        Self {
+            vector_index,
+            intent_parser,
+            adapters,
+            sentiment_classifier: None,
+            cache,
         }
     }
 
@@ -279,8 +296,49 @@ impl SearchEngine {
         signal_fetcher: &SignalFetcher,
         limit: usize,
     ) -> Result<SearchOutput> {
-        self.search_with_task_type(query, None, filters, local_metadata, signal_fetcher, limit)
-            .await
+        // Generate cache key from query and filters
+        let filters_hash = {
+            let mut hasher = sha2::Sha256::new();
+            use sha2::Digest;
+            hasher.update(
+                serde_json::to_string(filters)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
+            hex::encode(hasher.finalize())
+        };
+        let cache_key = format!("search:v1:{}:{}", query.trim().to_lowercase(), filters_hash);
+
+        // Check cache
+        if let Some(cached_results) = self.cache.get(&cache_key).await {
+            tracing::debug!(query = %query, "search cache hit");
+            let ranked: Vec<RankedResult> = cached_results
+                .into_iter()
+                .map(|r| RankedResult {
+                    signal: signal_fetcher(&r.cid.0),
+                    result: r,
+                    rank_score: 0.0,
+                })
+                .collect();
+            return Ok(SearchOutput {
+                results: ranked,
+                errors: vec![],
+                profile: None,
+            });
+        }
+
+        // Cache miss — execute search
+        let output = self
+            .search_with_task_type(query, None, filters, local_metadata, signal_fetcher, limit)
+            .await?;
+
+        // Store results in cache
+        let results_to_cache: Vec<SearchResult> =
+            output.results.iter().map(|r| r.result.clone()).collect();
+        let ttl = crate::search_cache::SearchCache::ttl_for_skill("default");
+        self.cache.set(cache_key, results_to_cache, ttl).await;
+
+        Ok(output)
     }
 
     /// Search entry point with an optional task-type override supplied by the caller.

@@ -19,6 +19,7 @@ members = [
     "crates/agent",
     "crates/test-utils",
     "crates/confidential_valuation",
+    "crates/external-agents",
     "ui/prism/src-tauri",
 ]
 
@@ -49,6 +50,7 @@ data-attestation = { path = "crates/attestation" }
 data-mcp-server = { path = "crates/plugins/mcp" }
 data-agent = { path = "crates/agent" }
 data-test-utils = { path = "crates/test-utils" }
+data-external-agents = { path = "crates/external-agents" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
