@@ -20,7 +20,6 @@ members = [
     "crates/test-utils",
     "crates/confidential_valuation",
     "crates/external-agents",
-    "ui/prism/src-tauri",
 ]
 
 [workspace.lints.clippy]

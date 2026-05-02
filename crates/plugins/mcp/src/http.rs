@@ -16,6 +16,7 @@ use tracing::info;
 
 use data_auth::privacy::{PrivacyConfig, PrivacyLevel};
 use data_core::types::AccessMode;
+use data_search::adapters::load_open_data_skills;
 
 use crate::demo_ui;
 use crate::prism_ui;
@@ -53,6 +54,7 @@ pub async fn run_http(server: Arc<McpServer>, port: u16) -> Result<()> {
         .route("/api/traces/{trace_id}/spans", get(api_trace_spans))
         .route("/api/traces/{trace_id}/scores", get(api_trace_scores))
         .route("/api/memory/timeline", get(api_memory_timeline))
+        .route("/api/skills", get(api_list_skills))
         .route("/mcp", post(http_rpc_handler))
         .route("/rpc", post(http_rpc_handler))
         .layer(CorsLayer::permissive())
@@ -696,6 +698,124 @@ async fn api_memory_timeline(
         )
             .into_response(),
     }
+}
+
+async fn api_list_skills() -> impl IntoResponse {
+    let skills = load_open_data_skills().unwrap_or_default();
+    let items: Vec<serde_json::Value> = skills
+        .into_iter()
+        .map(|s| {
+            let provider_kind = match &s.provider {
+                data_search::adapters::SkillProvider::NativeAdapter { adapter } => {
+                    serde_json::json!({ "kind": "native_adapter", "adapter": adapter })
+                }
+                data_search::adapters::SkillProvider::HttpSearch {
+                    base_url,
+                    operations,
+                    ..
+                } => {
+                    serde_json::json!({
+                        "kind": "http_search",
+                        "base_url": base_url,
+                        "operations": {
+                            "search": {
+                                "path": operations.search.path,
+                                "method": operations.search.method,
+                                "query_param": operations.search.query_param,
+                                "limit_param": operations.search.limit_param.clone(),
+                            }
+                        },
+                    })
+                }
+                data_search::adapters::SkillProvider::SqlCatalog {
+                    engine,
+                    catalogs,
+                    nl2sql: _,
+                } => {
+                    serde_json::json!({
+                        "kind": "sql",
+                        "engine": format!("{:?}", engine),
+                        "catalogs": format!("{:?}", catalogs),
+                    })
+                }
+                data_search::adapters::SkillProvider::WsJsonRpc {
+                    base_url,
+                    subscriptions,
+                    ..
+                } => {
+                    serde_json::json!({
+                        "kind": "ws_json_rpc",
+                        "base_url": base_url,
+                        "subscriptions": format!("{:?}", subscriptions),
+                    })
+                }
+                data_search::adapters::SkillProvider::GrpcStream {
+                    endpoint,
+                    service,
+                    rpc_name,
+                    ..
+                } => {
+                    serde_json::json!({
+                        "kind": "grpc_stream",
+                        "endpoint": endpoint,
+                        "service": service,
+                        "rpc_name": rpc_name,
+                    })
+                }
+                data_search::adapters::SkillProvider::Subgraph {
+                    subgraph_url,
+                    query,
+                    poll_interval_ms,
+                    ..
+                } => {
+                    serde_json::json!({
+                        "kind": "subgraph",
+                        "subgraph_url": subgraph_url,
+                        "query": query,
+                        "poll_interval_ms": poll_interval_ms,
+                    })
+                }
+            };
+            let sample = s.sample.as_ref().map(|sp| {
+                serde_json::json!({
+                    "endpoint": sp.endpoint,
+                    "id_param": sp.id_param,
+                    "range_header": sp.range_header,
+                    "max_bytes": sp.max_bytes,
+                    "auth": {
+                        "kind": format!("{:?}", sp.auth),
+                    },
+                    "parse_mode": format!("{:?}", sp.parse_mode),
+                })
+            });
+            serde_json::json!({
+                "spec_version": s.spec_version,
+                "id": s.id,
+                "name": s.name,
+                "description": s.description,
+                "source": s.source,
+                "tags": s.tags,
+                "routing_hints": s.routing_hints,
+                "enabled": s.enabled,
+                "capabilities": {
+                    "search": s.capabilities.search,
+                    "lookup": s.capabilities.lookup,
+                    "download": s.capabilities.download,
+                    "schema_probe": s.capabilities.schema_probe,
+                    "sample_preview": s.capabilities.sample_preview,
+                    "license_lookup": s.capabilities.license_lookup,
+                },
+                "governance": {
+                    "trust_tier": format!("{:?}", s.governance.trust_tier).to_lowercase(),
+                    "provenance_hint": s.governance.provenance_hint,
+                    "compliance_hint": s.governance.compliance_hint,
+                },
+                "provider": provider_kind,
+                "sample": sample,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "skills": items })).into_response()
 }
 
 async fn http_rpc_handler(
