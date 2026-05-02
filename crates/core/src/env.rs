@@ -107,7 +107,7 @@ mod tests {
             Some(("DEEPSEEK_API_KEY".into(), "secret".into()))
         );
         assert_eq!(
-            parse_env_line("export GUIXU_HUB_BASE_URL='https://guixu.org'"),
+            parse_env_line("export GUIXU_MARKET_BASE_URL='http://localhost:8080'"),
             Some(("GUIXU_HUB_BASE_URL".into(), "https://guixu.org".into()))
         );
         assert_eq!(parse_env_line("# comment"), None);

@@ -198,14 +198,14 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "dataset_download".into(),
-            description: "Download a dataset by CID. Automatically selects the right method based on source. Free no-login sources: UCI (uci:), OpenML (openml:), Zenodo (zenodo:), Figshare (figshare:), Common Crawl (commoncrawl:), OpenAlex (openalex:), AWS Open Data (aws-open:), OpenNeuro (openneuro:), PhysioNet (physionet:), HuggingFace public (hf:), IPFS (ipfs:), Guixu Hub free (guixu-hub:), BitTorrent (40-char hex hash). Requires login: Kaggle (kaggle:). Pass the CID from dataset_search results.".into(),
+            description: "Download a dataset by CID. Automatically selects the right method based on source. Free no-login sources: UCI (uci:), OpenML (openml:), Zenodo (zenodo:), Figshare (figshare:), Common Crawl (commoncrawl:), OpenAlex (openalex:), AWS Open Data (aws-open:), OpenNeuro (openneuro:), PhysioNet (physionet:), HuggingFace public (hf:), IPFS (ipfs:), Guixu Market free (guixu.market:), BitTorrent (40-char hex hash). Requires login: Kaggle (kaggle:). Pass the CID from dataset_search results.".into(),
             annotations: local_side_effect_annotations(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "cid": {
                         "type": "string",
-                        "description": "Dataset CID from search results (e.g. 'kaggle:owner/dataset', 'hf:owner/dataset', 'uci:53', 'openml:61', 'zenodo:12345', 'figshare:12345', 'guixu-hub:uuid')"
+                        "description": "Dataset CID from search results (e.g. 'kaggle:owner/dataset', 'hf:owner/dataset', 'uci:53', 'openml:61', 'zenodo:12345', 'figshare:12345', 'guixu.market:uuid')"
                     }
                 },
                 "required": ["cid"]
@@ -787,6 +787,75 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "job_id": {
                         "type": "string",
                         "description": "The ingest job ID to cancel"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "download_jobs".into(),
+            description: "List all download jobs managed by the unified download task system (Gopeed-inspired). Returns job metadata including state, progress, source, and destination path.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "download_status".into(),
+            description: "Get detailed status of a download job including progress, speed, downloaded bytes, and error information.".into(),
+            annotations: read_only_annotations(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The download job ID (UUID or download_ prefixed ID)"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "download_pause".into(),
+            description: "Pause an active or queued download job.".into(),
+            annotations: mutating_annotations(false),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The download job ID to pause"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "download_resume".into(),
+            description: "Resume a paused download job.".into(),
+            annotations: mutating_annotations(false),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The download job ID to resume"
+                    }
+                },
+                "required": ["job_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "download_cancel".into(),
+            description: "Cancel an ongoing or queued download job.".into(),
+            annotations: mutating_annotations(false),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The download job ID to cancel"
                     }
                 },
                 "required": ["job_id"]

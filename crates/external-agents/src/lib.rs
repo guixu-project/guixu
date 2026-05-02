@@ -8,6 +8,8 @@
 
 pub mod config;
 pub mod error;
+pub mod mcp_client;
+pub mod registry;
 pub mod traits;
 pub mod types;
 
@@ -16,5 +18,7 @@ pub mod adapters;
 // Re-export main types
 pub use config::ExternalAgentConfig;
 pub use error::{ExternalAgentError, Result};
+pub use mcp_client::GuixuMcpClient;
+pub use registry::AgentRegistry;
 pub use traits::ExternalAgent;
 pub use types::{AgentResponse, AgentTask, TaskStatus};

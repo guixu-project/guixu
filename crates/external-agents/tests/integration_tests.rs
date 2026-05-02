@@ -4,8 +4,9 @@
 //! Tests for the external agents module.
 
 use data_external_agents::config::{
-    CliConnection, ConnectionConfig, ExternalAgentConfig, HttpConnection,
+    CliConnection, ConnectionConfig, ExternalAgentConfig, HttpConnection, ResponseParser,
 };
+use data_external_agents::registry::AgentRegistry;
 use data_external_agents::traits::{AgentFactory, ExternalAgent};
 use data_external_agents::types::AgentTask;
 use std::collections::HashMap;
@@ -40,6 +41,48 @@ fn test_cli_config_creation() {
 }
 
 #[test]
+fn test_cli_config_with_template() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let executable = temp_dir.path().join("test-agent");
+    std::fs::write(&executable, "#!/bin/sh\necho 'test'").unwrap();
+
+    let config = ExternalAgentConfig {
+        id: "test-template".to_string(),
+        name: "Test Agent".to_string(),
+        agent_type: "custom".to_string(),
+        connection: ConnectionConfig::Cli(CliConnection {
+            executable: executable,
+            args_template: Some(vec![
+                "run".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+                "{prompt}".to_string(),
+            ]),
+            working_dir: None,
+            env_vars: HashMap::new(),
+            shell: None,
+            capture_stderr: false,
+            response_parser: Some(ResponseParser::JsonStream),
+        }),
+        default_timeout_secs: 30,
+        max_retries: 3,
+        auth: None,
+        extra: HashMap::new(),
+    };
+
+    match &config.connection {
+        ConnectionConfig::Cli(cli) => {
+            assert!(cli.args_template.is_some());
+            assert!(matches!(
+                cli.response_parser,
+                Some(ResponseParser::JsonStream)
+            ));
+        }
+        _ => panic!("Expected CLI connection"),
+    }
+}
+
+#[test]
 fn test_task_creation() {
     let task = AgentTask::new("Test task")
         .with_timeout(30)
@@ -68,7 +111,6 @@ fn test_agent_factory_http() {
 
 #[test]
 fn test_agent_factory_cli() {
-    // Create a temporary executable for testing
     let temp_dir = tempfile::tempdir().unwrap();
     let executable = temp_dir.path().join("test-agent");
     std::fs::write(&executable, "#!/bin/sh\necho 'test'").unwrap();
@@ -96,4 +138,19 @@ fn test_agent_capabilities() {
     let capabilities = agent.capabilities();
     assert!(!capabilities.is_empty());
     assert!(capabilities.contains(&data_external_agents::traits::AgentCapability::TextPrompt));
+}
+
+#[test]
+fn test_agent_registry_load() {
+    // agents.d contains: opencode.json, hermes.json, openclaw.json
+    // hermes.json executable doesn't exist, so only opencode + openclaw load
+    let registry = AgentRegistry::load_from_dir(&PathBuf::from("../external-agents/agents.d"));
+    assert!(registry.is_ok());
+
+    let registry = registry.unwrap();
+    assert!(registry.has("opencode-default"));
+    assert!(registry.has("openclaw-api"));
+    // hermes-local has non-existent executable, so it fails gracefully
+    assert!(!registry.has("hermes-local"));
+    assert_eq!(registry.list_ids().len(), 2);
 }

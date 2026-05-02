@@ -1768,6 +1768,7 @@ fn guixu_listing_id(result: &SearchResult) -> Option<&str> {
         .0
         .strip_prefix("guixu-hub:")
         .or_else(|| result.provider.0.strip_prefix("guixu:hub:"))
+        .or_else(|| result.provider.0.strip_prefix("guixu.market:"))
 }
 
 async fn fetch_guixu_review_inputs(

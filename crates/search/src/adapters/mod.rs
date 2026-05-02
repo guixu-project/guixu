@@ -91,7 +91,9 @@ pub trait ExternalAdapter: Send + Sync {
 
 pub fn infer_source_family_for_skill_id(skill_id: &str) -> SourceFamily {
     match skill_id.trim().to_ascii_lowercase().as_str() {
-        "kaggle" | "huggingface" | "guixu_hub" | "guixu-hub" => SourceFamily::Marketplace,
+        "kaggle" | "huggingface" | "guixu_hub" | "guixu-hub" | "guixu.market" => {
+            SourceFamily::Marketplace
+        }
         "arxiv" | "dblp" | "semantic_scholar" | "datacite_commons" => SourceFamily::Academic,
         "ipfs" | "bittorrent" => SourceFamily::Decentralized,
         "postgresql" | "duckdb" | "spark" | "flink" | "presto" | "sql_endpoint" => {

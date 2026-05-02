@@ -1,0 +1,17 @@
+{
+  "id": "openclaw-api",
+  "name": "OpenClaw API",
+  "agent_type": "openclaw",
+  "connection": {
+    "Http": {
+      "base_url": "http://localhost:18789",
+      "timeout_secs": 30,
+      "verify_ssl": true,
+      "headers": {}
+    }
+  },
+  "default_timeout_secs": 60,
+  "max_retries": 3,
+  "auth": null,
+  "extra": {}
+}

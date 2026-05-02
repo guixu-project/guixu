@@ -1452,10 +1452,12 @@ async fn cmd_agent(action: AgentAction) -> Result<()> {
                     })?;
                     ConnectionConfig::Cli(CliConnection {
                         executable: PathBuf::from(exec_path),
+                        args_template: None,
                         working_dir: None,
                         env_vars: HashMap::new(),
                         shell: None,
                         capture_stderr: true,
+                        response_parser: None,
                     })
                 }
                 _ => anyhow::bail!("Unknown agent type: {}", agent_type),

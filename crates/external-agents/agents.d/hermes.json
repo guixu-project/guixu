@@ -1,0 +1,20 @@
+{
+  "id": "hermes-local",
+  "name": "Hermes Agent (Local)",
+  "agent_type": "hermes",
+  "connection": {
+    "Cli": {
+      "executable": "/usr/local/bin/hermes",
+      "args_template": null,
+      "working_dir": null,
+      "env_vars": {},
+      "shell": null,
+      "capture_stderr": true,
+      "response_parser": null
+    }
+  },
+  "default_timeout_secs": 60,
+  "max_retries": 3,
+  "auth": null,
+  "extra": {}
+}

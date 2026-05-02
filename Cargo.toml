@@ -115,8 +115,8 @@ bs58 = "0.5"
 notify = { version = "7", features = ["macos_fsevent"] }
 tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-chrono-0_4"] }
 
-# DuckDB for agent trace storage
-duckdb = { version = "1.1", features = ["bundled"] }
+# DuckDB for agent trace storage (use pre-compiled library)
+duckdb = { version = "1.1" }
 
 # OpenTelemetry (GenAI agent tracing + OTLP export)
 opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }

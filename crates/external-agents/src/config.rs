@@ -59,6 +59,9 @@ pub struct HttpConnection {
 pub struct CliConnection {
     /// Path to the agent executable.
     pub executable: PathBuf,
+    /// Template for command arguments. Use `{prompt}` as placeholder.
+    /// Example: ["run", "--format", "json", "{prompt}"]
+    pub args_template: Option<Vec<String>>,
     /// Working directory for command execution.
     pub working_dir: Option<PathBuf>,
     /// Environment variables to set.
@@ -67,6 +70,22 @@ pub struct CliConnection {
     pub shell: Option<String>,
     /// Whether to capture stderr.
     pub capture_stderr: bool,
+    /// How to parse the output.
+    pub response_parser: Option<ResponseParser>,
+}
+
+/// Response parsing strategy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseParser {
+    /// Plain text (default for simple CLI).
+    Text,
+    /// JSON Lines (stream of JSON objects, e.g., opencode).
+    JsonStream,
+    /// Single JSON object.
+    Json,
+    /// Exit code + stdout/stderr.
+    ExitCode,
 }
 
 /// Authentication configuration.
@@ -126,10 +145,12 @@ impl ExternalAgentConfig {
         let mut config = Self::new(id, "Hermes Agent", "hermes");
         config.connection = ConnectionConfig::Cli(CliConnection {
             executable: executable.into(),
+            args_template: None,
             working_dir: None,
             env_vars: HashMap::new(),
             shell: None,
             capture_stderr: true,
+            response_parser: None,
         });
         config
     }

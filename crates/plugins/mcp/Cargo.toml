@@ -28,6 +28,7 @@ tower-http = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+futures = { workspace = true }
 
 [lints]
 workspace = true

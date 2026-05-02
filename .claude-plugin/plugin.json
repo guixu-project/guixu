@@ -1,0 +1,8 @@
+{
+  "name": "guixu",
+  "description": "Dataset discovery, valuation, and acquisition for AI agents. Search, evaluate, and purchase datasets from Kaggle, HuggingFace, IPFS, and more.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Guixu Project"
+  }
+}

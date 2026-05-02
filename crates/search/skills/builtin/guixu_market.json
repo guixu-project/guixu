@@ -32,7 +32,7 @@
   },
   "provider": {
     "kind": "http_search",
-    "base_url": "https://market.guixu.io",
+    "base_url": "${GUIXU_MARKET_BASE_URL:-https://market.guixu.io}",
     "auth": {
       "kind": "header_env",
       "header": "Authorization",
