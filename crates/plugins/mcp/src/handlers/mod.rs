@@ -5,6 +5,7 @@ pub mod bt_download;
 pub mod data_skill;
 pub mod delegate;
 pub mod download;
+pub mod download_engine;
 pub mod evaluate;
 pub mod feedback;
 pub mod intent;

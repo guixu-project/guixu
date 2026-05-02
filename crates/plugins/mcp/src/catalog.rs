@@ -397,6 +397,62 @@ pub fn build_registry() -> ToolRegistry {
         executor_from_fn(ingest_cancel_executor),
     ));
 
+    fn download_jobs_executor<'a>(
+        args: serde_json::Value,
+        state: &'a crate::state::AppState,
+    ) -> ToolFuture<'a> {
+        Box::pin(job_api::download_jobs(args, state))
+    }
+
+    fn download_status_executor<'a>(
+        args: serde_json::Value,
+        state: &'a crate::state::AppState,
+    ) -> ToolFuture<'a> {
+        Box::pin(job_api::download_status(args, state))
+    }
+
+    fn download_pause_executor<'a>(
+        args: serde_json::Value,
+        state: &'a crate::state::AppState,
+    ) -> ToolFuture<'a> {
+        Box::pin(job_api::download_pause(args, state))
+    }
+
+    fn download_resume_executor<'a>(
+        args: serde_json::Value,
+        state: &'a crate::state::AppState,
+    ) -> ToolFuture<'a> {
+        Box::pin(job_api::download_resume(args, state))
+    }
+
+    fn download_cancel_executor<'a>(
+        args: serde_json::Value,
+        state: &'a crate::state::AppState,
+    ) -> ToolFuture<'a> {
+        Box::pin(job_api::download_cancel(args, state))
+    }
+
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "download_jobs"),
+        executor_from_fn(download_jobs_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "download_status"),
+        executor_from_fn(download_status_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "download_pause"),
+        executor_from_fn(download_pause_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "download_resume"),
+        executor_from_fn(download_resume_executor),
+    ));
+    registry.register(legacy_json_tool(
+        require_definition(&mut definitions, "download_cancel"),
+        executor_from_fn(download_cancel_executor),
+    ));
+
     let all_definitions = registry.list_definitions();
     validate_tool_definitions(&all_definitions)
         .unwrap_or_else(|message| panic!("invalid MCP tool registry: {message}"));

@@ -44,10 +44,18 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             .and_then(|v| v.as_str())
             .map(String::from)
             .or_else(|| {
-                // Auto-resolve x402 endpoint for Guixu Hub datasets
-                if let Some(listing_id) = cid_str.strip_prefix("guixu-hub:") {
-                    let base = std::env::var("GUIXU_HUB_BASE_URL")
-                        .unwrap_or_else(|_| "https://www.guixu.org".into());
+                // Auto-resolve x402 endpoint for Guixu Market datasets
+                if let Some(listing_id) = cid_str.strip_prefix("guixu.market:") {
+                    let base = std::env::var("GUIXU_MARKET_BASE_URL")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "http://localhost:8080".into());
+                    Some(format!("{base}/api/x402/{listing_id}"))
+                } else if let Some(listing_id) = cid_str.strip_prefix("guixu-hub:") {
+                    let base = std::env::var("GUIXU_MARKET_BASE_URL")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "http://localhost:8080".into());
                     Some(format!("{base}/api/x402/{listing_id}"))
                 } else {
                     None

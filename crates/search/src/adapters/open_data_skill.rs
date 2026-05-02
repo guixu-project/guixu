@@ -546,6 +546,40 @@ fn skill_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Expand environment variables in a URL string.
+/// Supports ${VAR} and ${VAR:-default} syntax.
+fn expand_env_url(url: &str) -> String {
+    let mut result = url.to_string();
+    while let Some(start) = result.find("${") {
+        if let Some(end) = result[start..].find('}') {
+            let var_expr = &result[start..start + end + 1];
+            let inner = &var_expr[2..var_expr.len() - 1];
+
+            let (var_name, default_value) = if let Some(dcolon) = inner.find(":-") {
+                (&inner[..dcolon], Some(&inner[dcolon + 2..]))
+            } else {
+                (inner, None)
+            };
+
+            let replacement = std::env::var(var_name).ok().unwrap_or_else(|| {
+                default_value
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| var_expr.to_string())
+            });
+
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                replacement,
+                &result[start + end + 1..]
+            );
+        } else {
+            break;
+        }
+    }
+    result
+}
+
 pub fn adapters_from_open_data_skills(
     disabled: &[String],
     duckdb_catalogs: &[DuckDbCatalog],
@@ -585,7 +619,7 @@ fn build_adapter_from_skill(
             source: parse_skill_source(&skill.source)?,
             source_family: infer_source_family(&skill.source),
             tags: skill.tags.clone(),
-            base_url: base_url.clone(),
+            base_url: expand_env_url(base_url),
             capabilities: skill.capabilities.clone(),
             governance: skill.governance.clone(),
             operations: *(*operations).clone(),
@@ -784,7 +818,7 @@ pub fn parse_skill_source(source: &str) -> Result<DataSource> {
         "localfile" | "local_file" => DataSource::LocalFile,
         "googledatasetsearch" | "google_dataset_search" => DataSource::GoogleDatasetSearch,
         "datacitecommons" | "datacite_commons" => DataSource::DataCiteCommons,
-        "guixuhub" | "guixu_hub" | "guixu-hub" => DataSource::GuixuHub,
+        "guixuhub" | "guixu_hub" | "guixu-hub" | "guixu.market" => DataSource::GuixuHub,
         "defillama" => DataSource::DefiLlama,
         "rwa_xyz" | "rwaxyz" => DataSource::RwaXyz,
         "pansearch" | "pan_search" => DataSource::PanSearch,
@@ -1613,7 +1647,9 @@ impl ExternalAdapter for HttpSkillAdapter {
 
 fn infer_source_family(source: &str) -> SourceFamily {
     match source.to_ascii_lowercase().as_str() {
-        "kaggle" | "huggingface" | "guixu_hub" | "guixu-hub" => SourceFamily::Marketplace,
+        "kaggle" | "huggingface" | "guixu_hub" | "guixu-hub" | "guixu.market" => {
+            SourceFamily::Marketplace
+        }
         "arxiv" | "dblp" | "semantic_scholar" | "datacite_commons" => SourceFamily::Academic,
         "ipfs" | "bittorrent" => SourceFamily::Decentralized,
         "postgresql" | "duckdb" | "spark" | "flink" | "presto" => SourceFamily::DbCatalog,

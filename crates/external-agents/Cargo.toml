@@ -1,0 +1,55 @@
+# Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "data-external-agents"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Internal crates
+data-core = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = "0.3"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# URL parsing
+url = "2"
+
+# Process execution
+which = "4"
+
+# Configuration
+config = "0.14"
+dirs = { workspace = true }
+
+# Time handling
+chrono = { workspace = true }
+
+# UUID generation
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"
+mockall = "0.11"
+serde_json = { workspace = true }

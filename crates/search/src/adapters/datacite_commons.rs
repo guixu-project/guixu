@@ -121,7 +121,7 @@ impl ExternalAdapter for DataCiteCommonsAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Guixu Hub — Guixu's public dataset hub and market index
-//   Uses the Hub REST API and surfaces tags, schema, and market signals.
-//   GUIXU_HUB_API_URL can override the default endpoint.
+// Guixu Market — Guixu's public dataset market index
+//   Uses the Market REST API and surfaces tags, schema, and market signals.
+//   GUIXU_MARKET_API_URL can override the default endpoint.
 // ---------------------------------------------------------------------------

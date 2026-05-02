@@ -202,8 +202,8 @@ impl Default for GuixuHubSampleDownloader {
                 .user_agent("guixu/0.1")
                 .build()
                 .unwrap_or_else(|_| Client::new()),
-            download_api_url: std::env::var("GUIXU_HUB_DOWNLOAD_API_URL")
-                .unwrap_or_else(|_| "https://www.guixu.org/api/download".into()),
+            download_api_url: std::env::var("GUIXU_MARKET_DOWNLOAD_API_URL")
+                .unwrap_or_else(|_| "http://localhost:8080/api/download".into()),
             extract_root: std::env::temp_dir().join("guixu-sample-cache"),
             max_records: 24,
             max_text_chars: 2_000,
@@ -937,8 +937,9 @@ fn guixu_hub_listing_id(result: &SearchResult) -> Option<String> {
     result
         .cid
         .0
-        .strip_prefix("guixu-hub:")
+        .strip_prefix("guixu.market:")
         .map(str::to_string)
+        .or_else(|| result.cid.0.strip_prefix("guixu-hub:").map(str::to_string))
         .or_else(|| {
             result
                 .provider

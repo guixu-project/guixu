@@ -25,6 +25,7 @@ data-p2p = { workspace = true, optional = true }
 data-auth = { workspace = true }
 data-mcp-server = { workspace = true }
 data-trading = { workspace = true, optional = true }
+data-external-agents = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -41,6 +42,7 @@ daemonize = "0.5"
 reqwest = { workspace = true }
 sysinfo = { workspace = true }
 fs2 = { workspace = true }
+libp2p = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

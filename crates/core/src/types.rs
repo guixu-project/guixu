@@ -4,6 +4,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 /// Content identifier for a dataset (content-addressed hash).
@@ -565,6 +566,87 @@ mod tests {
 // ============================================================================
 // Delivery Manifest & Ingest Job Types
 // ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadStatus {
+    Ready,
+    Queued,
+    Running,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadProgress {
+    pub speed_bps: u64,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub connections: u32,
+    pub seed_ratio: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadJob {
+    pub job_id: Uuid,
+    pub cid: DatasetCid,
+    pub source: DataSource,
+    pub status: DownloadStatus,
+    pub progress: Option<DownloadProgress>,
+    pub dest_path: Option<PathBuf>,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+impl DownloadJob {
+    pub fn new(cid: DatasetCid, source: DataSource) -> Self {
+        let now = Utc::now();
+        Self {
+            job_id: Uuid::new_v4(),
+            cid,
+            source,
+            status: DownloadStatus::Queued,
+            progress: None,
+            dest_path: None,
+            error: None,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        }
+    }
+
+    pub fn mark_running(&mut self) {
+        self.status = DownloadStatus::Running;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn mark_paused(&mut self) {
+        self.status = DownloadStatus::Paused;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn mark_completed(&mut self, path: PathBuf) {
+        self.status = DownloadStatus::Completed;
+        self.dest_path = Some(path);
+        self.updated_at = Utc::now();
+        self.completed_at = Some(Utc::now());
+    }
+
+    pub fn mark_failed(&mut self, error: String) {
+        self.status = DownloadStatus::Failed;
+        self.error = Some(error);
+        self.updated_at = Utc::now();
+    }
+
+    pub fn mark_cancelled(&mut self) {
+        self.status = DownloadStatus::Cancelled;
+        self.updated_at = Utc::now();
+    }
+}
 
 /// Reference to a single artifact within a delivery manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]

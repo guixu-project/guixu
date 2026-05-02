@@ -77,6 +77,51 @@ Add to your client's MCP config:
 guixu mcp --mode http   # MCP over HTTP on :3927/rpc
 ```
 
+## Plugin Packaging
+
+Guixu can be packaged as a plugin for Codex Desktop and Claude Cowork.
+
+### Automated Packaging
+
+Use the automated packaging script to create plugin packages:
+
+```bash
+# Package plugins for both Codex Desktop and Claude Cowork
+make package
+
+# Or use the script directly
+./scripts/package-plugins.sh --output dist --clean
+
+# Package only for Codex Desktop
+make package-codex
+
+# Package only for Claude Cowork
+make package-claude
+```
+
+### Manual Installation
+
+After packaging, install the plugins:
+
+```bash
+# Install Codex Desktop plugin
+codex plugin install dist/guixu-codex-plugin
+
+# Install Claude Cowork plugin
+claude plugin install dist/guixu-claude-plugin
+```
+
+### Plugin Structure
+
+The packaged plugins follow the standard structure:
+
+- **Codex Desktop**: `.codex-plugin/plugin.json` + `skills/` + `.mcp.json`
+- **Claude Cowork**: `.claude-plugin/plugin.json` + `skills/` + `.mcp.json`
+
+For more details on plugin development, see [guixu-plugin.md](docs/guixu-plugin.md).
+
+For packaging and installation instructions, see [plugin-packaging.md](docs/plugin-packaging.md).
+
 ## License
 
 Guixu is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text and [NOTICE](NOTICE) for repository attribution notices.

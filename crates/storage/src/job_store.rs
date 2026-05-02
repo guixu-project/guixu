@@ -4,7 +4,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use data_core::agent::contracts::{JobEvent, JobId, JobResult, JobState, JobStatus};
-use data_core::types::IngestJob;
+use data_core::types::{DownloadJob, DownloadStatus, IngestJob};
 use rocksdb::{Options, DB};
 use std::path::Path;
 use std::sync::Arc;
@@ -183,6 +183,105 @@ impl JobStore {
             }
         }
         Ok(results)
+    }
+
+    // -------------------------------------------------------------------------
+    // DownloadJob management (Gopeed-inspired unified download task model)
+    // -------------------------------------------------------------------------
+
+    pub fn put_download_job(&self, job: &DownloadJob) -> Result<()> {
+        let key = format!("download:{}", job.job_id);
+        let value = serde_json::to_vec(job)?;
+        self.db.put(key.as_bytes(), &value)?;
+        Ok(())
+    }
+
+    pub fn get_download_job(&self, job_id: &uuid::Uuid) -> Result<Option<DownloadJob>> {
+        let key = format!("download:{}", job_id);
+        match self.db.get(key.as_bytes())? {
+            Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn update_download_status(
+        &self,
+        job_id: &uuid::Uuid,
+        status: DownloadStatus,
+    ) -> Result<DownloadJob> {
+        let mut job = self
+            .get_download_job(job_id)?
+            .ok_or_else(|| anyhow::anyhow!("download job not found: {}", job_id))?;
+        job.status = status;
+        job.updated_at = chrono::Utc::now();
+        self.put_download_job(&job)?;
+        Ok(job)
+    }
+
+    pub fn update_download_progress(
+        &self,
+        job_id: &uuid::Uuid,
+        progress: data_core::types::DownloadProgress,
+    ) -> Result<DownloadJob> {
+        let mut job = self
+            .get_download_job(job_id)?
+            .ok_or_else(|| anyhow::anyhow!("download job not found: {}", job_id))?;
+        job.progress = Some(progress);
+        job.updated_at = chrono::Utc::now();
+        self.put_download_job(&job)?;
+        Ok(job)
+    }
+
+    pub fn update_download_completed(
+        &self,
+        job_id: &uuid::Uuid,
+        path: std::path::PathBuf,
+    ) -> Result<DownloadJob> {
+        let mut job = self
+            .get_download_job(job_id)?
+            .ok_or_else(|| anyhow::anyhow!("download job not found: {}", job_id))?;
+        job.status = DownloadStatus::Completed;
+        job.dest_path = Some(path);
+        job.updated_at = chrono::Utc::now();
+        job.completed_at = Some(chrono::Utc::now());
+        self.put_download_job(&job)?;
+        Ok(job)
+    }
+
+    pub fn update_download_failed(
+        &self,
+        job_id: &uuid::Uuid,
+        error: String,
+    ) -> Result<DownloadJob> {
+        let mut job = self
+            .get_download_job(job_id)?
+            .ok_or_else(|| anyhow::anyhow!("download job not found: {}", job_id))?;
+        job.status = DownloadStatus::Failed;
+        job.error = Some(error);
+        job.updated_at = chrono::Utc::now();
+        self.put_download_job(&job)?;
+        Ok(job)
+    }
+
+    pub fn list_download_jobs(&self) -> Result<Vec<DownloadJob>> {
+        let mut results = vec![];
+        let iter = self.db.prefix_iterator(b"download:");
+        for item in iter {
+            let (k, v) = item?;
+            if !k.starts_with(b"download:") {
+                break;
+            }
+            if let Ok(job) = serde_json::from_slice::<DownloadJob>(&v) {
+                results.push(job);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn delete_download_job(&self, job_id: &uuid::Uuid) -> Result<()> {
+        let key = format!("download:{}", job_id);
+        self.db.delete(key.as_bytes())?;
+        Ok(())
     }
 }
 

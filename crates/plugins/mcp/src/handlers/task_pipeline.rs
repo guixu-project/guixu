@@ -1567,7 +1567,7 @@ mod tests {
     fn final_score_breakdown_reports_centered_on_chain_component() {
         let valuation = DatasetValuation {
             result: SearchResult {
-                cid: data_core::types::DatasetCid("guixu-hub:test".into()),
+                cid: data_core::types::DatasetCid("guixu.market:test".into()),
                 title: "test".into(),
                 description: None,
                 tags: vec![],

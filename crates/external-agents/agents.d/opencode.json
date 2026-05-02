@@ -1,0 +1,25 @@
+{
+  "id": "opencode-default",
+  "name": "OpenCode Agent",
+  "agent_type": "opencode",
+  "connection": {
+    "Cli": {
+      "executable": "/home/wyf/.opencode/bin/opencode",
+      "args_template": [
+        "run",
+        "--format",
+        "json",
+        "{prompt}"
+      ],
+      "working_dir": null,
+      "env_vars": {},
+      "shell": null,
+      "capture_stderr": false,
+      "response_parser": "json_stream"
+    }
+  },
+  "default_timeout_secs": 120,
+  "max_retries": 3,
+  "auth": null,
+  "extra": {}
+}

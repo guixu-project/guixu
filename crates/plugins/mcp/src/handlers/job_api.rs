@@ -193,3 +193,101 @@ pub async fn ingest_cancel(args: Value, state: &AppState) -> Result<String> {
         "message": "Ingest job cancelled.",
     }))?)
 }
+
+// ---------------------------------------------------------------------------
+// Download Job management (Gopeed-inspired unified download task model)
+// ---------------------------------------------------------------------------
+
+pub async fn download_jobs(_args: Value, state: &AppState) -> Result<String> {
+    let jobs = state.job_store.list_download_jobs()?;
+    Ok(serde_json::to_string_pretty(&json!({
+        "jobs": jobs,
+    }))?)
+}
+
+pub async fn download_status(args: Value, state: &AppState) -> Result<String> {
+    let job_id = args
+        .get("job_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
+    let job_uuid = uuid::Uuid::parse_str(job_id)
+        .or_else(|_| uuid::Uuid::parse_str(job_id.strip_prefix("download_").unwrap_or(job_id)))
+        .map_err(|_| anyhow::anyhow!("invalid job_id format: {job_id}"))?;
+    let job = state
+        .job_store
+        .get_download_job(&job_uuid)?
+        .ok_or_else(|| anyhow::anyhow!("download job not found: {job_id}"))?;
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "job_id": job.job_id.to_string(),
+        "cid": job.cid.0,
+        "source": job.source,
+        "status": job.status,
+        "progress": job.progress,
+        "dest_path": job.dest_path.as_ref().map(|p| p.display().to_string()),
+        "error": job.error,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "completed_at": job.completed_at,
+    }))?)
+}
+
+pub async fn download_pause(args: Value, state: &AppState) -> Result<String> {
+    let job_id = args
+        .get("job_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
+    let job_uuid = uuid::Uuid::parse_str(job_id)
+        .or_else(|_| uuid::Uuid::parse_str(job_id.strip_prefix("download_").unwrap_or(job_id)))
+        .map_err(|_| anyhow::anyhow!("invalid job_id format: {job_id}"))?;
+
+    let job = state
+        .job_store
+        .update_download_status(&job_uuid, data_core::types::DownloadStatus::Paused)?;
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "job_id": job.job_id.to_string(),
+        "status": job.status,
+        "message": "Download job paused.",
+    }))?)
+}
+
+pub async fn download_resume(args: Value, state: &AppState) -> Result<String> {
+    let job_id = args
+        .get("job_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
+    let job_uuid = uuid::Uuid::parse_str(job_id)
+        .or_else(|_| uuid::Uuid::parse_str(job_id.strip_prefix("download_").unwrap_or(job_id)))
+        .map_err(|_| anyhow::anyhow!("invalid job_id format: {job_id}"))?;
+
+    let job = state
+        .job_store
+        .update_download_status(&job_uuid, data_core::types::DownloadStatus::Running)?;
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "job_id": job.job_id.to_string(),
+        "status": job.status,
+        "message": "Download job resumed.",
+    }))?)
+}
+
+pub async fn download_cancel(args: Value, state: &AppState) -> Result<String> {
+    let job_id = args
+        .get("job_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing job_id"))?;
+    let job_uuid = uuid::Uuid::parse_str(job_id)
+        .or_else(|_| uuid::Uuid::parse_str(job_id.strip_prefix("download_").unwrap_or(job_id)))
+        .map_err(|_| anyhow::anyhow!("invalid job_id format: {job_id}"))?;
+
+    let job = state
+        .job_store
+        .update_download_status(&job_uuid, data_core::types::DownloadStatus::Cancelled)?;
+
+    Ok(serde_json::to_string_pretty(&json!({
+        "job_id": job.job_id.to_string(),
+        "status": job.status,
+        "message": "Download job cancelled.",
+    }))?)
+}
