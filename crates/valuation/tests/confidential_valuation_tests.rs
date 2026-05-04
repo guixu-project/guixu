@@ -1,10 +1,10 @@
 // Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
 // SPDX-License-Identifier: Apache-2.0
 
-use data_confidential_valuation::client::ValuationReportResponse;
-use data_confidential_valuation::merge::{merge_into_proxy_score, should_purchase};
-use data_confidential_valuation::verify::{build_evidence, verify_report};
 use data_core::types::ProofVerdict;
+use data_valuation::confidential_valuation::client::ValuationReportResponse;
+use data_valuation::confidential_valuation::merge::{merge_into_proxy_score, should_purchase};
+use data_valuation::confidential_valuation::verify::{build_evidence, verify_report};
 
 fn mock_report(verdict: &str, digest: Option<&str>, score: Option<f64>) -> ValuationReportResponse {
     ValuationReportResponse {

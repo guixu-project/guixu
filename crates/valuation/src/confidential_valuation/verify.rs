@@ -1,7 +1,7 @@
 // Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::client::ValuationReportResponse;
+use super::client::ValuationReportResponse;
 use data_core::types::*;
 
 /// Verify a valuation report's proof digest and consistency.

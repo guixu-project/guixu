@@ -16,6 +16,10 @@ chrono = { workspace = true }
 futures = { workspace = true }
 polars = { workspace = true, features = ["parquet", "csv"] }
 tokio = { workspace = true, features = ["full"] }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -18,7 +18,6 @@ members = [
     "crates/node",
     "crates/agent",
     "crates/test-utils",
-    "crates/confidential_valuation",
     "crates/external-agents",
 ]
 
