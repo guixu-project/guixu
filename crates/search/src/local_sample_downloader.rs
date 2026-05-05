@@ -7,13 +7,14 @@ use data_storage::metadata_store::MetadataStore;
 
 use crate::sample_eval::{DownloadedSample, SampleDownloadOutcome, SampleRecord};
 
-/// Downloads samples from the P2P network via /guixu/sample/1.0.0 protocol.
-/// Integrates into the data-search sample_eval pipeline.
-pub struct P2PSampleDownloader {
+/// Downloads samples from local store.
+/// Note: In a full implementation, this would send a SampleRequest via libp2p.
+/// Currently reads directly from local MetadataStore.
+pub struct LocalSampleDownloader {
     store: MetadataStore,
 }
 
-impl P2PSampleDownloader {
+impl LocalSampleDownloader {
     pub fn new(store: MetadataStore) -> Self {
         Self { store }
     }
@@ -83,7 +84,7 @@ mod tests {
     async fn missing_cid_returns_unavailable() {
         let dir = temp_dir("dl-miss");
         let store = MetadataStore::open(&dir).unwrap();
-        let dl = P2PSampleDownloader::new(store);
+        let dl = LocalSampleDownloader::new(store);
         let outcome = dl.download_sample("nonexistent", 10).await.unwrap();
         assert!(outcome.sample.is_none());
         assert!(outcome.unavailable_reason.is_some());
@@ -98,7 +99,7 @@ mod tests {
         std::fs::write(&file_path, "a,b\n1,2\n3,4\n").unwrap();
         store.put_file_path(&cid, &file_path).unwrap();
 
-        let dl = P2PSampleDownloader::new(store);
+        let dl = LocalSampleDownloader::new(store);
         let outcome = dl.download_sample("cid-dl", 10).await.unwrap();
         assert!(outcome.sample.is_some());
         let sample = outcome.sample.unwrap();
@@ -119,7 +120,7 @@ mod tests {
         std::fs::write(&file_path, &content).unwrap();
         store.put_file_path(&cid, &file_path).unwrap();
 
-        let dl = P2PSampleDownloader::new(store);
+        let dl = LocalSampleDownloader::new(store);
         let outcome = dl.download_sample("cid-lim", 5).await.unwrap();
         let sample = outcome.sample.unwrap();
         assert!(sample.records.len() <= 6); // max_rows + 1 for header

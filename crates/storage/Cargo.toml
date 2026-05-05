@@ -8,6 +8,7 @@ edition.workspace = true
 
 [dependencies]
 data-core = { workspace = true }
+data-attestation = { workspace = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

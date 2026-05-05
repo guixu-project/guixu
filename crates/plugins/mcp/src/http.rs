@@ -14,7 +14,8 @@ use serde_json::json;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
-use data_auth::privacy::{PrivacyConfig, PrivacyLevel};
+use data_auth::privacy::PrivacyConfig;
+use data_core::config::PrivacyLevel;
 use data_core::types::AccessMode;
 use data_search::adapters::load_open_data_skills;
 
@@ -852,7 +853,7 @@ fn http_session_id(headers: &HeaderMap) -> String {
 #[cfg(test)]
 mod tests {
     use super::parse_publish_privacy;
-    use data_auth::privacy::PrivacyLevel;
+    use data_core::config::PrivacyLevel;
 
     #[test]
     fn parse_publish_privacy_uses_defaults() {

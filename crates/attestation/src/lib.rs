@@ -3,6 +3,7 @@
 
 mod buyer_review;
 mod client;
+mod provider_reputation;
 mod seller_reputation;
 
 #[cfg(test)]
@@ -10,4 +11,5 @@ mod tests;
 
 pub use buyer_review::{fetch_buyer_reviews, summarize_reviews, BuyerReview, ReviewSummary};
 pub use client::{BaseChainClient, ChainConfig, PaymentAmount, PaymentToken, TokenAddresses};
+pub use provider_reputation::compute_provider_reputation;
 pub use seller_reputation::{fetch_seller_reputation, ReputationTier, SellerReputation};

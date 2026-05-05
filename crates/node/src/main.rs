@@ -565,11 +565,7 @@ async fn cmd_start() -> Result<()> {
     let job_store = JobStore::open(&NodeConfig::config_dir().join("job_db"))?;
 
     let privacy_config = data_auth::privacy::PrivacyConfig {
-        level: match config.privacy_level {
-            data_core::config::PrivacyLevel::Off => data_auth::privacy::PrivacyLevel::Off,
-            data_core::config::PrivacyLevel::Standard => data_auth::privacy::PrivacyLevel::Standard,
-            data_core::config::PrivacyLevel::Strict => data_auth::privacy::PrivacyLevel::Strict,
-        },
+        level: config.privacy_level,
         epsilon: config.privacy_epsilon,
         ..Default::default()
     };
@@ -827,11 +823,7 @@ async fn cmd_mcp(mode: String) -> Result<()> {
     let job_store = JobStore::open(&NodeConfig::config_dir().join("job_db"))?;
 
     let privacy_config = data_auth::privacy::PrivacyConfig {
-        level: match config.privacy_level {
-            data_core::config::PrivacyLevel::Off => data_auth::privacy::PrivacyLevel::Off,
-            data_core::config::PrivacyLevel::Standard => data_auth::privacy::PrivacyLevel::Standard,
-            data_core::config::PrivacyLevel::Strict => data_auth::privacy::PrivacyLevel::Strict,
-        },
+        level: config.privacy_level,
         epsilon: config.privacy_epsilon,
         ..Default::default()
     };
