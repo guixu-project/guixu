@@ -5,7 +5,7 @@ pub mod adapters;
 pub mod engine;
 pub mod http_client;
 pub mod intent;
-pub mod p2p_sample_downloader;
+pub mod local_sample_downloader;
 pub mod sample_eval;
 pub mod search_cache;
 pub mod skill_sample_downloader;

@@ -2,23 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::Result;
+use data_core::config::PrivacyLevel;
 use data_core::metadata::DatasetMetadata;
 use data_core::types::DatasetStats;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-/// Privacy protection level for metadata publication.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PrivacyLevel {
-    /// No privacy protection (current behaviour).
-    Off,
-    /// Standard: DP noise on stats, hash sensitive column names.
-    #[default]
-    Standard,
-    /// Strict: all of Standard + suppress min/max entirely, hash ALL column names.
-    Strict,
-}
 
 /// Configuration for differential privacy noise.
 #[derive(Debug, Clone, Serialize, Deserialize)]

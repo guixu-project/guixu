@@ -558,7 +558,7 @@ mod scorer_tests {
 
     #[test]
     fn high_quality_metadata_scores_high() {
-        let scorer = QualityScorer;
+        let scorer = QualityScorer::new();
         let meta = make_metadata("good", &[("a", "int64"), ("b", "utf8")], 0.0);
         let score = scorer.score_from_metadata(&meta);
         assert!(
@@ -570,7 +570,7 @@ mod scorer_tests {
 
     #[test]
     fn missing_stats_gives_moderate_score() {
-        let scorer = QualityScorer;
+        let scorer = QualityScorer::new();
         let mut meta = make_metadata("ok", &[("a", "int64")], 0.0);
         meta.stats = None;
         let score = scorer.score_from_metadata(&meta);
@@ -580,7 +580,7 @@ mod scorer_tests {
 
     #[test]
     fn vc_boosts_provenance() {
-        let scorer = QualityScorer;
+        let scorer = QualityScorer::new();
         let mut meta = make_metadata("vc", &[("a", "int64")], 0.0);
         meta.verifiable_credential = Some(serde_json::json!({"type": "vc"}));
         let score = scorer.score_from_metadata(&meta);
