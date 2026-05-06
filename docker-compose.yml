@@ -1,0 +1,19 @@
+# Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+# SPDX-License-Identifier: Apache-2.0
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      - RUST_BACKTRACE=1
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "3927:3927"

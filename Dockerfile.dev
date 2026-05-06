@@ -1,0 +1,19 @@
+# Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+# SPDX-License-Identifier: Apache-2.0
+
+# Dev container - pinned to project rust-version
+ARG RUST_IMAGE=rust:1.94-bookworm
+
+FROM ${RUST_IMAGE}
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y \
+    libclang-dev \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock ./
+COPY rust-toolchain.toml ./
+COPY crates crates
+RUN cargo fetch

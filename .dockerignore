@@ -1,0 +1,11 @@
+target/
+dist/
+*.egg-info/
+__pycache__/
+.git/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+traces.duckdb
