@@ -1,0 +1,23 @@
+# Copyright (c) 2026 The State Key Laboratory of Blockchain and Data Security, Zhejiang University
+# SPDX-License-Identifier: Apache-2.0
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      - .:/workspace
+      - opencode-cache:/root/.opencode
+      - ${HOME}/.opencode/bin/opencode:/usr/local/bin/opencode:ro
+    working_dir: /workspace
+    network_mode: host
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "3927:3927"
+
+volumes:
+  opencode-cache:

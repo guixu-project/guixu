@@ -1,0 +1,15 @@
+{
+  "name": "Guixu Dev Container",
+  "image": "guixu_dev:latest",
+  "remoteEnv": {
+    "RUST_BACKTRACE": "1"
+  },
+  "settings": {
+    "rust-analyzer.linkedProjects": ["/workspace/rust-toolchain.toml"],
+    "rust-analyzer.checkOnSave.command": "clippy",
+    "rust-analyzer.checkOnSave.allTargets": true,
+    "editor.formatOnSave": true,
+    "editor.rulers": [100]
+  },
+  "postCreateCommand": "cargo fetch"
+}
