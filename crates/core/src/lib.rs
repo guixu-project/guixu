@@ -8,4 +8,5 @@ pub mod error;
 pub mod feedback;
 pub mod identity;
 pub mod metadata;
+pub mod signal_fetcher;
 pub mod types;

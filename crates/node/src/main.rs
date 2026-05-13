@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use data_core::config::{NodeConfig, NodeMode};
+use data_core::config::{migration, NodeConfig, NodeMode};
 use data_core::env::load_local_settings;
 use data_core::identity::NodeIdentity;
 use data_core::types::{AccessMode, DatasetCid};
@@ -522,16 +522,16 @@ fn cmd_init(data_dir: Option<String>) -> Result<()> {
 
     let mut config = NodeConfig::default();
     if let Some(dir) = data_dir {
-        config.data_dir = shellexpand(dir);
+        config.paths.data_dir = shellexpand(dir);
     }
-    std::fs::create_dir_all(&config.data_dir)?;
+    std::fs::create_dir_all(&config.paths.data_dir)?;
     let toml_str = toml::to_string_pretty(&config)?;
     std::fs::write(NodeConfig::config_path(), &toml_str)?;
 
     println!("✅ Node initialized");
     println!("   DID:       {}", identity.did.0);
     println!("   Config:    {}", NodeConfig::config_path().display());
-    println!("   Data dir:  {}", config.data_dir.display());
+    println!("   Data dir:  {}", config.paths.data_dir.display());
     Ok(())
 }
 
@@ -587,7 +587,7 @@ async fn cmd_start() -> Result<()> {
     }
 
     // Start file watcher
-    let mut watch_rx = data_p2p::watchdir::watch(&config.data_dir)?;
+    let mut watch_rx = data_p2p::watchdir::watch(&config.paths.data_dir)?;
 
     // Handle network events
     let store_bg = store.clone();
@@ -725,15 +725,17 @@ async fn cmd_start() -> Result<()> {
     // Start watchdog
     let watchdog = watchdog::WatchdogTask::new(
         dht.handle().cmd_tx.clone(),
-        3927,
-        config.data_dir.clone(),
+        config.server.http_port,
+        config.paths.data_dir.clone(),
         config.daemon.clone(),
     );
     tokio::spawn(watchdog.run());
 
     // Start embedded Web UI + MCP HTTP server
+    // GIP005: Use with_full_config_with_features to respect feature flags
+    let effective_blacklist = migration::resolve_adapter_blacklist(&config);
     let mut mcp_server = McpServer::new(
-        AppState::with_full_config(
+        AppState::with_full_config_with_features(
             NodeIdentity::from_seed(identity.seed()),
             DhtIndex::new(data_p2p::network::NetworkHandle {
                 cmd_tx: dht.handle().cmd_tx.clone(),
@@ -746,6 +748,8 @@ async fn cmd_start() -> Result<()> {
             &config.external_duckdb,
             &config.external_postgresql,
             &config.external_sql,
+            &config.features,
+            &effective_blacklist,
         )
         .await,
     );
@@ -753,7 +757,7 @@ async fn cmd_start() -> Result<()> {
         tracing::warn!(err = %e, "failed to init trace pool, falling back to per-request connections");
     }
     let state = Arc::new(mcp_server);
-    let http_port = 3927;
+    let http_port = config.server.http_port;
     info!("Web UI → http://localhost:{http_port}");
     tokio::spawn(async move {
         if let Err(e) = data_mcp_server::server::run_http(state, http_port).await {
@@ -1081,8 +1085,9 @@ async fn cmd_status() -> Result<()> {
     }
 
     let client = reqwest::Client::new();
+    let http_port = config.server.http_port;
     if let Ok(resp) = client
-        .get("http://127.0.0.1:3927/api/node/status")
+        .get(format!("http://127.0.0.1:{http_port}/api/node/status"))
         .timeout(std::time::Duration::from_secs(2))
         .send()
         .await
@@ -1095,7 +1100,7 @@ async fn cmd_status() -> Result<()> {
     }
 
     println!("Node DID: {}", identity.did.0);
-    println!("Data dir: {}", config.data_dir.display());
+    println!("Data dir: {}", config.paths.data_dir.display());
     Ok(())
 }
 

@@ -6,8 +6,6 @@ use std::sync::Arc;
 use crate::discovery::types::{ObservationRecord, WorkerProgress, WorkerRegistration};
 use crate::discovery::workspace::WorkspaceHandle;
 use anyhow::Result;
-use data_core::feedback::CommunitySignal;
-use data_core::types::DatasetCid;
 use data_search::engine::{RankedResult, SearchEngine, SearchFilters};
 use data_search::intent::QueryProfile;
 use data_storage::feedback_store::FeedbackStore;
@@ -74,21 +72,8 @@ impl PlatformSearchSubAgent {
     }
 
     async fn search_one_query(&self, query: &str, limit: usize) -> Result<Vec<RankedResult>> {
-        let feedback_store = self.feedback_store.clone();
-        let signal_fetcher: data_search::engine::SignalFetcher = Box::new(move |cid_str: &str| {
-            let cid = DatasetCid(cid_str.to_string());
-            feedback_store
-                .compute_signal(&cid)
-                .unwrap_or_else(|_| CommunitySignal {
-                    dataset_cid: cid,
-                    total_reviews: 0,
-                    avg_relevance: 0.0,
-                    avg_quality: 0.0,
-                    positive_rate: 0.0,
-                    negative_rate: 0.0,
-                    task_signals: vec![],
-                })
-        });
+        let signal_fetcher =
+            data_search::engine::SignalFetcher::local_only(Arc::new(self.feedback_store.clone()));
 
         self.search_engine
             .search_single_skill_raw(&self.platform_skill_id, query, &signal_fetcher, limit)

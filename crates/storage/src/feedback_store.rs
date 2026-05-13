@@ -182,3 +182,11 @@ fn aggregate_signal(cid: &DatasetCid, feedbacks: &[DatasetFeedback]) -> Communit
         task_signals,
     }
 }
+
+use data_core::signal_fetcher::LocalSignalStore;
+
+impl LocalSignalStore for FeedbackStore {
+    fn compute_signal(&self, cid: &DatasetCid) -> anyhow::Result<CommunitySignal> {
+        FeedbackStore::compute_signal(self, cid)
+    }
+}

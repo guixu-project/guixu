@@ -5,6 +5,7 @@ use crate::router::TransactionContext;
 use crate::wallet::AgentWallet;
 use alloy_primitives::{Address, U256};
 use anyhow::{bail, Context, Result};
+use data_core::config::BlockchainConfig;
 use data_core::types::*;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -36,14 +37,24 @@ impl EscrowClient {
         }
     }
 
+    /// Create EscrowClient from BlockchainConfig.
+    pub fn from_blockchain_config(wallet: AgentWallet, config: &BlockchainConfig) -> Self {
+        Self::new(wallet, config.rpc_url(), config.chain_id())
+    }
+
     /// Create for Base mainnet (chain_id = 8453).
+    #[deprecated(since = "0.2.0", note = "Use from_blockchain_config instead")]
     pub fn for_base_mainnet(wallet: AgentWallet) -> Self {
-        Self::new(wallet, "https://mainnet.base.org", 8453)
+        let config = BlockchainConfig::default();
+        Self::from_blockchain_config(wallet, &config)
     }
 
     /// Create for Base Sepolia testnet (chain_id = 84532).
+    #[deprecated(since = "0.2.0", note = "Use from_blockchain_config instead")]
     pub fn for_base_sepolia(wallet: AgentWallet) -> Self {
-        Self::new(wallet, "https://sepolia.base.org", 84532)
+        let mut config = BlockchainConfig::default();
+        config.network = data_core::config::BlockchainNetwork::Sepolia;
+        Self::from_blockchain_config(wallet, &config)
     }
 
     /// Execute an escrowed purchase.

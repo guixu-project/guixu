@@ -9,6 +9,7 @@ pub mod local_sample_downloader;
 pub mod sample_eval;
 pub mod search_cache;
 pub mod skill_sample_downloader;
+pub mod streaming;
 pub mod vector_index;
 
 #[cfg(test)]

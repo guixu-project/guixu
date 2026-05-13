@@ -12,7 +12,6 @@ use data_core::agent::contracts::{
     WorkerTaskKind,
 };
 use data_core::agent::memory::{AgentMemory, MemoryDiff, MemoryKey, MemoryMutation, MutationKind};
-use data_core::feedback::CommunitySignal;
 use data_core::types::{DatasetCid, SkillCapability};
 use data_search::engine::{RankedResult, SearchEngine, SignalFetcher};
 use data_search::intent::QueryProfile;
@@ -61,21 +60,7 @@ impl WorkflowState {
     }
 
     pub fn signal_fetcher(&self) -> SignalFetcher {
-        let fb_store = self.feedback_store.clone();
-        Box::new(move |cid_str: &str| {
-            let cid = DatasetCid(cid_str.to_string());
-            fb_store
-                .compute_signal(&cid)
-                .unwrap_or_else(|_| CommunitySignal {
-                    dataset_cid: cid,
-                    total_reviews: 0,
-                    avg_relevance: 0.0,
-                    avg_quality: 0.0,
-                    positive_rate: 0.0,
-                    negative_rate: 0.0,
-                    task_signals: vec![],
-                })
-        })
+        SignalFetcher::local_only(self.feedback_store.clone())
     }
 }
 
@@ -744,22 +729,6 @@ fn feed_trace_to_memory(
         .push(format!("last_duration_ms={duration_ms}"));
 }
 
-pub fn create_signal_fetcher(
-    feedback_store: &FeedbackStore,
-) -> impl Fn(&str) -> CommunitySignal + 'static {
-    let fb_store = feedback_store.clone();
-    move |cid_str: &str| {
-        let cid = DatasetCid(cid_str.to_string());
-        fb_store
-            .compute_signal(&cid)
-            .unwrap_or_else(|_| CommunitySignal {
-                dataset_cid: cid,
-                total_reviews: 0,
-                avg_relevance: 0.0,
-                avg_quality: 0.0,
-                positive_rate: 0.0,
-                negative_rate: 0.0,
-                task_signals: vec![],
-            })
-    }
+pub fn create_signal_fetcher(feedback_store: &FeedbackStore) -> SignalFetcher {
+    SignalFetcher::local_only(Arc::new(feedback_store.clone()))
 }

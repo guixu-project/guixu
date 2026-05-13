@@ -8,17 +8,11 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
+use data_core::config::BlockchainConfig;
 use data_core::types::*;
 
 use crate::router::TransactionContext;
 use crate::wallet::AgentWallet;
-
-/// USDC contract addresses per chain.
-const USDC_BASE: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
-const USDC_BASE_SEPOLIA: &str = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
-
-/// Coinbase-hosted facilitator for mainnet.
-const CDP_FACILITATOR: &str = "https://x402.coinbase.com";
 
 /// x402 protocol client — single-shot HTTP 402 micropayments (USDC on Base).
 ///
@@ -32,7 +26,7 @@ pub struct X402Client {
     wallet: AgentWallet,
     http: Client,
     facilitator_url: String,
-    testnet: bool,
+    usdc_address: String,
 }
 
 /// Payment requirements returned in the 402 response.
@@ -97,13 +91,35 @@ struct PaymentResponse {
 }
 
 impl X402Client {
-    pub fn new(wallet: AgentWallet, testnet: bool) -> Self {
+    pub fn new(wallet: AgentWallet, facilitator_url: String, usdc_address: String) -> Self {
         Self {
             wallet,
             http: Client::new(),
-            facilitator_url: CDP_FACILITATOR.to_string(),
-            testnet,
+            facilitator_url,
+            usdc_address,
         }
+    }
+
+    /// Create X402Client from BlockchainConfig.
+    pub fn from_blockchain_config(wallet: AgentWallet, config: &BlockchainConfig) -> Self {
+        Self::new(
+            wallet,
+            config.x402_facilitator_url.clone(),
+            config.usdc_address.clone(),
+        )
+    }
+
+    #[deprecated(since = "0.2.0", note = "Use from_blockchain_config instead")]
+    pub fn new_legacy(wallet: AgentWallet, testnet: bool) -> Self {
+        let config = if testnet {
+            BlockchainConfig {
+                network: data_core::config::BlockchainNetwork::Sepolia,
+                ..Default::default()
+            }
+        } else {
+            BlockchainConfig::default()
+        };
+        Self::from_blockchain_config(wallet, &config)
     }
 
     pub fn with_facilitator(mut self, url: String) -> Self {
@@ -180,11 +196,10 @@ impl X402Client {
         let amount = U256::from(amount_raw);
 
         let chain_id = parse_chain_id(&scheme.network)?;
-        let usdc_token: Address = if self.testnet {
-            USDC_BASE_SEPOLIA.parse()?
-        } else {
-            USDC_BASE.parse()?
-        };
+        let usdc_token: Address = self
+            .usdc_address
+            .parse()
+            .context("x402: invalid USDC token address")?;
 
         // Step 3: Sign EIP-712 TransferWithAuthorization
         let nonce = U256::from(rand_nonce());

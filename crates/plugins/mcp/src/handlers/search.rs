@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use anyhow::{anyhow, Result};
-use data_core::feedback::CommunitySignal;
 use data_core::metadata::{DatasetMetadata, Provenance};
-use data_core::types::{AccessMode, DatasetCid, SkillCapability, SourceFamily};
-use data_search::engine::{RankedResult, SearchFilters, SignalFetcher};
+use data_core::types::{AccessMode, SkillCapability, SourceFamily};
+use data_search::engine::{RankedResult, SearchFilters};
 use data_search::intent::QueryProfile;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -150,15 +149,15 @@ async fn inner_handle(args: Value, state: &AppState) -> Result<String> {
 async fn legacy_handle(request: &ParsedSearchRequest, state: &AppState) -> Result<String> {
     let profile = build_legacy_profile(&request.query, request.task_type.as_deref());
     let local_metadata = state.store.list_all()?;
-    let signal_fetcher = build_signal_fetcher(state);
 
+    // GIP005: Use signal_fetcher from AppState (respects features.on_chain_signal)
     let search_output = state
         .search_engine
         .search_with_profile(
             &profile,
             &request.filters,
             &local_metadata,
-            &signal_fetcher,
+            &state.signal_fetcher,
             request.limit,
         )
         .await?;
@@ -227,24 +226,6 @@ fn build_legacy_profile(query: &str, task_type: Option<&str>) -> QueryProfile {
         data_standard: Default::default(),
         user_profile: Default::default(),
     }
-}
-
-fn build_signal_fetcher(state: &AppState) -> SignalFetcher {
-    let feedback_store = state.feedback_store.clone();
-    Box::new(move |cid_str: &str| {
-        let cid = DatasetCid(cid_str.to_string());
-        feedback_store
-            .compute_signal(&cid)
-            .unwrap_or_else(|_| CommunitySignal {
-                dataset_cid: cid,
-                total_reviews: 0,
-                avg_relevance: 0.0,
-                avg_quality: 0.0,
-                positive_rate: 0.0,
-                negative_rate: 0.0,
-                task_signals: vec![],
-            })
-    })
 }
 
 fn persist_search_results(state: &AppState, results: &[RankedResult]) -> Result<()> {

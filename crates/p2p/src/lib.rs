@@ -10,6 +10,8 @@ pub mod sample_server;
 pub mod torrent;
 pub mod watchdir;
 
+pub mod p2p_handle;
+
 // Re-export from data-storage for backward compatibility
 pub use data_storage::feedback_store;
 pub use data_storage::metadata_store as storage;

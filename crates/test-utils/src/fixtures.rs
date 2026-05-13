@@ -148,13 +148,5 @@ pub fn delegated_task(goal: &str) -> DelegatedDataTask {
 
 /// Signal fetcher that always returns a neutral signal.
 pub fn neutral_signal_fetcher() -> data_search::engine::SignalFetcher {
-    Box::new(|cid_str: &str| CommunitySignal {
-        dataset_cid: DatasetCid(cid_str.into()),
-        total_reviews: 0,
-        avg_relevance: 0.0,
-        avg_quality: 0.0,
-        positive_rate: 0.0,
-        negative_rate: 0.0,
-        task_signals: vec![],
-    })
+    data_search::engine::SignalFetcher::no_op()
 }

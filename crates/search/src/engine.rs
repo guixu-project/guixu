@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use data_attestation::{fetch_buyer_reviews, summarize_reviews, BaseChainClient, ChainConfig};
+use data_core::config::BlockchainConfig;
 use data_core::feedback::CommunitySignal;
 use data_core::metadata::DatasetMetadata;
 use data_core::types::{
@@ -22,6 +23,8 @@ use crate::vector_index::VectorIndex;
 
 pub const ON_CHAIN_SCORE_NEUTRAL: f64 = 50.0;
 pub const ON_CHAIN_COARSE_ADJUST_WEIGHT: f64 = 0.10;
+
+pub use data_core::signal_fetcher::SignalFetcher;
 const ON_CHAIN_TRADE_SATURATION: u64 = 50;
 const ON_CHAIN_SENTIMENT_SAMPLE_LIMIT: usize = 20;
 const MAX_SELECTION_BUDGET_BUCKETS: usize = 10_000;
@@ -45,10 +48,6 @@ pub struct SearchFilters {
     pub category: Option<String>,
     pub free_only: Option<bool>,
 }
-
-/// Callback to fetch community signal for a dataset CID.
-/// Allows the search engine to rank by TCV without owning the feedback store.
-pub type SignalFetcher = Box<dyn Fn(&str) -> CommunitySignal + Send + Sync>;
 
 /// Input bundle for the higher-level "search, then value" workflow.
 pub struct SearchAndValueRequest<'a> {
@@ -315,7 +314,7 @@ impl SearchEngine {
             let ranked: Vec<RankedResult> = cached_results
                 .into_iter()
                 .map(|r| RankedResult {
-                    signal: signal_fetcher(&r.cid.0),
+                    signal: signal_fetcher.call(&r.cid.0),
                     result: r,
                     rank_score: 0.0,
                 })
@@ -471,7 +470,7 @@ impl SearchEngine {
         // Rank with community signal (TCV-lite for search ranking)
         let signal_by_cid: HashMap<String, CommunitySignal> = all
             .iter()
-            .map(|result| (result.cid.0.clone(), signal_fetcher(&result.cid.0)))
+            .map(|result| (result.cid.0.clone(), signal_fetcher.call(&result.cid.0)))
             .collect();
         let mut ranked: Vec<RankedResult> = all
             .into_iter()
@@ -554,7 +553,7 @@ impl SearchEngine {
             .map(|result| {
                 let result = enrich_search_result_with_skill_metadata(result, adapter);
                 RankedResult {
-                    signal: signal_fetcher(&result.cid.0),
+                    signal: signal_fetcher.call(&result.cid.0),
                     result,
                     rank_score: 0.0,
                 }
@@ -1782,19 +1781,23 @@ async fn fetch_guixu_review_inputs(
     };
 
     let network = env_or_setting("GUIXU_BASE_NETWORK").unwrap_or_else(|| "mainnet".to_string());
-    let config = match network.trim().to_lowercase().as_str() {
-        "mainnet" | "base" => ChainConfig::base_mainnet(&contract_address),
-        "sepolia" | "base-sepolia" => ChainConfig::base_sepolia(&contract_address),
+    let blockchain_config = match network.trim().to_lowercase().as_str() {
+        "mainnet" | "base" => BlockchainConfig::default(),
+        "sepolia" | "base-sepolia" => BlockchainConfig {
+            network: data_core::config::BlockchainNetwork::Sepolia,
+            ..Default::default()
+        },
         other => {
             warn!(
                 network = other,
                 "unsupported GUIXU_BASE_NETWORK; falling back to Base mainnet"
             );
-            ChainConfig::base_mainnet(&contract_address)
+            BlockchainConfig::default()
         }
     };
 
-    let client = BaseChainClient::new(config);
+    let chain_config = ChainConfig::from_blockchain_config(&blockchain_config, &contract_address);
+    let client = BaseChainClient::new(chain_config);
     let reviews = fetch_buyer_reviews(&client, listing_id)
         .await
         .with_context(|| format!("fetch buyer reviews for listing {listing_id}"))?;

@@ -58,6 +58,19 @@ pub struct TaskSignal {
 }
 
 impl CommunitySignal {
+    /// Create a neutral signal when no community data exists.
+    pub fn neutral(dataset_cid: DatasetCid) -> Self {
+        Self {
+            dataset_cid,
+            total_reviews: 0,
+            avg_relevance: 0.0,
+            avg_quality: 0.0,
+            positive_rate: 0.0,
+            negative_rate: 0.0,
+            task_signals: vec![],
+        }
+    }
+
     /// Compute a score (0-100) for a specific task type.
     /// Returns 50.0 (neutral) if no relevant feedback exists.
     pub fn score_for_task(&self, task_type: &str) -> f64 {

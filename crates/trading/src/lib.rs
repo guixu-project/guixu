@@ -9,5 +9,7 @@ pub mod router;
 pub mod wallet;
 pub mod x402;
 
+pub use router::{PaymentMode, PaymentRouter, TransactionContext};
+
 #[cfg(test)]
 mod tests;

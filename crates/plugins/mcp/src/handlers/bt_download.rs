@@ -12,14 +12,11 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("missing info_hash"))?;
 
-    let engine = state
-        .torrent_engine
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("torrent engine not initialized — start node first"))?;
-
-    // Blocking download with auto-seeding: waits for completion then
-    // persists a SeedRecord so this node becomes a seeder for the dataset.
-    let downloaded_to = engine.download_and_seed(info_hash, &state.store).await?;
+    // GIP005: P2PHandle initializes lazily on first use
+    let downloaded_to = state
+        .p2p_handle
+        .download_and_seed(info_hash, &state.store)
+        .await?;
 
     Ok(serde_json::to_string_pretty(&json!({
         "info_hash": info_hash,
@@ -39,12 +36,11 @@ pub async fn handle_preview(args: serde_json::Value, state: &AppState) -> Result
         .and_then(|v| v.as_u64())
         .unwrap_or(65536) as usize;
 
-    let engine = state
-        .torrent_engine
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("torrent engine not initialized — start node first"))?;
-
-    let bytes = engine.download_preview(info_hash, max_bytes).await?;
+    // GIP005: P2PHandle initializes lazily on first use
+    let bytes = state
+        .p2p_handle
+        .download_preview(info_hash, max_bytes)
+        .await?;
 
     if bytes.is_empty() {
         anyhow::bail!("preview not available — torrent may have no seeders");
@@ -58,7 +54,7 @@ pub async fn handle_preview(args: serde_json::Value, state: &AppState) -> Result
             truncated
         }
         Err(_) => {
-            // Binary file — show hex dump of first 512 bytes
+            // Binary file — show hex dump of the first 512 bytes
             let slice = &bytes[..bytes.len().min(512)];
             slice
                 .chunks(16)
@@ -95,12 +91,7 @@ pub async fn handle_stats(args: serde_json::Value, state: &AppState) -> Result<S
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("missing info_hash"))?;
 
-    let engine = state
-        .torrent_engine
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("torrent engine not initialized"))?;
-
-    let stats = engine.get_stats(info_hash)?;
+    let stats = state.p2p_handle.get_stats(info_hash)?;
 
     Ok(serde_json::to_string_pretty(&stats)?)
 }

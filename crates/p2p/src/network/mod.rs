@@ -287,7 +287,7 @@ pub async fn start(
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
     // Listen
-    let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", config.listen_port).parse()?;
+    let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", config.server.p2p_port).parse()?;
     swarm.listen_on(listen_addr)?;
 
     // Connect to bootstrap peers

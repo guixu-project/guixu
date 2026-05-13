@@ -379,16 +379,7 @@ async fn api_market_search(
         return Json(json!({"results": []})).into_response();
     }
     let local_metadata = server.state().store.list_all().unwrap_or_default();
-    let signal_fetcher: data_search::engine::SignalFetcher =
-        Box::new(|_cid: &str| data_core::feedback::CommunitySignal {
-            dataset_cid: data_core::types::DatasetCid(String::new()),
-            total_reviews: 0,
-            avg_relevance: 0.0,
-            avg_quality: 0.0,
-            positive_rate: 0.0,
-            negative_rate: 0.0,
-            task_signals: vec![],
-        });
+    let signal_fetcher = data_search::engine::SignalFetcher::no_op();
     match server
         .state()
         .search_engine

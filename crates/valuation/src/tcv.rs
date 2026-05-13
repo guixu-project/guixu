@@ -14,56 +14,16 @@ use crate::video_evaluator::VideoEvaluator;
 ///              + δ·Quality + ε·CommunitySignal - ζ·RiskPenalty
 ///
 /// Range: [0, 100]. Scores around 50 are neutral after normalization.
-pub struct TcvEngine;
-
-/// Full TCV valuation report returned to the agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TcvReport {
-    pub tcv_score: f64,
-    pub schema_fit: f64,
-    pub temporal_fit: f64,
-    pub information_gain: f64,
-    pub quality_score: f64,
-    pub community_signal: f64,
-    pub risk_penalty: f64,
-    pub verdict: TcvVerdict,
-    pub explanation: String,
+#[derive(Clone, Default)]
+pub struct TcvEngine {
+    weights: TcvWeights,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TcvVerdict {
-    /// TCV > 80: strongly recommended
-    StrongPositive,
-    /// TCV 65-80: recommended
-    Positive,
-    /// TCV 50-65: marginal value
-    Neutral,
-    /// TCV 35-50: likely unhelpful
-    Negative,
-    /// TCV <= 35: would likely harm task performance
-    StrongNegative,
-}
-
-/// Agent's task context for TCV computation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskContext {
-    pub task_description: String,
-    pub task_type: String,
-    pub required_columns: Vec<String>,
-    pub time_range: Option<(String, String)>,
-    pub existing_data_cids: Vec<String>,
-    pub budget: f64,
-}
-
-const ALPHA: f64 = 0.25; // schema fit
-const BETA: f64 = 0.15; // temporal fit
-const GAMMA: f64 = 0.15; // information gain
-const DELTA: f64 = 0.10; // quality
-const EPSILON: f64 = 0.15; // community signal
-const ZETA: f64 = 0.20; // risk penalty (high weight — negative feedback matters)
 
 impl TcvEngine {
+    pub fn new(weights: TcvWeights) -> Self {
+        Self { weights }
+    }
+
     /// Compute Task-Conditioned Value for a dataset.
     pub fn evaluate(
         &self,
@@ -92,12 +52,12 @@ impl TcvEngine {
 
         // Compute the legacy centered score, then normalize it into [0, 100]
         // so downstream consumers never see negative TCV values.
-        let raw = ALPHA * schema_fit
-            + BETA * temporal_fit
-            + GAMMA * information_gain
-            + DELTA * quality_score
-            + EPSILON * community
-            - ZETA * risk;
+        let raw = self.weights.schema_fit * schema_fit
+            + self.weights.temporal_fit * temporal_fit
+            + self.weights.info_gain * information_gain
+            + self.weights.quality * quality_score
+            + self.weights.community_signal * community
+            - self.weights.risk_penalty * risk;
         let centered_score = raw.clamp(-100.0, 100.0);
         let tcv_score = ((centered_score + 100.0) / 2.0).clamp(0.0, 100.0);
 
@@ -296,3 +256,46 @@ impl TcvEngine {
         parts.join(". ")
     }
 }
+
+/// Full TCV valuation report returned to the agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TcvReport {
+    pub tcv_score: f64,
+    pub schema_fit: f64,
+    pub temporal_fit: f64,
+    pub information_gain: f64,
+    pub quality_score: f64,
+    pub community_signal: f64,
+    pub risk_penalty: f64,
+    pub verdict: TcvVerdict,
+    pub explanation: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TcvVerdict {
+    /// TCV > 80: strongly recommended
+    StrongPositive,
+    /// TCV 65-80: recommended
+    Positive,
+    /// TCV 50-65: marginal value
+    Neutral,
+    /// TCV 35-50: likely unhelpful
+    Negative,
+    /// TCV <= 35: would likely harm task performance
+    StrongNegative,
+}
+
+/// Agent's task context for TCV computation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskContext {
+    pub task_description: String,
+    pub task_type: String,
+    pub required_columns: Vec<String>,
+    pub time_range: Option<(String, String)>,
+    pub existing_data_cids: Vec<String>,
+    pub budget: f64,
+}
+
+/// TCV scoring weights (sum should ≈ 1.0).
+pub type TcvWeights = data_core::config::TcvWeights;

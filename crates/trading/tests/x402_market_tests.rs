@@ -71,7 +71,7 @@ fn test_wallet() -> data_trading::wallet::AgentWallet {
 #[test]
 fn test_protocol_selection_x402_for_micropayment() {
     let ctx = make_ctx(0.005, None, None);
-    let router = PaymentRouter::new(test_wallet(), true);
+    let router = PaymentRouter::from_wallet(test_wallet(), true);
     let protocol = router.select_protocol(&ctx);
     assert_eq!(protocol, PaymentProtocol::X402);
 }
@@ -79,7 +79,7 @@ fn test_protocol_selection_x402_for_micropayment() {
 #[test]
 fn test_protocol_selection_escrow_for_large_verified() {
     let ctx = make_ctx(5.0, None, None);
-    let router = PaymentRouter::new(test_wallet(), true);
+    let router = PaymentRouter::from_wallet(test_wallet(), true);
     let protocol = router.select_protocol(&ctx);
     assert_eq!(protocol, PaymentProtocol::Erc8183);
 }
@@ -98,7 +98,7 @@ fn test_protocol_selection_mpp_for_session() {
         seller_endpoint: None,
         seller_headers: None,
     };
-    let router = PaymentRouter::new(test_wallet(), true);
+    let router = PaymentRouter::from_wallet(test_wallet(), true);
     let protocol = router.select_protocol(&ctx);
     assert_eq!(protocol, PaymentProtocol::StripeMpp);
 }

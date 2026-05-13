@@ -89,7 +89,7 @@ fn eip712_hash_is_deterministic() {
 
 #[test]
 fn select_x402_for_micropayment() {
-    let router = PaymentRouter::new(test_wallet(), true);
+    let router = PaymentRouter::from_wallet(test_wallet(), true);
     let ctx = make_ctx(0.005, true, false, false, false);
     assert!(matches!(
         router.select_protocol(&ctx),
@@ -99,7 +99,7 @@ fn select_x402_for_micropayment() {
 
 #[test]
 fn select_mpp_for_session_batch() {
-    let router = PaymentRouter::new(test_wallet(), true);
+    let router = PaymentRouter::from_wallet(test_wallet(), true);
     let ctx = make_ctx(0.50, false, true, false, false);
     assert!(matches!(
         router.select_protocol(&ctx),
@@ -109,7 +109,7 @@ fn select_mpp_for_session_batch() {
 
 #[test]
 fn select_mpp_for_fiat_preference() {
-    let router = PaymentRouter::new(test_wallet(), true);
+    let router = PaymentRouter::from_wallet(test_wallet(), true);
     let ctx = make_ctx(0.50, true, false, true, false);
     assert!(matches!(
         router.select_protocol(&ctx),
@@ -119,7 +119,7 @@ fn select_mpp_for_fiat_preference() {
 
 #[test]
 fn select_escrow_for_large_verified() {
-    let router = PaymentRouter::new(test_wallet(), true);
+    let router = PaymentRouter::from_wallet(test_wallet(), true);
     let ctx = make_ctx(5.0, false, false, false, true);
     assert!(matches!(
         router.select_protocol(&ctx),
@@ -129,7 +129,7 @@ fn select_escrow_for_large_verified() {
 
 #[test]
 fn default_to_x402() {
-    let router = PaymentRouter::new(test_wallet(), true);
+    let router = PaymentRouter::from_wallet(test_wallet(), true);
     let ctx = make_ctx(0.50, false, false, false, false);
     assert!(matches!(
         router.select_protocol(&ctx),

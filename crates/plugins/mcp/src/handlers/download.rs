@@ -976,11 +976,8 @@ async fn download_bittorrent_async(_info_hash: &str) -> Result<std::path::PathBu
 
 #[allow(dead_code)]
 async fn download_bittorrent(info_hash: &str, state: &AppState) -> Result<String> {
-    let engine = state
-        .torrent_engine
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("torrent engine not initialized — start node first"))?;
-    engine.start_download(info_hash).await?;
+    // GIP005: P2PHandle initializes lazily on first use
+    state.p2p_handle.start_download(info_hash).await?;
     Ok(serde_json::to_string_pretty(&json!({
         "status": "downloading", "source": "bittorrent", "info_hash": info_hash,
         "note": "Use dataset_bt_stats to check progress."

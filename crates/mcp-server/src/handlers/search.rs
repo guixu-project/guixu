@@ -5,8 +5,7 @@ use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
-use data_core::feedback::CommunitySignal;
-use data_core::types::{DatasetCid, SkillCapability, SourceFamily};
+use data_core::types::{SkillCapability, SourceFamily};
 use data_search::engine::SearchFilters;
 
 use crate::server::AppState;
@@ -101,22 +100,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
 
     let local_metadata = state.store.list_all()?;
 
-    let fb_store = state.feedback_store.clone();
-    let signal_fetcher: data_search::engine::SignalFetcher = Box::new(move |cid_str: &str| {
-        let cid = DatasetCid(cid_str.to_string());
-        fb_store
-            .compute_signal(&cid)
-            .unwrap_or_else(|_| CommunitySignal {
-                dataset_cid: cid,
-                total_reviews: 0,
-                avg_relevance: 0.0,
-                avg_quality: 0.0,
-                positive_rate: 0.0,
-                negative_rate: 0.0,
-                task_signals: vec![],
-            })
-    });
-
+    // GIP005: Use signal_fetcher from AppState (respects features.on_chain_signal)
     let search_output = state
         .search_engine
         .search_with_task_type(
@@ -124,7 +108,7 @@ pub async fn handle(args: serde_json::Value, state: &AppState) -> Result<String>
             task_type,
             &filters,
             &local_metadata,
-            &signal_fetcher,
+            &state.signal_fetcher,
             limit,
         )
         .await?;

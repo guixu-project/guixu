@@ -3,13 +3,13 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
-use data_core::feedback::CommunitySignal;
 use data_core::metadata::{DatasetMetadata, Provenance};
 use data_core::types::{AccessMode, DatasetCid, SearchResult, SkillCapability, SourceFamily};
 use data_search::engine::{
@@ -900,21 +900,7 @@ async fn search_results_json(
 ) -> Result<(SearchOutput, Vec<Value>)> {
     let local_metadata = state.store.list_all()?;
 
-    let fb_store = state.feedback_store.clone();
-    let signal_fetcher: data_search::engine::SignalFetcher = Box::new(move |cid_str: &str| {
-        let cid = DatasetCid(cid_str.to_string());
-        fb_store
-            .compute_signal(&cid)
-            .unwrap_or_else(|_| CommunitySignal {
-                dataset_cid: cid,
-                total_reviews: 0,
-                avg_relevance: 0.0,
-                avg_quality: 0.0,
-                positive_rate: 0.0,
-                negative_rate: 0.0,
-                task_signals: vec![],
-            })
-    });
+    let signal_fetcher = data_search::engine::SignalFetcher::local_only(Arc::new(state.feedback_store.clone()));
 
     let search_output = state
         .search_engine

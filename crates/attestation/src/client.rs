@@ -4,18 +4,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-const BASE_MAINNET_RPC: &str = "https://mainnet.base.org";
-const BASE_SEPOLIA_RPC: &str = "https://sepolia.base.org";
-const BASESCAN_API: &str = "https://api.basescan.org/api";
-const BASESCAN_SEPOLIA_API: &str = "https://api-sepolia.basescan.org/api";
-
-// Base Mainnet token contract addresses
-const USDC_BASE_MAINNET: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
-const USDT_BASE_MAINNET: &str = "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2";
-
-// Base Sepolia token contract addresses
-const USDC_BASE_SEPOLIA: &str = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
-const USDT_BASE_SEPOLIA: &str = "0x900c915F7E882b8483434b9BA60E86cFb410A597";
+use data_core::config::BlockchainConfig;
 
 /// Supported payment tokens on Base chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -70,28 +59,16 @@ pub struct ChainConfig {
 }
 
 impl ChainConfig {
-    pub fn base_mainnet(contract: &str) -> Self {
+    /// Construct ChainConfig from BlockchainConfig.
+    pub fn from_blockchain_config(config: &BlockchainConfig, contract_address: &str) -> Self {
         Self {
-            rpc_url: BASE_MAINNET_RPC.into(),
-            explorer_api: BASESCAN_API.into(),
-            explorer_api_key: std::env::var("BASESCAN_API_KEY").ok(),
-            contract_address: contract.into(),
+            rpc_url: config.rpc_url().to_string(),
+            explorer_api: config.explorer_api_url().to_string(),
+            explorer_api_key: config.basescan_api_key.clone(),
+            contract_address: contract_address.to_string(),
             tokens: TokenAddresses {
-                usdc: USDC_BASE_MAINNET.into(),
-                usdt: USDT_BASE_MAINNET.into(),
-            },
-        }
-    }
-
-    pub fn base_sepolia(contract: &str) -> Self {
-        Self {
-            rpc_url: BASE_SEPOLIA_RPC.into(),
-            explorer_api: BASESCAN_SEPOLIA_API.into(),
-            explorer_api_key: std::env::var("BASESCAN_API_KEY").ok(),
-            contract_address: contract.into(),
-            tokens: TokenAddresses {
-                usdc: USDC_BASE_SEPOLIA.into(),
-                usdt: USDT_BASE_SEPOLIA.into(),
+                usdc: config.usdc_address.clone(),
+                usdt: config.usdt_address.clone(),
             },
         }
     }
@@ -161,6 +138,17 @@ impl BaseChainClient {
             config,
             http: reqwest::Client::new(),
         }
+    }
+
+    /// Create a BaseChainClient from BlockchainConfig.
+    pub fn from_blockchain_config(
+        blockchain_config: &BlockchainConfig,
+        contract_address: &str,
+    ) -> Self {
+        Self::new(ChainConfig::from_blockchain_config(
+            blockchain_config,
+            contract_address,
+        ))
     }
 
     /// Fetch normal transactions for an address from Basescan.
